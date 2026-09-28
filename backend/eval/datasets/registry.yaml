@@ -1,0 +1,51 @@
+# Dataset Registry (SPEC-00 §3, SPEC-02 §3)
+# license_scope must be one of: commercial_ok, research, pending
+
+datasets:
+  tcga_brca_dx:
+    name: "TCGA-BRCA diagnostic slides"
+    source_url: "https://api.gdc.cancer.gov/"
+    license_ref: "GDC Open-Access Data Policy"
+    license_scope: "research"
+    adapter: "backend.eval.datasets.tcga.TCGABRCAAdapter"
+    version_or_date: "2026-09"
+
+  bcnb:
+    name: "BCNB — Early Breast Cancer Core-Needle Biopsy WSI"
+    source_url: "https://github.com/PathologyAI/BCNB"
+    license_ref: "Pending program owner terms"
+    license_scope: "pending"
+    adapter: "backend.eval.datasets.bcnb.BCNBAdapter"
+    version_or_date: "2024"
+
+  midogpp_breast:
+    name: "MIDOG++ human breast carcinoma subset"
+    source_url: "https://zenodo.org/records/6344325"
+    license_ref: "CC BY 4.0"
+    license_scope: "commercial_ok"
+    adapter: "backend.eval.datasets.midogpp.MIDOGppAdapter"
+    version_or_date: "v1.0"
+
+  midogpp_other:
+    name: "MIDOG++ other tumor types"
+    source_url: "https://zenodo.org/records/6344325"
+    license_ref: "CC BY 4.0"
+    license_scope: "commercial_ok"
+    adapter: "backend.eval.datasets.midogpp.MIDOGppAdapter"
+    version_or_date: "v1.0"
+
+  bcss:
+    name: "Breast Cancer Semantic Segmentation (TCGA-BRCA ROIs)"
+    source_url: "https://bcsegmentation.grand-challenge.org/"
+    license_ref: "CC0 1.0"
+    license_scope: "commercial_ok"
+    adapter: "backend.eval.datasets.bcss.BCSSAdapter"
+    version_or_date: "2020"
+
+  tupac16:
+    name: "TUPAC16 (TCGA-BRCA mitotic score & auxiliary set)"
+    source_url: "http://tupac16.isi.uu.nl/"
+    license_ref: "Challenge data terms"
+    license_scope: "research"
+    adapter: "backend.eval.datasets.tcga.TUPAC16Adapter"
+    version_or_date: "2016"

@@ -1,0 +1,45 @@
+# Evaluation Dataset Configurations (SPEC-02 §3)
+
+datasets:
+  tcga_brca_dx:
+    chunk_size_bytes: 8388608  # 8 MiB
+    api_url: "https://api.gdc.cancer.gov"
+    timeout_seconds: 60.0
+    default_scanner: "Aperio"
+
+  bcnb:
+    mpp: null                     # µm/px of the JPG images (required)
+    native_mag: null              # e.g. 20 or 40 (informational; used for slices)
+    image_glob: "WSIs/*.jpg"
+    clinical_file: null           # path to the clinical spreadsheet
+    grade_field: null             # column name holding the grade
+    grade_map: {}                 # raw value -> 1|2|3, e.g. {"I":1,"II":2,"III":3}
+    tumor_polygons:
+      path: null
+      format: null                # annotation format and location
+    split_source: "official"
+    license_ref: null
+
+  midogpp:
+    scanner_mpp:
+      "Hamamatsu XR": 0.23
+      "Hamamatsu S360": 0.23
+      "Leica CS2": 0.25
+      "XR": 0.23
+      "S360": 0.23
+      "CS2": 0.25
+    categories:
+      "mitotic figure": "MF"
+      "non-mitotic figure": "imposter"
+      "hard negative": "imposter"
+
+  bcss:
+    class_map:
+      0: "outside_roi"
+      1: "tumor"
+      2: "stroma"
+      3: "inflammatory"
+      4: "necrosis"
+      5: "benign_epithelium"
+    default_mpp: 0.25
+    default_scanner: "Aperio"

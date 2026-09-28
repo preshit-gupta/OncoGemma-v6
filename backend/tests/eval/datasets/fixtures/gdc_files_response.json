@@ -1,0 +1,50 @@
+{
+  "data": {
+    "hits": [
+      {
+        "id": "dx-file-001",
+        "file_id": "dx-file-001",
+        "file_name": "TCGA-A7-A0DC-01Z-00-DX1.C770781E.svs",
+        "md5sum": "5d41402abc4b2a76b9719d911017c592",
+        "file_size": 1024,
+        "cases": [
+          {
+            "submitter_id": "TCGA-A7-A0DC"
+          }
+        ]
+      },
+      {
+        "id": "dx-file-002",
+        "file_id": "dx-file-002",
+        "file_name": "TCGA-BH-A0BQ-01Z-00-DX1.F3294821.svs",
+        "md5sum": "7d793037a0760186574b0282f2f435e7",
+        "file_size": 2048,
+        "cases": [
+          {
+            "submitter_id": "TCGA-BH-A0BQ"
+          }
+        ]
+      },
+      {
+        "id": "ts-file-003",
+        "file_id": "ts-file-003",
+        "file_name": "TCGA-A7-A0DC-11A-01D-TS1.E9482711.svs",
+        "md5sum": "098f6bcd4621d373cade4e832627b4f6",
+        "file_size": 512,
+        "cases": [
+          {
+            "submitter_id": "TCGA-A7-A0DC"
+          }
+        ]
+      }
+    ],
+    "pagination": {
+      "count": 3,
+      "total": 3,
+      "size": 1000,
+      "from": 0,
+      "page": 1,
+      "pages": 1
+    }
+  }
+}

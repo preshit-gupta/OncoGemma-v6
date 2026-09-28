@@ -1,0 +1,52 @@
+{
+  "images": [
+    {
+      "id": 1,
+      "file_name": "001.png",
+      "width": 2000,
+      "height": 2000,
+      "scanner": "Hamamatsu XR",
+      "tumor_type": "breast",
+      "patient_id": "case_001"
+    },
+    {
+      "id": 2,
+      "file_name": "002.png",
+      "width": 2000,
+      "height": 2000,
+      "scanner": "Leica CS2",
+      "tumor_type": "breast",
+      "patient_id": "case_002"
+    }
+  ],
+  "categories": [
+    {
+      "id": 1,
+      "name": "mitotic figure"
+    },
+    {
+      "id": 2,
+      "name": "non-mitotic figure"
+    }
+  ],
+  "annotations": [
+    {
+      "id": 101,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [100.0, 200.0, 50.0, 60.0]
+    },
+    {
+      "id": 102,
+      "image_id": 1,
+      "category_id": 2,
+      "bbox": [300.0, 400.0, 40.0, 40.0]
+    },
+    {
+      "id": 201,
+      "image_id": 2,
+      "category_id": 1,
+      "bbox": [500.0, 600.0, 20.0, 20.0]
+    }
+  ]
+}
