@@ -1,4 +1,6 @@
 """Model registry (SPEC-01 §3.7)."""
+import re
+
 import pytest
 
 from app.core.config import settings
@@ -38,10 +40,17 @@ def test_input_contracts_match_the_models_the_pipeline_calls():
 def test_versions_come_from_the_registry_and_its_variables():
     reg = registry()
     assert reg.version_of("gemini_referee") == VARIABLES["GEMINI_REFEREE_MODEL"]
-    assert reg.version_of("medgemma") == VARIABLES["VERTEX_MEDGEMMA_MODEL_VERSION"]
+    assert reg.version_of("medgemma") == "models/885564806952648704@1@2026-09-22"
     assert reg.version_of("od_hyperchromatic_sweep") == "v5-2b87ab7"
     with pytest.raises(KeyError):
         reg.version_of("yolo")
+
+
+def test_vertex_endpoint_versions_are_verified_deployments():
+    """Each Vertex endpoint version names the deployed model resource, version and deploy date."""
+    for key, entry in registry().models.items():
+        if entry.provider.startswith("vertex_endpoint"):
+            assert re.fullmatch(r"models/\d+@\d+@\d{4}-\d{2}-\d{2}", entry.version), key
 
 
 def test_startup_registry_resolves_settings():

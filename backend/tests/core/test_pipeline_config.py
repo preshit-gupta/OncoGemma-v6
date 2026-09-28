@@ -192,15 +192,6 @@ def test_missing_configs_dir_is_rejected(tmp_path):
         load(tmp_path / "nowhere")
 
 
-def test_v5_stage6_files_may_be_absent(tmp_path):
-    """WP-1.2 deletes cap_elements.yaml and staging.yaml; loading must survive that merge."""
-    configs = copy_configs(tmp_path)
-    for name in ("cap_elements.yaml", "staging.yaml"):
-        (configs / name).unlink(missing_ok=True)
-    config = load(configs)
-    assert config.cap_elements is None and config.staging is None
-
-
 def test_config_is_immutable():
     config = load(REPO_CONFIGS)
     with pytest.raises(ValidationError):
@@ -224,14 +215,14 @@ def test_variable_outside_the_allowlist_is_rejected(tmp_path):
 
 def test_partial_interpolation_is_rejected(tmp_path):
     configs = copy_configs(tmp_path)
-    edit_yaml(configs / "models.yaml", lambda d: d["models"]["medgemma"].update(version="v-${VERTEX_MEDGEMMA_MODEL_VERSION}"))
+    edit_yaml(configs / "models.yaml", lambda d: d["models"]["medgemma"].update(region="eu-${VERTEX_MEDGEMMA_LOCATION}"))
     with pytest.raises(ConfigLoadError, match="whole value"):
         load(configs)
 
 
 def test_required_value_from_unset_variable_is_rejected():
-    with pytest.raises(ConfigLoadError, match="version"):
-        load(REPO_CONFIGS, {**VARIABLES, "VERTEX_MEDGEMMA_MODEL_VERSION": ""})
+    with pytest.raises(ConfigLoadError, match="region"):
+        load(REPO_CONFIGS, {**VARIABLES, "VERTEX_MEDGEMMA_LOCATION": ""})
 
 
 def test_registry_variables_never_include_secrets():

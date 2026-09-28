@@ -16,7 +16,7 @@ from app.core.config import settings
 from app.core.migrations import upgrade_to_head
 from app.core.pipeline_config import init_pipeline_config
 from app.core.gcs import ensure_buckets_exist
-from app.core.db import Base, engine
+from app.core.db import engine
 from app.routers import (
     cases_router, tiles_router, audit_router, triage_router, mitosis_router, grading_router, worker_webhook_router
 )
@@ -64,77 +64,6 @@ async def background_pipeline_worker():
             logger.error(f"[Always-On Worker Exception] {exc}")
             await asyncio.sleep(2.0)
 
-
-def ensure_schema_up_to_date():
-    """Ensure newly added columns and cascade foreign keys exist in production tables."""
-    from sqlalchemy import text
-    if engine.dialect.name == "postgresql":
-        # 1. Ensure columns exist with strict 1s lock timeout per statement
-        col_statements = [
-            "ALTER TABLE detections ADD COLUMN IF NOT EXISTS medgemma_verdict VARCHAR;",
-            "ALTER TABLE detections ADD COLUMN IF NOT EXISTS medgemma_rationale TEXT;",
-            "ALTER TABLE detections ADD COLUMN IF NOT EXISTS medgemma_confidence VARCHAR;",
-            "ALTER TABLE slides ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'ready';",
-            "ALTER TABLE slides ADD COLUMN IF NOT EXISTS gcs_uri_pyramid_norm VARCHAR;",
-            "ALTER TABLE gradings ADD COLUMN IF NOT EXISTS type_confirmed_by VARCHAR DEFAULT 'unconfirmed';",
-        ]
-        for stmt in col_statements:
-            try:
-                with engine.begin() as conn:
-                    conn.execute(text("SET LOCAL lock_timeout = '1s';"))
-                    conn.execute(text(stmt))
-            except Exception as e:
-                logger.warning(f"[Schema DDL Note] {stmt[:40]}...: {e}")
-
-        # 2. Ensure foreign key constraints on child tables have ON DELETE CASCADE (only if not already CASCADE)
-        fk_updates = [
-            ("hotspots", "hotspots_stage_execution_id_fkey", "stage_execution_id", "stage_executions(id)"),
-            ("hotspots", "hotspots_case_id_fkey", "case_id", "cases(id)"),
-            ("detections", "detections_case_id_fkey", "case_id", "cases(id)"),
-            ("hpf_sites", "hpf_sites_case_id_fkey", "case_id", "cases(id)"),
-            ("slides", "slides_case_id_fkey", "case_id", "cases(id)"),
-            ("stage_executions", "stage_executions_case_id_fkey", "case_id", "cases(id)"),
-            ("gradings", "gradings_case_id_fkey", "case_id", "cases(id)"),
-        ]
-        for tbl, cname, col, target in fk_updates:
-            try:
-                with engine.begin() as conn:
-                    conn.execute(text("SET LOCAL lock_timeout = '1s';"))
-                    conn.execute(text(f"""
-                        DO $$
-                        BEGIN
-                            IF NOT EXISTS (
-                                SELECT 1 FROM information_schema.referential_constraints 
-                                WHERE constraint_name = '{cname}' AND delete_rule = 'CASCADE'
-                            ) THEN
-                                IF EXISTS (
-                                    SELECT 1 FROM information_schema.table_constraints 
-                                    WHERE constraint_name = '{cname}' AND table_name = '{tbl}'
-                                ) THEN
-                                    ALTER TABLE {tbl} DROP CONSTRAINT {cname};
-                                END IF;
-                                ALTER TABLE {tbl} ADD CONSTRAINT {cname} 
-                                    FOREIGN KEY ({col}) REFERENCES {target} ON DELETE CASCADE;
-                            END IF;
-                        END $$;
-                    """))
-            except Exception as fk_e:
-                logger.warning(f"[Schema FK Migration Note] Could not update FK {cname} on {tbl}: {fk_e}")
-        logger.info("[Database Schema] Ensured ON DELETE CASCADE on foreign keys.")
-
-    elif engine.dialect.name == "sqlite":
-        try:
-            with engine.begin() as conn:
-                cols = [c[1] for c in conn.execute(text("PRAGMA table_info(slides);")).fetchall()]
-                if cols and "status" not in cols:
-                    conn.execute(text("ALTER TABLE slides ADD COLUMN status VARCHAR DEFAULT 'ready';"))
-                if cols and "gcs_uri_pyramid_norm" not in cols:
-                    conn.execute(text("ALTER TABLE slides ADD COLUMN gcs_uri_pyramid_norm VARCHAR;"))
-                grad_cols = [c[1] for c in conn.execute(text("PRAGMA table_info(gradings);")).fetchall()]
-                if grad_cols and "type_confirmed_by" not in grad_cols:
-                    conn.execute(text("ALTER TABLE gradings ADD COLUMN type_confirmed_by VARCHAR DEFAULT 'unconfirmed';"))
-        except Exception as sq_err:
-            logger.warning(f"[SQLite Schema Note] {sq_err}")
 
 async def _async_init_and_worker():
     """Check buckets and start the background worker non-blockingly."""

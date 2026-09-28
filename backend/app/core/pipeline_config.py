@@ -40,7 +40,6 @@ REGISTRY_VARIABLES = (
     "VERTEX_MITOSIS_LOCATION",
     "VERTEX_MEDGEMMA_ENDPOINT_ID",
     "VERTEX_MEDGEMMA_LOCATION",
-    "VERTEX_MEDGEMMA_MODEL_VERSION",
     "GEMINI_REFEREE_MODEL",
 )
 
@@ -337,91 +336,6 @@ class PricingConfig(StrictModel):
     path_foundation: PatchPricing
 
 
-# --- cap_elements.yaml and staging.yaml (v5 Stage 6, deleted by WP-1.2) ------
-
-class CodedOption(StrictModel):
-    id: NonEmptyStr
-    name: NonEmptyStr
-
-
-class SpecimenTypeOption(CodedOption):
-    protocol: Literal["biopsy", "resection"]
-
-
-class HormoneReceptorDefault(StrictModel):
-    status: NonEmptyStr
-    percent: Percent
-    allred_score: NonNegativeInt
-
-
-class Her2Default(StrictModel):
-    ihc_score: NonEmptyStr
-    fish_status: NonEmptyStr
-    result: NonEmptyStr
-
-
-class Ki67Default(StrictModel):
-    percent: Percent
-
-
-class BiomarkerDefaults(StrictModel):
-    er: HormoneReceptorDefault
-    pr: HormoneReceptorDefault
-    her2: Her2Default
-    ki67: Ki67Default
-
-
-class CapElementsConfig(StrictModel):
-    specimen_types: list[SpecimenTypeOption]
-    laterality_options: list[CodedOption]
-    tumor_sites: list[CodedOption]
-    histologic_types: list[CodedOption]
-    grade_descriptions: dict[Literal[1, 2, 3], NonEmptyStr]
-    lvi_statuses: list[CodedOption]
-    margin_statuses: list[CodedOption]
-    biomarker_defaults: BiomarkerDefaults
-    ajcc_staging_edition: NonEmptyStr
-
-
-RoundingRule = Literal["ajcc_8th_half_up_mm"]
-
-
-class PtCutoffs(StrictModel):
-    pT1mi_max_mm: PositiveFloat
-    pT1a_max_mm: PositiveFloat
-    pT1b_max_mm: PositiveFloat
-    pT1c_max_mm: PositiveFloat
-    pT2_max_mm: PositiveFloat
-    rounding_rule: RoundingRule
-
-    @model_validator(mode="after")
-    def _increasing(self) -> "PtCutoffs":
-        cutoffs = [self.pT1mi_max_mm, self.pT1a_max_mm, self.pT1b_max_mm, self.pT1c_max_mm, self.pT2_max_mm]
-        _require(cutoffs == sorted(set(cutoffs)), "pT cutoffs must be strictly increasing")
-        return self
-
-
-class PnCutoffs(StrictModel):
-    itc_max_mm: PositiveFloat
-    micrometa_max_mm: PositiveFloat
-    n1_max_nodes: PositiveInt
-    n2_max_nodes: PositiveInt
-
-    @model_validator(mode="after")
-    def _ordered(self) -> "PnCutoffs":
-        _require(self.itc_max_mm < self.micrometa_max_mm, "itc_max_mm must be below micrometa_max_mm")
-        _require(self.n1_max_nodes < self.n2_max_nodes, "n1_max_nodes must be below n2_max_nodes")
-        return self
-
-
-class StagingConfig(StrictModel):
-    edition: NonEmptyStr
-    rounding_rule: RoundingRule
-    pt_cutoffs: PtCutoffs
-    pn_cutoffs: PnCutoffs
-    stage_groups: dict[NonEmptyStr, dict[NonEmptyStr, list[NonEmptyStr]]]
-
-
 # --- the whole tree -----------------------------------------------------------
 
 class PipelineConfig(StrictModel):
@@ -434,9 +348,6 @@ class PipelineConfig(StrictModel):
     scoring: ScoringConfig
     triage: TriageConfig
     prompts: dict[PromptFileName, PromptText]
-    # v5 Stage-6 files. WP-1.2 deletes them; drop these two fields once it merges.
-    cap_elements: CapElementsConfig | None = None
-    staging: StagingConfig | None = None
 
     @model_validator(mode="after")
     def _files_agree(self) -> "PipelineConfig":

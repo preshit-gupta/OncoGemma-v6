@@ -15,7 +15,6 @@ VARIABLES = {
     "VERTEX_MITOSIS_LOCATION": "us-central1",
     "VERTEX_MEDGEMMA_ENDPOINT_ID": "2222",
     "VERTEX_MEDGEMMA_LOCATION": "us-central1",
-    "VERTEX_MEDGEMMA_MODEL_VERSION": "medgemma-test@2026-09-28",
     "GEMINI_REFEREE_MODEL": "gemini-2.5-flash",
 }
 

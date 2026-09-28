@@ -82,11 +82,39 @@ def test_unversioned_v5_database_is_refused(engine):
     assert "alembic_version" not in inspect(engine).get_table_names()
 
 
+def test_database_with_only_retired_tables_is_refused(engine):
+    """Detection must not depend on the current models: `reports` is not one of them any more."""
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE reports (case_id VARCHAR PRIMARY KEY)"))
+    with pytest.raises(UnversionedDatabaseError, match="reports"):
+        upgrade_to_head(engine)
+
+
+def build_v5_database(engine) -> None:
+    """The schema v5's create_all built (revision 0001), without migration history."""
+    run(engine, command.upgrade, BASELINE_REVISION)
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE alembic_version"))
+
+
 def test_v5_database_stamped_at_baseline_upgrades_without_drift(engine):
-    Base.metadata.create_all(engine)
+    """The operator procedure in UnversionedDatabaseError: stamp, upgrade head, check."""
+    build_v5_database(engine)
+    with pytest.raises(UnversionedDatabaseError):
+        upgrade_to_head(engine)
     run(engine, command.stamp, BASELINE_REVISION)
     upgrade_to_head(engine)
     run(engine, command.check)
+    assert current_revision(engine) == head_revision()
+
+
+def test_0002_drops_the_v5_reports_table(engine):
+    run(engine, command.upgrade, BASELINE_REVISION)
+    assert "reports" in inspect(engine).get_table_names()
+    run(engine, command.upgrade, "0002_drop_v5_reports")
+    assert "reports" not in inspect(engine).get_table_names()
+    run(engine, command.downgrade, BASELINE_REVISION)
+    assert "reports" in inspect(engine).get_table_names()
 
 
 # --- API startup ------------------------------------------------------------------

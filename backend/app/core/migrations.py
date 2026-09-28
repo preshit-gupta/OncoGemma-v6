@@ -10,8 +10,6 @@ from alembic.config import Config
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
-from app.core.db import Base
-
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = BACKEND_DIR / "alembic.ini"
 BASELINE_REVISION = "0001_v5_baseline"
@@ -22,7 +20,7 @@ MIGRATION_LOCK_KEY = 0x4F4E434F47454D4D
 
 
 class UnversionedDatabaseError(RuntimeError):
-    """The database has application tables but no alembic_version table."""
+    """The database has tables but no alembic_version table."""
 
 
 def alembic_config() -> Config:
@@ -39,14 +37,15 @@ def upgrade_to_head(engine: Engine) -> None:
         if conn.dialect.name == "postgresql":
             conn.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": MIGRATION_LOCK_KEY})
 
+        # Any table counts, not just the current models: a v5 database also has tables
+        # that later revisions drop (reports).
         existing = set(inspect(conn).get_table_names())
-        app_tables = existing & set(Base.metadata.tables)
-        if "alembic_version" not in existing and app_tables:
+        if existing and "alembic_version" not in existing:
             raise UnversionedDatabaseError(
-                f"Database has application tables {sorted(app_tables)} but no alembic_version table. "
-                f"It was built without migrations (v5 create_all). From backend/, run "
-                f"`alembic stamp {BASELINE_REVISION}`, then `alembic check` to confirm the schema matches "
-                f"the models, then restart."
+                f"Database has tables {sorted(existing)} but no alembic_version table. "
+                f"It was built without migrations (v5 create_all). From backend/, with DATABASE_URL set "
+                f"to this database, run `alembic stamp {BASELINE_REVISION}`, `alembic upgrade head` and "
+                f"`alembic check` (it must report no new operations), then restart."
             )
 
         cfg = alembic_config()
