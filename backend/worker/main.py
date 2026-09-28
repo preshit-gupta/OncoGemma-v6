@@ -10,6 +10,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.core.db import SessionLocal, engine
+from app.core.pipeline_config import get_config_hash, init_pipeline_config
 from app.models.stage_execution import StageExecution
 from worker.ingest import run_ingest
 from worker.preprocess import run_preprocess
@@ -57,6 +58,7 @@ def poll_and_execute_single_task():
     Executes a single queued task using SQLAlchemy ORM queue fetch with row locking.
     Uses .with_for_update(skip_locked=True) on PostgreSQL and cleanly falls back on SQLite.
     """
+    config_hash = get_config_hash()
     db: Session = SessionLocal()
     try:
         stages_list = list(HANDLERS.keys())
@@ -104,6 +106,7 @@ def poll_and_execute_single_task():
         # Mark as running
         stage_exec.status = "running"
         stage_exec.started_at = datetime.now(timezone.utc)
+        stage_exec.config_hash = config_hash
         db.commit()
 
         print(f"[Worker] Processing stage '{stage_exec.stage}' for case {stage_exec.case_id} (attempt {stage_exec.attempt})...")
@@ -140,6 +143,7 @@ def poll_and_execute_single_task():
         db.close()
 
 def run_worker_loop():
+    init_pipeline_config()
     print(f"[Worker] Starting OncoGemma stage worker poll loop. Engine: {engine.dialect.name}. Handlers: {list(HANDLERS.keys())}")
     reset_stuck_running_stages(timeout_seconds=1800)
     last_reset_check = time.time()

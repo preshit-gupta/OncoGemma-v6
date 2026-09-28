@@ -1,0 +1,51 @@
+# SPEC-01 AC8: the migration history builds the schema on an empty Postgres 15
+# and matches the SQLAlchemy models (`alembic check` fails on any drift).
+name: migrations
+
+on:
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/migrations.yml"
+  push:
+    branches: [main]
+
+jobs:
+  alembic:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: oncogemma
+          POSTGRES_PASSWORD: oncogemma_ci
+          POSTGRES_DB: oncogemma_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U oncogemma -d oncogemma_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      # Explicit driver: SQLAlchemy >= 2.1 maps plain postgresql:// to psycopg 3, which is not installed.
+      DATABASE_URL: postgresql+psycopg2://oncogemma:oncogemma_ci@localhost:5432/oncogemma_ci
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Only what env.py imports (app.models, app.core.db, app.core.config), pinned by requirements.txt.
+      - name: Install migration dependencies
+        run: |
+          grep -E '^(sqlalchemy|alembic|psycopg2-binary|pydantic|pydantic-settings)[<>=]' requirements.txt > /tmp/requirements-migrations.txt
+          pip install -r /tmp/requirements-migrations.txt
+      - name: alembic upgrade head
+        run: alembic upgrade head
+      - name: alembic check
+        run: alembic check
+      - name: downgrade to base and upgrade again
+        run: alembic downgrade base && alembic upgrade head && alembic check

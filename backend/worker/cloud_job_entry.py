@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from sqlalchemy.orm import Session
 from app.core.db import SessionLocal
+from app.core.pipeline_config import get_config_hash, init_pipeline_config
 from app.models.stage_execution import StageExecution
 from worker.ingest import run_ingest
 from worker.preprocess import run_preprocess
@@ -38,6 +39,8 @@ def execute_cloud_job(case_id_str: str, stage_name: str, exec_id_str: str | None
     if stage_name not in HANDLERS:
         print(f"[CloudJob Error] Unknown stage '{stage_name}'. Valid: {list(HANDLERS.keys())}", file=sys.stderr)
         return 1
+
+    config_hash = get_config_hash()
 
     print(f"================================================================================")
     print(f"[CloudJob] Starting OncoGemma Stage: {stage_name.upper()} | Case: {case_id_str}")
@@ -73,7 +76,8 @@ def execute_cloud_job(case_id_str: str, stage_name: str, exec_id_str: str | None
                 stage=stage_name,
                 attempt=1,
                 status="running",
-                started_at=datetime.now(timezone.utc)
+                started_at=datetime.now(timezone.utc),
+                config_hash=config_hash
             )
             db.add(stage_exec)
             db.commit()
@@ -81,6 +85,7 @@ def execute_cloud_job(case_id_str: str, stage_name: str, exec_id_str: str | None
         else:
             stage_exec.status = "running"
             stage_exec.started_at = datetime.now(timezone.utc)
+            stage_exec.config_hash = config_hash
             db.commit()
 
         handler = HANDLERS[stage_name]
@@ -130,6 +135,7 @@ def main():
     parser.add_argument("--daemon", action="store_true", help="Run polling loop if no case/stage specified")
 
     args = parser.parse_args()
+    init_pipeline_config()
 
     if args.case_id and args.stage:
         sys.exit(execute_cloud_job(args.case_id, args.stage, args.exec_id))

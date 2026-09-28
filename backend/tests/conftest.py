@@ -32,6 +32,14 @@ def anyio_backend():
     return "asyncio"
 
 
+@pytest.fixture(scope="session", autouse=True)
+def pipeline_config():
+    """Load the repo's configs/ once, as every entrypoint does at startup (SPEC-01 §3.8)."""
+    from app.core.pipeline_config import init_pipeline_config
+
+    return init_pipeline_config()
+
+
 @pytest.fixture(autouse=True)
 def isolate_test_environment(monkeypatch):
     """

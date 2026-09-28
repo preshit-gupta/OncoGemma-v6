@@ -1,0 +1,56 @@
+# Model registry (SPEC-01 §3.7). Validated into app.core.model_registry.ModelRegistry
+# as part of PipelineConfig, so every change here changes config_hash.
+#
+# ${NAME} takes the value of Settings.NAME (allowed names: REGISTRY_VARIABLES in
+# app/core/pipeline_config.py). An unset or empty value becomes null.
+#
+# Versions ending in "@unverified" are the identifiers v5 records today. Replace them
+# with "<deployed model resource id>@<deploy date>" read from the live endpoints.
+schema_version: 1
+
+models:
+  path_foundation:
+    kind: embedding
+    provider: vertex_endpoint_raw_predict
+    endpoint_id: ${VERTEX_PATH_FOUNDATION_ENDPOINT_ID}
+    region: ${VERTEX_PATH_FOUNDATION_LOCATION}
+    version: "path-foundation-v1@unverified"
+    requires_image: true
+    input: {mpp: 1.0, mpp_tolerance: 0.02, size_px: [224, 224], color: raw, format: png}
+    output_schema: EmbeddingBatch       # (N, 384) float32
+
+  triage_probe:                         # v5 synthetic development probe; replaced by tumor_head (SPEC-05)
+    kind: classifier
+    provider: local_sklearn
+    artifact_uri: models/probe/probe_v1.joblib
+    artifact_sha256: 3093ac4158633a05b8c570f479c2d448d0bf25beeb2fce77b90641ac75409734
+    version: "probe_v1"
+    input: {features: path_foundation}
+
+  kongnet_det_midog_1:
+    kind: detector
+    provider: vertex_endpoint_predict
+    endpoint_id: ${VERTEX_MITOSIS_ENDPOINT_ID}
+    region: ${VERTEX_MITOSIS_LOCATION}
+    version: "kongnet-midog@unverified"  # SPEC-06: weights sha256 reported by the service's /metadata
+    requires_image: true
+    input: {mpp: 0.25, mpp_tolerance: 0.01, size_px: [512, 512], color: raw, format: png}
+    output_schema: DetectionList        # [{cx, cy, prob}] in input-pixel coordinates
+
+  gemini_referee:
+    kind: vlm
+    provider: vertex_genai
+    model: ${GEMINI_REFEREE_MODEL}
+    requires_image: true
+    params: {temperature: 0.0}
+
+  medgemma:
+    kind: vlm
+    provider: vertex_endpoint_predict
+    endpoint_id: ${VERTEX_MEDGEMMA_ENDPOINT_ID}
+    region: ${VERTEX_MEDGEMMA_LOCATION}
+    version: ${VERTEX_MEDGEMMA_MODEL_VERSION}
+    requires_image: true
+
+heuristics:
+  od_hyperchromatic_sweep: {version: "v5-2b87ab7", module: pipeline.detect}   # ablation only

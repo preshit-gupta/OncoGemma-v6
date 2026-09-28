@@ -13,6 +13,8 @@ if sys.platform == "win32":
         pass
 
 from app.core.config import settings
+from app.core.migrations import upgrade_to_head
+from app.core.pipeline_config import init_pipeline_config
 from app.core.gcs import ensure_buckets_exist
 from app.core.db import Base, engine
 from app.routers import (
@@ -135,16 +137,8 @@ def ensure_schema_up_to_date():
             logger.warning(f"[SQLite Schema Note] {sq_err}")
 
 async def _async_init_and_worker():
-    """Perform database checks, schema updates, and start background worker non-blockingly."""
+    """Check buckets and start the background worker non-blockingly."""
     loop = asyncio.get_running_loop()
-    try:
-        await loop.run_in_executor(None, Base.metadata.create_all, engine)
-    except Exception as e:
-        logger.warning(f"[DB Create All Note] {e}")
-    try:
-        await loop.run_in_executor(None, ensure_schema_up_to_date)
-    except Exception as e:
-        logger.warning(f"[Schema Migration Note] {e}")
     try:
         await loop.run_in_executor(None, ensure_buckets_exist)
     except Exception as e:
@@ -153,8 +147,11 @@ async def _async_init_and_worker():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Launch startup initialization and worker daemon in background task.
-    # This guarantees the ASGI server binds port 8080 instantly and passes Cloud Run startup probes in <1s.
+    # Configuration and schema are prerequisites: any failure here aborts startup (SPEC-01 §3.1, §3.8).
+    init_pipeline_config()
+    if settings.ENV != "test":
+        await asyncio.to_thread(upgrade_to_head, engine)
+    # Launch bucket checks and the worker daemon in a background task.
     init_task = asyncio.create_task(_async_init_and_worker())
     try:
         yield

@@ -23,6 +23,12 @@ from worker.preprocess import generate_norm_dzi_pyramid
 client = TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def schema():
+    """API startup no longer builds tables (SPEC-01 §3.1); create_all lives in test fixtures."""
+    Base.metadata.create_all(bind=engine)
+
+
 def test_healthz_async_endpoint():
     """Verify /healthz returns 200 and healthy status (Issue #636)."""
     resp = client.get("/healthz")
