@@ -124,7 +124,7 @@ repro: "pytest backend/tests/... -k ..."   # or a concrete input
 status: open|fixed|accepted_risk|refuted
 closure:
   kind: test|metric_run|rationale
-  ref: "backend/tests/test_nms.py::test_telophase_merge"   # or run id, or ADR link
+  ref: "backend/tests/test_nms.py::test_dividing_cell_counts_once"   # or run id, or ADR link
 ```
 
 - A finding is **fixed** only if `closure.kind` is `test` (a test that fails before and passes after) or `metric_run` (a run showing the expected metric effect). **"File modified since the audit" is not evidence.** That was the flaw of `ops/audit_evaluator.py`.

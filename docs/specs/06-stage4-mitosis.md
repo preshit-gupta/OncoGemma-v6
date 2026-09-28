@@ -41,13 +41,14 @@ The pathologists reported "overblown" mitotic counts. Ten mechanisms in v5 bias 
 
 ## 3. Operational definition (single source)
 
-`configs/definitions/mitotic_figure@v2.md` is versioned and hashed into `config_hash`. It is **signed off by the pathologist advisor**, with their name and date in the front matter, before any arm that uses it is evaluated on test. **The same file** is embedded in:
+`configs/definitions/mitotic_figure@v2.md` is the **fixed** program definition. It was decided once by the program owner (2026-09-28) and is used unchanged everywhere, with no per-run or per-evaluation approval step. The file is hashed into `config_hash`. **The same file** is embedded in:
 - the VLM prompt (§5.4)
 - the ground-truth annotation guideline (SPEC-08 §6)
+- the ground-truth harmonisation step for evaluation data (§3.1)
 
-The model and the annotators are therefore judged against identical criteria.
+The model, the annotators and the evaluation ground truth are therefore judged against identical criteria. The file only changes through a deliberate version bump (`@v3`), which changes `config_hash` and so invalidates comparisons with earlier runs.
 
-**Draft content** (van Diest-style criteria; for advisor review):
+**Definition content** (van Diest-style criteria):
 
 - **Count** a cell as a mitotic figure when **all** of the following hold:
   1. The **nuclear membrane is absent**, i.e. the cell is beyond prophase.
@@ -66,7 +67,22 @@ The model and the annotators are therefore judged against identical criteria.
   - lymphocytes and plasma cells
   - crushed or smeared nuclei
   - mitoses in non-neoplastic cells (endothelium, stroma, inflammatory cells, normal epithelium, in-situ component)
-- **Telophase counting rule:** **OPEN — the advisor must confirm** whether the two daughter clots of one dividing cell count as one figure or two. The rule must match the ground-truth convention of the evaluation data (the MIDOG++ labelling protocol). **Verify** it in the MIDOG++ paper. The rule is encoded in both the NMS radius (§5.7) and the prompt.
+- **Dividing-cell counting rule (decided):** **one dividing cell counts as one mitosis.** This includes anaphase and telophase, where the chromosomes have separated into two groups or clots but cytokinesis is not complete. Both groups belong to the same figure and are counted **once**. The rule is encoded in three places:
+  - the prompt: "count the two chromosome groups of one dividing cell as a single mitotic figure";
+  - the NMS merge (§5.7);
+  - the ground-truth harmonisation (§3.1).
+
+### 3.1 Ground-truth harmonisation for evaluation data
+
+Evaluation ground truth must follow the same one-cell-one-mitosis rule. Otherwise NS-M would penalise a correct single detection with a false negative.
+
+- **Check.** At implementation, check how each evaluation dataset annotates anaphase/telophase figures, starting with MIDOG++ (paper and labelling protocol).
+- **If a dataset annotates daughter groups separately,** apply a deterministic harmonisation to its ground truth before matching:
+  - pairs of mitotic-figure points closer than `d_div` are merged into a single point at their midpoint;
+  - `d_div` is set from the dataset's documented convention, or measured from its annotated anaphase/telophase examples;
+  - the step is applied identically to every arm.
+- **Recording.** The harmonisation and its `d_div` are recorded in `eval/datasets/registry.yaml` and in each run's `metrics.json`. The number of merged pairs per dataset is reported.
+- **Program annotations** (SPEC-08 §6) use the rule natively: annotators place one point per dividing cell.
 
 ## 4. Detector service contract (repo `MIDOG-microservice`)
 
@@ -204,7 +220,9 @@ The `detections` table migration replaces the overloaded v5 `label` / `label_sou
 
 After decisions, a global greedy NMS with radius `r_nms` runs in µm, ordered by `p_b` (or `p_a`).
 - `r_nms ∈ {5, 7.5, 10, 12.5} µm` is tuned on val for NS-M.
-- It must be consistent with the telophase rule (§3): if telophase counts as one figure, `r_nms` must merge daughter clots.
+- It must implement the dividing-cell rule (§3): the two chromosome groups of one anaphase/telophase cell must merge into one detection.
+  - The candidate set for `r_nms` is therefore restricted to values ≥ the typical daughter-group separation. That separation is measured on val from harmonised ground-truth pairs (§3.1).
+  - A dedicated test (`test_nms.py::test_dividing_cell_counts_once`) asserts that two detections on one telophase figure yield one count.
 
 ### 5.8 HPFs and score
 
@@ -275,7 +293,7 @@ Each arm is run with the tumour-cell gate on and off for `F1_M`.
 | AC4 | `F1_M` on TCGA val improves over A0 (paired ΔF1 lower bound > 0) |
 | AC5 | mpp contract: every detector request carries `mpp = 0.25 ± 1%`. The service rejects 0.5 (integration test) |
 | AC6 | Ownership: a synthetic field with a mocked detector that fires on every object in every overlapping tile outputs each object exactly once |
-| AC7 | `mitotic_figure@v2.md` has advisor sign-off front matter before any A3/A5 test evaluation. A CI check fails otherwise |
+| AC7 | One fixed definition: `mitotic_figure@v2.md` is the only definition file referenced by the prompt, the annotation guideline and the ground-truth harmonisation (static check). Its hash appears in every run's `config_hash`. The dividing-cell test in §5.7 passes |
 | AC8 | Every counted detection has the full DecisionRecord chain (`mitosis_detect` → `mitosis_classify` → [`mitosis_referee`] → `mitosis_count`). INT-PROV = 1.0 |
 | AC9 | No `heuristic` producer appears in any EVAL DecisionRecord of the chosen arm (INT-FALL = 0) |
 | AC10 | HPFs never overlap (property test). Score recompute uses `pipeline/scoring.py` only (grep test) |
@@ -316,5 +334,5 @@ Used only if capacity exists. It adds a TCGA-native NS-M slice, and produces `tc
 | KongNet training overlaps MIDOG++ breast (SPEC-00 R1) | Contamination check before test. Alternative test sets |
 | MIDOG++ breast val is small (about 30 cases) | Use LOSO folds, report CIs, and treat results as provisional per the SPEC-00 §2.4 rule |
 | TCGA scanners and staining differ from MIDOG++ | `F1_M` on TCGA val is part of selection. Stain augmentation. SPEC-09 corrections |
-| Telophase rule mismatch between definition and ground truth | Advisor sign-off (§3). `r_nms` tuned on val |
+| An evaluation dataset annotates dividing cells as two figures | Ground-truth harmonisation (§3.1), applied identically to all arms and reported |
 | Classifier B overfits imposters from non-breast domains | Per-domain ablation (`B-CNN+canine`). Breast-only val selection |

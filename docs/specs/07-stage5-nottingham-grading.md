@@ -216,7 +216,7 @@ For each step, report per-component mean signed error (by true band), `F1_T`, `F
 | `backend/pipeline/medgemma.py` | Split into `pipeline/vlm/{tubule.py, pleo.py, histotype.py}`, all built on the gateway. Delete `extract_morphometric_doer_assessment` (`:395-476`), the doer prompts (`:708-721`, `:793-805`) and the Stage-6 narratives |
 | `backend/pipeline/nuclei/` | New: HoVer-Net client and feature extraction |
 | `training/{tubule_mil, pleo_ordinal, grade_mil, histotype_mil}/` | New training code. Artefacts go to the registry |
-| `configs/prompts/{tubule,pleo,histologic_type}@v2.md`, `configs/definitions/{tubule_formation,nuclear_pleomorphism}@v1.md` | New definitions, with advisor sign-off as in SPEC-06 §3 |
+| `configs/prompts/{tubule,pleo,histologic_type}@v2.md`, `configs/definitions/{tubule_formation,nuclear_pleomorphism}@v1.md` | New definitions, fixed once and used everywhere (same policy as SPEC-06 §3; changes only via a version bump) |
 | `configs/scoring.yaml` | Remove `confidence_weights`, `n_patches`, `resolution_um` (moved to profiles / the registry). Keep the Nottingham thresholds |
 | `frontend/components/viewer/GradingReviewWorkspace.tsx` | Show per-sample evidence at the right magnification (10× tubule, 40× pleomorphism), per-component estimator and provenance, and the band warning when the sum is 5/6 or 7/8 (near a boundary) |
 
