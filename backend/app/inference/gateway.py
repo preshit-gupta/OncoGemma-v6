@@ -238,11 +238,12 @@ class ModelGateway:
 
         request = AdapterRequest(
             producer_id=producer_id,
-            images=tuple(AdapterImage(img.data, MIME_TYPES[img.spec.format]) for img in inputs.images),
+            images=tuple(AdapterImage(img.data, MIME_TYPES[img.spec.format], img.spec.mpp) for img in inputs.images),
             features=inputs.features,
             prompt=prompt,
             output_model=output_model if entry.kind == "vlm" else None,
             generation=call.params.get("generation", {}),
+            parameters={key: value for key, value in call.params.items() if key != "generation"},
         )
         result = self._call_with_retries(call, entry, request, output_model)
         if cache_key is not None:

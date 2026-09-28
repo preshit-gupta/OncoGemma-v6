@@ -25,7 +25,7 @@ def test_repo_registry_entries():
     assert isinstance(reg.models["path_foundation"], VertexEndpointModel)
     assert isinstance(reg.models["triage_probe"], LocalArtifactModel)
     assert isinstance(reg.models["gemini_referee"], VertexGenAIModel)
-    assert set(reg.heuristics) == {"od_hyperchromatic_sweep"}
+    assert set(reg.heuristics) == {"od_hyperchromatic_sweep", "morph_verifier"}
 
 
 def test_input_contracts_match_the_models_the_pipeline_calls():

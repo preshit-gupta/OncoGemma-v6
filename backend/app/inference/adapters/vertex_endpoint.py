@@ -45,10 +45,17 @@ def _classify_api_error(exc: GoogleAPICallError) -> Exception:
 class WireFormat(Protocol):
     def instances(self, entry, request: AdapterRequest) -> list[dict[str, Any]]: ...
 
+    def parameters(self, request: AdapterRequest) -> dict[str, Any] | None: ...
+
     def parse(self, predictions: Any, request: AdapterRequest) -> RawResponse: ...
 
 
-class PathFoundationV1:
+class _NoParameters:
+    def parameters(self, request: AdapterRequest) -> dict[str, Any] | None:
+        return None
+
+
+class PathFoundationV1(_NoParameters):
     """Path Foundation: one image per instance, one 384-d ``embedding_vector`` back per instance."""
 
     def instances(self, entry, request: AdapterRequest) -> list[dict[str, Any]]:
@@ -77,7 +84,7 @@ class PathFoundationV1:
         return RawResponse(data={"embeddings": rows})
 
 
-class MedGemmaChatV1:
+class MedGemmaChatV1(_NoParameters):
     """Model Garden vLLM (``pytorch-vllm-serve``) in OpenAI chat-completions form.
 
     Verified against the deployed MedGemma 1.5 4B endpoint on 2026-09-28: images go in as
@@ -124,9 +131,102 @@ class MedGemmaChatV1:
         return RawResponse(text=content)
 
 
+def _image_sizes(request: AdapterRequest) -> list[tuple[int, int]]:
+    sizes = []
+    for image in request.images:
+        with Image.open(io.BytesIO(image.data)) as decoded:
+            sizes.append(decoded.size)
+    return sizes
+
+
+def _point(x: Any, y: Any, prob: Any, size: tuple[int, int], where: str) -> dict[str, float]:
+    try:
+        x, y, prob = float(x), float(y), float(prob)
+    except (TypeError, ValueError) as exc:
+        raise CallRejected(f"{where}: non-numeric detection {x!r}, {y!r}, {prob!r}") from exc
+    width, height = size
+    if not (0 <= x <= width and 0 <= y <= height):
+        raise CallRejected(f"{where}: detection ({x}, {y}) lies outside the {width}x{height} input")
+    return {"x": x, "y": y, "prob": prob}
+
+
+def _per_instance(predictions: Any, request: AdapterRequest) -> list[dict[str, Any]]:
+    if not isinstance(predictions, list) or len(predictions) != len(request.images):
+        count = len(predictions) if isinstance(predictions, list) else type(predictions).__name__
+        raise CallRejected(f"expected {len(request.images)} predictions, got {count}")
+    for index, prediction in enumerate(predictions):
+        if not isinstance(prediction, dict):
+            raise CallRejected(f"prediction {index} is {type(prediction).__name__}, not an object")
+        if prediction.get("error"):
+            raise CallRejected(f"prediction {index}: {prediction['error']}")
+    return predictions
+
+
+class KongNetMidogV1(_NoParameters):
+    """The v5 MIDOG service (legacy request): ``image_bytes`` in, point-like boxes out.
+
+    Each instance carries the threshold as ``confidence_threshold``; each box has a centre
+    (``cx``, ``cy``) and a ``confidence``. The boxes' fixed 48 px size is ignored (SPEC-06 §4).
+    """
+
+    def instances(self, entry, request: AdapterRequest) -> list[dict[str, Any]]:
+        min_prob = request.parameters.get("min_prob")
+        if min_prob is None:
+            raise CallRejected("a KongNet request needs params.min_prob")
+        return [{"image_bytes": _b64(image.data), "confidence_threshold": min_prob} for image in request.images]
+
+    def parse(self, predictions: Any, request: AdapterRequest) -> RawResponse:
+        sizes = _image_sizes(request)
+        detections = []
+        for index, prediction in enumerate(_per_instance(predictions, request)):
+            boxes = prediction.get("boxes")
+            if not isinstance(boxes, list):
+                raise CallRejected(f"prediction {index} has no boxes list")
+            try:
+                detections.append([
+                    _point(box["cx"], box["cy"], box["confidence"], sizes[index], f"prediction {index}")
+                    for box in boxes
+                ])
+            except (KeyError, TypeError) as exc:
+                raise CallRejected(f"prediction {index} has a malformed box: {exc!r}") from exc
+        return RawResponse(data={"detections": detections})
+
+
+class KongNetMidogV2:
+    """The v2 MIDOG service contract (SPEC-06 §4): lossless PNG with its mpp in, points out."""
+
+    def instances(self, entry, request: AdapterRequest) -> list[dict[str, Any]]:
+        if any(image.mpp is None for image in request.images):
+            raise CallRejected("the v2 detector contract needs every image's mpp")
+        return [{"image_png_b64": _b64(image.data), "mpp": image.mpp} for image in request.images]
+
+    def parameters(self, request: AdapterRequest) -> dict[str, Any] | None:
+        min_prob = request.parameters.get("min_prob")
+        if min_prob is None:
+            raise CallRejected("a KongNet request needs params.min_prob")
+        return {"min_prob": min_prob}
+
+    def parse(self, predictions: Any, request: AdapterRequest) -> RawResponse:
+        sizes = _image_sizes(request)
+        detections = []
+        for index, prediction in enumerate(_per_instance(predictions, request)):
+            points = prediction.get("points")
+            if not isinstance(points, list):
+                raise CallRejected(f"prediction {index} has no points list")
+            try:
+                detections.append([
+                    _point(p["x"], p["y"], p["prob"], sizes[index], f"prediction {index}") for p in points
+                ])
+            except (KeyError, TypeError) as exc:
+                raise CallRejected(f"prediction {index} has a malformed point: {exc!r}") from exc
+        return RawResponse(data={"detections": detections})
+
+
 WIRE_FORMATS: dict[str, WireFormat] = {
     "path_foundation_v1": PathFoundationV1(),
     "medgemma_chat_v1": MedGemmaChatV1(),
+    "kongnet_midog_v1": KongNetMidogV1(),
+    "kongnet_midog_v2": KongNetMidogV2(),
 }
 
 
@@ -155,12 +255,13 @@ class VertexEndpointAdapter:
         if codec is None:
             raise CallRejected(f"wire format {entry.wire_format} is not implemented")
         instances = codec.instances(entry, request)
+        parameters = codec.parameters(request)
         try:
             endpoint = self._endpoint(entry)
             if entry.provider == "vertex_endpoint_raw_predict":
-                predictions = self._raw_predict(endpoint, instances, timeout_s)
+                predictions = self._raw_predict(endpoint, instances, parameters, timeout_s)
             else:
-                predictions = endpoint.predict(instances=instances, timeout=timeout_s).predictions
+                predictions = endpoint.predict(instances=instances, parameters=parameters, timeout=timeout_s).predictions
         except GoogleAPICallError as exc:
             raise _classify_api_error(exc) from exc
         except requests.exceptions.Timeout as exc:
@@ -173,9 +274,12 @@ class VertexEndpointAdapter:
         return RawResponse(text=raw.text, data=raw.data, endpoint=f"{entry.region}/{entry.endpoint_id}")
 
     @staticmethod
-    def _raw_predict(endpoint, instances: list[dict[str, Any]], timeout_s: float) -> Any:
+    def _raw_predict(endpoint, instances: list[dict[str, Any]], parameters: dict | None, timeout_s: float) -> Any:
+        body = {"instances": instances}
+        if parameters is not None:
+            body["parameters"] = parameters
         response = endpoint.raw_predict(
-            body=json.dumps({"instances": instances}).encode("utf-8"),
+            body=json.dumps(body).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             timeout=timeout_s,
         )

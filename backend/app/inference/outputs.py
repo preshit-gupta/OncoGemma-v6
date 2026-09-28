@@ -64,3 +64,28 @@ class ClassProbabilities(StrictModel):
     def column(self, label: int | str) -> np.ndarray:
         """The probability of class ``label`` for every row. Unknown labels raise ValueError."""
         return np.asarray([row[self.classes.index(label)] for row in self.probabilities], dtype=np.float32)
+
+
+class DetectionPoint(StrictModel):
+    """A detection centre in the input image's pixel coordinates, with its probability."""
+
+    x: Annotated[float, Field(ge=0)]
+    y: Annotated[float, Field(ge=0)]
+    prob: Probability
+
+
+class DetectionList(StrictModel):
+    """Detector output: one list of points per input image, in request order."""
+
+    detections: list[list[DetectionPoint]]
+
+    @model_validator(mode="after")
+    def _finite(self) -> "DetectionList":
+        for points in self.detections:
+            for point in points:
+                if not (math.isfinite(point.x) and math.isfinite(point.y)):
+                    raise ValueError(f"non-finite detection coordinates {point}")
+        return self
+
+    def decision_output(self) -> dict[str, Any]:
+        return {"points": [[[p.x, p.y, p.prob] for p in points] for points in self.detections]}

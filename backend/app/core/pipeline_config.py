@@ -151,18 +151,15 @@ class QcConfig(StrictModel):
 # --- mitosis.yaml -----------------------------------------------------------
 
 class MitosisDetectorConfig(StrictModel):
-    model_name: NonEmptyStr
-    weights_path: NonEmptyStr
+    # Registry key of the detector; each tile is split into its input-sized patches.
+    producer: RegistryKey
     tile_size_px: PositiveInt
     mpp: Mpp
     tile_size_um: PositiveFloat
     stride_px: PositiveInt
     overlap_px: NonNegativeInt
     det_threshold: Fraction
-    review_threshold: Fraction
     nms_radius_um: PositiveFloat
-    batch_size: PositiveInt
-    fp16: bool
 
     @model_validator(mode="after")
     def _consistent(self) -> "MitosisDetectorConfig":
@@ -171,16 +168,19 @@ class MitosisDetectorConfig(StrictModel):
             math.isclose(self.tile_size_um, self.tile_size_px * self.mpp, rel_tol=1e-6),
             "tile_size_um must equal tile_size_px * mpp",
         )
-        _require(self.det_threshold <= self.review_threshold, "det_threshold must not exceed review_threshold")
         return self
 
 
-class MitosisVerifierConfig(StrictModel):
-    enabled: bool
-    model_name: NonEmptyStr
-    weights_path: NonEmptyStr
-    crop_size_px: PositiveInt
-    ver_threshold: Fraction
+class MitosisRefereeConfig(StrictModel):
+    """The VLM that adjudicates every detected candidate (SPEC-06 arm A2: v5 prompt, strict schema)."""
+
+    producer: RegistryKey
+    prompt: PromptFileName
+    # Image 1: a focus_px square at the slide's own resolution around the candidate.
+    focus_px: PositiveInt
+    # Image 2: a context_um square around it, resampled to context_px.
+    context_um: PositiveFloat
+    context_px: PositiveInt
 
 
 class MitosisHpfConfig(StrictModel):
@@ -189,6 +189,8 @@ class MitosisHpfConfig(StrictModel):
     density_grid_res_um: PositiveFloat
     min_separation_um: PositiveFloat
     relaxed_min_separation_um: PositiveFloat
+    # Minimum tissue fraction inside a placed HPF.
+    min_tissue_coverage: Fraction
 
     @model_validator(mode="after")
     def _non_overlapping(self) -> "MitosisHpfConfig":
@@ -219,16 +221,11 @@ class MitosisScoringConfig(StrictModel):
     classic_area_mm2: PositiveFloat
 
 
-class MitosisMockConfig(StrictModel):
-    use_mock_detector: bool
-
-
 class MitosisConfig(StrictModel):
     detector: MitosisDetectorConfig
-    verifier: MitosisVerifierConfig
+    referee: MitosisRefereeConfig
     hpf: MitosisHpfConfig
     scoring: MitosisScoringConfig
-    mock: MitosisMockConfig
 
 
 # --- scoring.yaml -----------------------------------------------------------
@@ -376,7 +373,35 @@ class PipelineConfig(StrictModel):
             "mitosis.yaml hpf and scoring.yaml hpf must have the same radius_um and count",
         )
         self._triage_models_exist()
+        self._mitosis_models_exist()
         return self
+
+    def _mitosis_models_exist(self) -> None:
+        models, detector, referee = self.models.models, self.mitosis.detector, self.mitosis.referee
+        entry = models.get(detector.producer)
+        contract = getattr(entry, "input", None)
+        _require(
+            entry is not None and entry.kind == "detector" and contract is not None and hasattr(contract, "size_px"),
+            f"mitosis.yaml detector.producer {detector.producer!r} must be a detector with an image input contract",
+        )
+        patch_w, patch_h = contract.size_px
+        _require(
+            patch_w == patch_h and detector.tile_size_px % patch_w == 0,
+            f"mitosis.yaml detector.tile_size_px must be a multiple of the detector's {contract.size_px} input",
+        )
+        _require(
+            math.isclose(detector.mpp, contract.mpp),
+            f"mitosis.yaml detector.mpp {detector.mpp} must equal the detector's input mpp {contract.mpp}",
+        )
+        vlm = models.get(referee.producer)
+        _require(
+            vlm is not None and vlm.kind == "vlm",
+            f"mitosis.yaml referee.producer {referee.producer!r} must be a VLM in models.yaml",
+        )
+        _require(
+            referee.prompt in self.prompts,
+            f"mitosis.yaml referee.prompt {referee.prompt!r} is not in configs/prompts",
+        )
 
     def _triage_models_exist(self) -> None:
         models, triage = self.models.models, self.triage

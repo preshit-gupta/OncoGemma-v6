@@ -170,6 +170,26 @@ def test_triage_models_must_exist_in_the_registry(tmp_path, edit, message):
         load(configs)
 
 
+@pytest.mark.parametrize(
+    "edit, message",
+    [
+        (lambda d: d["detector"].update(producer="medgemma"), "must be a detector with an image input contract"),
+        (lambda d: d["detector"].update(tile_size_px=768, stride_px=704, tile_size_um=192.0),
+         "must be a multiple of the detector's"),
+        (lambda d: d["detector"].update(mpp=0.5, tile_size_um=512.0), "must equal the detector's input mpp 0.25"),
+        (lambda d: d["referee"].update(producer="kongnet_det_midog_1"), "must be a VLM"),
+        (lambda d: d["referee"].update(prompt="mitosis_referee@v2.md"), "is not in configs/prompts"),
+        (lambda d: d.update(verifier={"enabled": True}), "verifier"),
+        (lambda d: d["hpf"].update(min_tissue_coverage=1.5), "min_tissue_coverage"),
+    ],
+)
+def test_mitosis_models_must_exist_in_the_registry(tmp_path, edit, message):
+    configs = copy_configs(tmp_path)
+    edit_yaml(configs / "mitosis.yaml", edit)
+    with pytest.raises(ConfigLoadError, match=message):
+        load(configs)
+
+
 def test_duplicate_yaml_key_is_rejected(tmp_path):
     configs = copy_configs(tmp_path)
     text = (configs / "triage.yaml").read_text(encoding="utf-8")

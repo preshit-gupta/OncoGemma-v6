@@ -29,6 +29,10 @@ class FakeOpenSlide:
         rgb[:] = GLASS
         rgb[in_tissue] = STROMA
         rgb[in_tissue & nucleus] = NUCLEUS
+        # A position hash keeps regions distinct: a periodic slide would make every tile and
+        # crop identical, and the gateway cache would answer them all from the first call.
+        texture = ((xs.astype(np.int64) * 73856093) ^ (ys.astype(np.int64) * 19349663)) % 9
+        rgb[in_tissue] -= texture[in_tissue].astype(np.uint8)[:, None]
         return rgb
 
     def read_region(self, location, level, size):

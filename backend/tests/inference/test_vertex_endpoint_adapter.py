@@ -36,7 +36,8 @@ class FakeEndpoint:
         self._predict, self._raw = predict, raw
         self.predict_calls, self.raw_calls = [], []
 
-    def predict(self, instances, timeout=None):
+    def predict(self, instances, parameters=None, timeout=None):
+        assert parameters is None, "Path Foundation and MedGemma send no parameters"
         self.predict_calls.append((instances, timeout))
         if isinstance(self._predict, BaseException):
             raise self._predict
@@ -222,6 +223,7 @@ def test_predict_failures_are_classified(failure, expected):
 def test_unimplemented_wire_format_is_rejected_before_any_call():
     created = []
     adapter = VertexEndpointAdapter("p", endpoint_factory=lambda *args: created.append(args))
-    with pytest.raises(CallRejected, match="kongnet_midog_v1 is not implemented"):
-        adapter.call(entry("kongnet_det_midog_1"), AdapterRequest("kongnet_det_midog_1"), 60.0)
+    unknown = entry("kongnet_det_midog_1").model_copy(update={"wire_format": "yolo_v8"})
+    with pytest.raises(CallRejected, match="yolo_v8 is not implemented"):
+        adapter.call(unknown, AdapterRequest("kongnet_det_midog_1"), 60.0)
     assert created == []

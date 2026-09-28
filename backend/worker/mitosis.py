@@ -1,11 +1,22 @@
+"""
+Stage 4 worker: mitosis candidate detection, VLM adjudication and virtual HPF selection.
+
+Both models run through the gateway (SPEC-01 §3.4): the detector sweeps 1024 px tiles over
+the confirmed hotspots in its 512 px input patches, and the configured VLM adjudicates every
+candidate with a strict MitosisVerdict. Each call is a DecisionRecord, and each detection's
+label names the producer that decided it. A detector or referee failure fails the stage
+unless configs/fallbacks.yaml allows the referee's in a clinical run; then the candidate
+stays unreviewed and needs a human (SPEC-01 §3.6, §3.9).
+"""
 import os
 import io
 import json
-import yaml
 import tempfile
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Tuple
 import numpy as np
+import openslide
 from PIL import Image
 from sqlalchemy import select, delete, not_
 from sqlalchemy.orm import Session
@@ -19,54 +30,64 @@ from app.core.gcs import (
     resolve_slide_raw_uri
 )
 from app.core.openslide_lock import OPENSLIDE_GLOBAL_LOCK
+from app.core.tasks import EntityType, Task
+from app.inference.batching import plan_batches
+from app.inference.gateway import EntityRef, FallbackResult, ImageInput, InputSpec, ModelInputs
+from app.inference.outputs import DetectionList
+from app.inference.schemas import MitosisVerdict
 from app.models.case import Case
 from app.models.slide import Slide
 from app.models.hotspot import Hotspot
 from app.models.detection import Detection
 from app.models.hpf_site import HpfSite
 from app.models.audit import AuditEvent
-from pipeline.detect import YoloMitosisDetector, apply_global_nms, enumerate_hotspot_tiles
-from pipeline.verify import HoVerNetMitosisVerifier, create_dual_magnification_composite
-from pipeline.medgemma import MedGemmaClient
+from pipeline.detect import apply_global_nms, enumerate_hotspot_tiles
+from pipeline.errors import SlideReadError
+from pipeline.verify import mitosis_referee_images
 from pipeline.hpf import generate_mitosis_density_map, greedy_place_hpfs
 from pipeline.scoring import calculate_hpf_mitosis_counts, compute_nottingham_mitotic_score
+from worker.runtime import StageRuntime
+
+# Detection label for each referee verdict. EQUIVOCAL is never counted (SPEC-06 §5.6).
+LABEL_FOR_VERDICT = {
+    "MITOTIC_FIGURE": "mitosis",
+    "NOT_MITOTIC_FIGURE": "not_mitosis",
+    "EQUIVOCAL": "unreviewed",
+}
+# Concurrent gateway calls for the tile sweep and the referee, as v5 ran them.
+MODEL_CALL_THREADS = 4
 
 
-def load_mitosis_config() -> Dict[str, Any]:
-    """Loads configs/mitosis.yaml."""
-    cfg_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../configs/mitosis.yaml"))
-    if os.path.exists(cfg_path):
-        with open(cfg_path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f)
-    return {}
+def _read_rgb(openslide_slide, location, size) -> Image.Image:
+    try:
+        with OPENSLIDE_GLOBAL_LOCK:
+            return openslide_slide.read_region(location, 0, size).convert("RGB")
+    except openslide.OpenSlideError as exc:
+        raise SlideReadError(f"could not read {size} px at {location}: {exc}") from exc
 
 
-def run_mitosis(stage_exec: Any, db: Session) -> Tuple[str, Dict[str, str]]:
+def _png(image: Image.Image) -> bytes:
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[str, Dict[str, str]]:
     """
     Executes Stage 4 (Mitosis Detection & Virtual HPF Selection).
     """
-    if hasattr(stage_exec, "case_id"):
-        raw_case_id = stage_exec.case_id
-    elif hasattr(stage_exec, "id"):
-        raw_case_id = stage_exec.id
-    else:
-        raw_case_id = stage_exec
+    config = runtime.config
+    mitosis_cfg = config.mitosis
+    det_cfg, referee_cfg, hpf_cfg = mitosis_cfg.detector, mitosis_cfg.referee, mitosis_cfg.hpf
+    registry = config.models
+    gateway, ctx = runtime.gateway, runtime.ctx
+    detector_entry = registry.models[det_cfg.producer]
 
+    raw_case_id = stage_exec.case_id
     case_id = str(raw_case_id)
     print(f"[Worker:Mitosis] Starting Stage 4 for case {case_id}...")
 
-    case_obj = None
-    if isinstance(stage_exec, Case):
-        case_obj = stage_exec
-    else:
-        case_obj = db.get(Case, raw_case_id)
-        if not case_obj:
-            import uuid
-            try:
-                case_obj = db.get(Case, uuid.UUID(case_id))
-            except Exception:
-                pass
-
+    case_obj = db.get(Case, raw_case_id)
     if not case_obj:
         raise ValueError(f"Case {case_id} not found in database.")
 
@@ -78,83 +99,38 @@ def run_mitosis(stage_exec: Any, db: Session) -> Tuple[str, Dict[str, str]]:
     slide_id = str(slide_obj.id)
     if not getattr(slide_obj, "mpp_x", None) or slide_obj.mpp_x <= 0 or not getattr(slide_obj, "mpp_y", None) or slide_obj.mpp_y <= 0:
         raise ValueError(f"Slide {slide_id} is missing valid MPP (status='needs_mpp'). Cannot execute mitosis stage.")
+    if not slide_obj.width_px or not slide_obj.height_px:
+        raise ValueError(f"Slide {slide_id} has no pixel dimensions; ingest must record them before mitosis.")
 
     mpp_x = float(slide_obj.mpp_x)
     mpp_y = float(slide_obj.mpp_y)
-    width_px = int(getattr(slide_obj, "width_px", 20000) or 20000)
-    height_px = int(getattr(slide_obj, "height_px", 20000) or 20000)
+    width_px = int(slide_obj.width_px)
+    height_px = int(slide_obj.height_px)
 
-    cfg = load_mitosis_config()
-    det_cfg = cfg.get("detector", {})
-    ver_cfg = cfg.get("verifier", {})
-    hpf_cfg = cfg.get("hpf", {})
+    tile_size_px = det_cfg.tile_size_px
+    stride_px = det_cfg.stride_px
+    patch_px = detector_entry.input.size_px[0]
+    radius_um = hpf_cfg.radius_um
+    hpf_count = hpf_cfg.count
 
-    tile_size_px = det_cfg.get("tile_size_px", 1024)
-    stride_px = det_cfg.get("stride_px", 960)
-    det_thresh = float(det_cfg.get("det_threshold", 0.35))
-    review_thresh = float(det_cfg.get("review_threshold", 0.40))
-    ver_thresh = float(ver_cfg.get("ver_threshold", 0.70))
-    nms_radius_um = float(det_cfg.get("nms_radius_um", 20.0))
-    crop_size_px = ver_cfg.get("crop_size_px", 128)
-    radius_um = float(hpf_cfg.get("radius_um", 262.0))
-    hpf_count = int(hpf_cfg.get("count", 10))
-
-    # Fetch confirmed hotspots from DB or triage artifact
+    # Hotspots come from the pathologist-confirmed triage in the database only (SPEC-06 §9).
     hotspot_rows = db.scalars(
         select(Hotspot).where(
             Hotspot.case_id == case_obj.id,
             Hotspot.excluded == False
         )
     ).all()
-
-    hotspots = []
-    if hotspot_rows:
-        for r in hotspot_rows:
-            hotspots.append({
-                "id": r.id,
-                "polygon_um": r.polygon_um,
-                "area_mm2": r.area_mm2,
-                "prob_mean": r.prob_mean,
-                "prob_max": r.prob_max,
-                "source": r.source
-            })
-
-    # Fallback to triage artifact if no confirmed hotspots found in DB (#580, #700)
-    if not hotspots:
-        try:
-            t_bytes = download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_id}/triage/output.json")
-            t_data = json.loads(t_bytes.decode("utf-8"))
-            raw_hotspots = t_data.get("hotspots", [])
-            for hs in raw_hotspots:
-                if not hs.get("excluded", False):
-                    hotspots.append({
-                        "id": hs["id"],
-                        "polygon_um": hs["polygon_um"],
-                        "area_mm2": hs.get("area_mm2"),
-                        "prob_mean": hs.get("prob_mean"),
-                        "prob_max": hs.get("prob_max"),
-                        "source": hs.get("source", "model")
-                    })
-                    # Also persist to DB so downstream stages and queries find them
-                    db_hs = Hotspot(
-                        id=hs["id"],
-                        case_id=case_obj.id,
-                        stage_execution_id=stage_exec.id,
-                        polygon_um=hs["polygon_um"],
-                        area_mm2=hs.get("area_mm2"),
-                        prob_mean=hs.get("prob_mean"),
-                        prob_max=hs.get("prob_max"),
-                        source=hs.get("source", "model"),
-                        excluded=False,
-                        exclude_reason=None
-                    )
-                    db.merge(db_hs)
-            if hotspots:
-                db.commit()
-                print(f"[Worker:Mitosis] Recovered {len(hotspots)} hotspots from GCS triage artifact and synced to DB")
-        except Exception as ge:
-            print(f"[Worker:Mitosis Note] Failed to load hotspots from GCS triage artifact: {ge}")
-
+    hotspots = [
+        {
+            "id": r.id,
+            "polygon_um": r.polygon_um,
+            "area_mm2": r.area_mm2,
+            "prob_mean": r.prob_mean,
+            "prob_max": r.prob_max,
+            "source": r.source
+        }
+        for r in hotspot_rows
+    ]
     if not hotspots:
         raise ValueError(
             f"No confirmed tumor hotspots found for case {case_id}. "
@@ -162,6 +138,7 @@ def run_mitosis(stage_exec: Any, db: Session) -> Tuple[str, Dict[str, str]]:
         )
 
     scratch_dir = tempfile.mkdtemp(prefix="og_mitosis_")
+    openslide_slide = None
 
     try:
 
@@ -180,38 +157,21 @@ def run_mitosis(stage_exec: Any, db: Session) -> Tuple[str, Dict[str, str]]:
         hotspots.sort(key=lambda h: (h.get("prob_mean") or 0.0), reverse=True)
         print(f"[Worker:Mitosis] Prioritized {len(hotspots)} confirmed hotspots by cellular density: {[h['id'] for h in hotspots]}")
 
-        # Initialize detectors & verifiers with weights from config
-        det_weights = det_cfg.get("weights_path")
-        ver_weights = ver_cfg.get("weights_path")
-        detector = YoloMitosisDetector(
-            weights_path=det_weights,
-            conf_threshold=det_thresh
-        )
-        verifier = HoVerNetMitosisVerifier(weights_path=ver_weights, threshold=ver_thresh)
-
         # Download raw slide from GCS to transient scratch file for tile & crop sampling
         gcs_uri_original = resolve_slide_raw_uri(case_id, slide_obj) or slide_obj.gcs_uri_original or f"gs://{settings.GCS_RAW_BUCKET}/cases/{case_id}/{slide_id}.svs"
         raw_bucket_name, blob_name = parse_gcs_uri(gcs_uri_original)
         ext = os.path.splitext(blob_name)[1] or ".svs"
         local_slide_path = os.path.join(scratch_dir, f"slide{ext}")
 
-        openslide_slide = None
         try:
             download_blob_to_filename(raw_bucket_name, blob_name, local_slide_path)
-            if os.path.exists(local_slide_path):
-                import openslide
-                with OPENSLIDE_GLOBAL_LOCK:
-                    openslide_slide = openslide.OpenSlide(local_slide_path)
-                    print(f"[Worker:Mitosis] Successfully opened SVS slide with OpenSlide from GCS {blob_name}")
-        except Exception as e:
-            print(f"[Worker:Mitosis Error] Could not open slide with OpenSlide: {e}")
-            raise RuntimeError(f"Could not open slide for case {case_id} ({raw_bucket_name}/{blob_name}): {e}") from e
-
-        if openslide_slide is None:
-            raise RuntimeError(f"Could not open authentic gigapixel slide for case {case_id} ({raw_bucket_name}/{blob_name}). Aborting Stage 4 to prevent synthetic mock generation.")
+            with OPENSLIDE_GLOBAL_LOCK:
+                openslide_slide = openslide.OpenSlide(local_slide_path)
+        except (openslide.OpenSlideError, OSError) as exc:
+            raise SlideReadError(f"could not open slide {gcs_uri_original} for case {case_id}: {exc}") from exc
 
         # Fallback to OpenSlide thumbnail tissue mask if GCS mask was not found
-        if tissue_mask is None and openslide_slide is not None:
+        if tissue_mask is None:
             try:
                 with OPENSLIDE_GLOBAL_LOCK:
                     thumb = openslide_slide.get_thumbnail((512, 512)).convert("RGB")
@@ -222,16 +182,11 @@ def run_mitosis(stage_exec: Any, db: Session) -> Tuple[str, Dict[str, str]]:
             except Exception as te:
                 print(f"[Worker:Mitosis Note] Thumbnail fallback note: {te}")
 
-        raw_candidates = []
-        cand_seq = 1
-
         # Enumerate all candidate tiles across confirmed hotspots, skipping empty glass
-        from concurrent.futures import ThreadPoolExecutor
         all_tiles_to_sweep = []
         for hs in hotspots:
-            poly_um = hs["polygon_um"]
             hs_tiles = enumerate_hotspot_tiles(
-                poly_um,
+                hs["polygon_um"],
                 tile_size_px=tile_size_px,
                 mpp=mpp_x,
                 stride_px=stride_px,
@@ -243,41 +198,64 @@ def run_mitosis(stage_exec: Any, db: Session) -> Tuple[str, Dict[str, str]]:
                 t["hotspot_id"] = hs["id"]
             all_tiles_to_sweep.extend(hs_tiles)
 
-        print(f"[Worker:Mitosis] Sweeping {len(all_tiles_to_sweep)} tiles across {len(hotspots)} hotspots concurrently with 4 workers...")
+        print(f"[Worker:Mitosis] Sweeping {len(all_tiles_to_sweep)} tiles across {len(hotspots)} hotspots with {MODEL_CALL_THREADS} workers...")
 
-        def _sweep_single_tile(tile):
+        # Tiles are read at the slide's own resolution; the gateway refuses one outside the
+        # detector's input contract (SPEC-01 AC5) instead of sending it unresampled.
+        patch_spec = InputSpec(mpp=mpp_x, size_px=(patch_px, patch_px), color="raw", format="png")
+        limits = detector_entry.limits
+
+        def _sweep_single_tile(n_tile_and_tile):
+            n_tile, tile = n_tile_and_tile
             tx_um, ty_um = tile["origin_um"]
             tx_px, ty_px = tile["origin_px"]
-            tile_rgb = None
-            if openslide_slide is not None:
-                try:
-                    with OPENSLIDE_GLOBAL_LOCK:
-                        tile_pil = openslide_slide.read_region((tx_px, ty_px), 0, (tile_size_px, tile_size_px)).convert("RGB")
-                        tile_rgb = np.array(tile_pil)
-                except Exception as e:
-                    print(f"[Worker:Mitosis] OpenSlide read_region error at ({tx_px}, {ty_px}): {e}")
+            tile_img = _read_rgb(openslide_slide, (tx_px, ty_px), (tile_size_px, tile_size_px))
+            offsets = [(ox, oy) for oy in range(0, tile_size_px, patch_px) for ox in range(0, tile_size_px, patch_px)]
+            patches = [
+                ImageInput(_png(tile_img.crop((ox, oy, ox + patch_px, oy + patch_px))), patch_spec)
+                for ox, oy in offsets
+            ]
+            patch_ids = [f"t{n_tile:04d}_{ox}_{oy}" for ox, oy in offsets]
+            found = []
+            for batch in plan_batches([len(p.data) for p in patches], limits.max_batch, limits.max_request_bytes):
+                result = gateway.invoke(
+                    Task.MITOSIS_DETECT,
+                    det_cfg.producer,
+                    ModelInputs(images=tuple(patches[i] for i in batch)),
+                    ctx,
+                    EntityRef(EntityType.TILE_BATCH, f"{patch_ids[batch[0]]}_b{len(batch)}", ids=tuple(patch_ids[i] for i in batch)),
+                    DetectionList,
+                    params={"min_prob": det_cfg.det_threshold},
+                )
+                if len(result.output.detections) != len(batch):
+                    raise ValueError(f"{det_cfg.producer} returned {len(result.output.detections)} point lists for {len(batch)} patches")
+                for i, points in zip(batch, result.output.detections):
+                    ox, oy = offsets[i]
+                    for point in points:
+                        if point.prob < det_cfg.det_threshold:
+                            continue
+                        found.append((
+                            tx_um + (ox + point.x) * mpp_x,
+                            ty_um + (oy + point.y) * mpp_y,
+                            float(point.prob),
+                            tile["hotspot_id"],
+                            str(result.record_id),
+                        ))
+            return found
 
-            if tile_rgb is None:
-                return []
+        with ThreadPoolExecutor(max_workers=MODEL_CALL_THREADS) as pool:
+            sweep_results = list(pool.map(_sweep_single_tile, enumerate(all_tiles_to_sweep)))
 
-            tile_preds = detector.detect(tile_rgb)
-            res = []
-            for cx_px, cy_px, det_conf in tile_preds:
-                cand_cx_um = tx_um + (cx_px * mpp_x)
-                cand_cy_um = ty_um + (cy_px * mpp_y)
-                res.append((cand_cx_um, cand_cy_um, float(det_conf), tile["hotspot_id"]))
-            return res
-
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            sweep_results = list(pool.map(_sweep_single_tile, all_tiles_to_sweep))
-
+        raw_candidates = []
+        cand_seq = 1
         for tile_cands in sweep_results:
-            for cand_cx_um, cand_cy_um, det_conf, hs_id in tile_cands:
+            for cand_cx_um, cand_cy_um, det_conf, hs_id, record_id in tile_cands:
                 raw_candidates.append({
                     "id": f"m_{cand_seq:04d}",
                     "hotspot_id": hs_id,
                     "centroid_um": [float(cand_cx_um), float(cand_cy_um)],
                     "det_conf": float(det_conf),
+                    "det_record_id": record_id,
                     "ver_conf": None,
                     "label": "unreviewed",
                     "label_source": "model"
@@ -285,169 +263,64 @@ def run_mitosis(stage_exec: Any, db: Session) -> Tuple[str, Dict[str, str]]:
                 cand_seq += 1
 
         # Cross-tile Global Physical NMS
-        candidates = apply_global_nms(raw_candidates, nms_radius_um=nms_radius_um)
-        print(f"[Worker:Mitosis] Detected {len(raw_candidates)} candidates -> {len(candidates)} after {nms_radius_um}um NMS.")
+        candidates = apply_global_nms(raw_candidates, nms_radius_um=det_cfg.nms_radius_um)
+        print(f"[Worker:Mitosis] Detected {len(raw_candidates)} candidates -> {len(candidates)} after {det_cfg.nms_radius_um}um NMS.")
 
-        # Retain all candidates for Multimodal Referee adjudication without artificial ceiling (User directive: no ceiling)
-        print(f"[Worker:Mitosis] Retaining all {len(candidates)} candidates for Multimodal Referee evaluation without ceiling.")
-
-        # Second-Pass Verification & Crop Extraction (128x128 @ 0.25 um/px)
-        medgemma_client = MedGemmaClient()
-        half_crop_px = crop_size_px // 2
+        # Referee inputs are read sequentially under the OpenSlide lock; the calls run concurrently.
         for cand in candidates:
             cx_um, cy_um = cand["centroid_um"]
-            cx_px = int(cx_um / mpp_x)
-            cy_px = int(cy_um / mpp_y)
+            focus, context = mitosis_referee_images(
+                openslide_slide, int(cx_um / mpp_x), int(cy_um / mpp_y), mpp_x,
+                referee_cfg.focus_px, referee_cfg.context_um, referee_cfg.context_px,
+            )
+            cand["_referee_images"] = (focus, context)
+            cand["crop_uri"] = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/mitosis/crops/{cand['id']}.png"
+            cand["crop_orig_uri"] = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/mitosis/crops/{cand['id']}_orig.png"
 
-            crop_rgb = None
-            if openslide_slide is not None:
-                try:
-                    top_left_x = max(0, min(max(0, width_px - crop_size_px), cx_px - half_crop_px))
-                    top_left_y = max(0, min(max(0, height_px - crop_size_px), cy_px - half_crop_px))
-                    with OPENSLIDE_GLOBAL_LOCK:
-                        raw_crop = openslide_slide.read_region((top_left_x, top_left_y), 0, (crop_size_px, crop_size_px))
-                        if raw_crop.mode in ("RGBA", "LA") or (raw_crop.mode == "P" and "transparency" in raw_crop.info):
-                            canvas = Image.new("RGB", raw_crop.size, (255, 255, 255))
-                            canvas.paste(raw_crop, mask=raw_crop.split()[-1] if raw_crop.mode in ("RGBA", "LA") else None)
-                            crop_pil = canvas
-                        else:
-                            crop_pil = raw_crop.convert("RGB")
-                        crop_rgb = np.array(crop_pil)
-                except Exception as e:
-                    print(f"[Worker:Mitosis] Crop extraction error for {cand['id']}: {e}")
-
-            if crop_rgb is None:
-                print(f"[Worker:Mitosis Warning] Skipping candidate {cand['id']} - could not extract optical crop from slide")
-                continue
-
-            # Run nuclear instance verification (HoVer-Net if weights loaded, or van Diest morphometrics)
-            ver_enabled = ver_cfg.get("enabled", True)
-            ver_conf, contour = verifier.verify(crop_rgb) if ver_enabled else (0.50, None)
-            cand["ver_conf"] = float(ver_conf)
-            if contour:
-                cand["contour"] = contour
-
-            det_c = float(cand.get("det_conf") or 0.0)
-            ver_c = float(ver_conf)
-
-            # Strict van Diest morphological gating:
-            # Candidates scoring ver_conf < 0.35 failed physical mitotic criteria
-            # (intact nuclear envelope, high circularity, smooth boundary, or apoptotic halo)
-            if ver_c < 0.35:
-                cand["label"] = "not_mitosis"
-                cand["label_source"] = "verifier_rejected_morphology"
-            elif ver_c >= ver_thresh and det_c >= 0.50:
-                cand["label"] = "mitosis"
-                cand["label_source"] = "verifier_confirmed"
-            elif ver_c >= review_thresh:
+        def _adjudicate(cand):
+            result = gateway.invoke_or_fallback(
+                Task.MITOSIS_REFEREE,
+                referee_cfg.producer,
+                ModelInputs(images=cand["_referee_images"], prompt_id=referee_cfg.prompt),
+                ctx,
+                EntityRef(EntityType.CANDIDATE, cand["id"]),
+                MitosisVerdict,
+            )
+            cand["referee_record_id"] = str(result.record_id)
+            if isinstance(result, FallbackResult):
                 cand["label"] = "unreviewed"
-                cand["label_source"] = "candidate_sweep"
+                cand["label_source"] = "referee_unavailable"
+                cand["needs_human"] = True
+                cand["vlm"] = None
+                cand["medgemma_verdict"] = None
+                cand["medgemma_rationale"] = None
             else:
-                cand["label"] = "not_mitosis"
-                cand["label_source"] = "verifier_rejected_morphology"
-
-            # Prepare 128x128 crop PNGs for concurrent GCS upload
-            crop_id = cand["id"]
-            crop_pil = Image.fromarray(crop_rgb)
-            crop_buf = io.BytesIO()
-            crop_pil.save(crop_buf, format="PNG")
-            crop_bytes = crop_buf.getvalue()
-
-            cand["_crop_bytes"] = crop_bytes
-            cand["crop_uri"] = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/mitosis/crops/{crop_id}.png"
-            cand["crop_orig_uri"] = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/mitosis/crops/{crop_id}_orig.png"
-
-            cand["medgemma_verdict"] = None
-            cand["medgemma_rationale"] = None
+                verdict = result.output
+                cand["label"] = LABEL_FOR_VERDICT[verdict.verdict]
+                cand["label_source"] = f"referee:{result.producer_id}"
+                cand["needs_human"] = False
+                cand["vlm"] = {**verdict.model_dump(mode="json"), "rule_override": False}
+                cand["medgemma_verdict"] = verdict.verdict
+                cand["medgemma_rationale"] = verdict.rationale
             cand["medgemma_confidence"] = None
 
-        # Multimodal Referee Cross-Check (Concurrent via ThreadPoolExecutor)
-        from concurrent.futures import ThreadPoolExecutor
+        if candidates:
+            print(f"[Worker:Mitosis] Adjudicating {len(candidates)} candidates via {referee_cfg.producer} with {MODEL_CALL_THREADS} worker threads...")
+            with ThreadPoolExecutor(max_workers=MODEL_CALL_THREADS) as pool:
+                list(pool.map(_adjudicate, candidates))
 
-        # Every candidate passes through the Multimodal Referee (Gemini / MedGemma)
-        # No candidate is left unrefereed
-        candidates_to_referee = list(candidates)
-        candidates_to_referee.sort(key=lambda c: float(c.get("det_conf") or 0.0), reverse=True)
+        # Post-referee physical NMS to eliminate any residual coinciding/overlapping detections
+        candidates = apply_global_nms(candidates, nms_radius_um=det_cfg.nms_radius_um)
+        print(f"[Worker:Mitosis] Retained {len(candidates)} spatially distinct candidates after refereeing and {det_cfg.nms_radius_um}um NMS.")
 
-        # Pre-extract dual-magnification views sequentially under OpenSlide lock
-        # This completely eliminates lock contention and LANCZOS overhead across concurrent threads!
-        if openslide_slide is not None:
-            for c_item in candidates_to_referee:
-                try:
-                    cx_um, cy_um = c_item["centroid_um"]
-                    cx_px = int(cx_um / mpp_x)
-                    cy_px = int(cy_um / mpp_y)
-                    f_b, c_b = create_dual_magnification_composite(openslide_slide, cx_px, cy_px, mpp_x)
-                    if f_b:
-                        c_item["_crop_bytes"] = f_b
-                    c_item["_context_bytes"] = c_b
-                except Exception as ce:
-                    print(f"[Worker:Mitosis] Dual-mag pre-extraction note for {c_item['id']}: {ce}")
-
-        def _evaluate_single_referee(c_item):
-            c_id = c_item["id"]
-            f_crop_b = c_item.get("_crop_bytes")
-            ctx_b = c_item.get("_context_bytes")
-
-            try:
-                mg_resp = medgemma_client.evaluate_mitosis_confirmation_sync(f_crop_b, ctx_b)
-                c_item["medgemma_verdict"] = mg_resp.verdict
-                c_item["medgemma_rationale"] = mg_resp.rationale
-                c_item["medgemma_confidence"] = mg_resp.confidence
-
-                referee_src = "gemini_referee" if getattr(settings, "USE_GEMINI_FLASH_REFEREE", True) else "medgemma"
-                if mg_resp.verdict == "CONFIRMED":
-                    c_item["label"] = "mitosis"
-                    c_item["label_source"] = f"{referee_src}_confirmed"
-                    c_item["ver_conf"] = max(c_item.get("ver_conf") or 0.5, 0.90)
-                elif mg_resp.verdict in ("REJECTED_APOPTOSIS", "REJECTED_LYMPHOCYTE", "REJECTED_RESTING_NUCLEUS"):
-                    c_item["label"] = "not_mitosis"
-                    c_item["label_source"] = f"{referee_src}_{mg_resp.verdict.lower()}"
-                    c_item["ver_conf"] = min(c_item.get("ver_conf") or 0.5, 0.10)
-                else: # EQUIVOCAL
-                    c_item["label"] = "unreviewed"
-                    c_item["label_source"] = f"{referee_src}_equivocal"
-            except Exception as mge:
-                print(f"[Worker:Mitosis] Referee note for {c_id}: {mge}")
-
-        if candidates_to_referee:
-            ref_model_name = getattr(settings, "GEMINI_REFEREE_MODEL", "gemini-2.5-flash")
-            print(f"[Worker:Mitosis] Adjudicating {len(candidates_to_referee)} candidates via Multimodal Referee ({ref_model_name}) with 4 worker threads...")
-            with ThreadPoolExecutor(max_workers=4) as pool:
-                list(pool.map(_evaluate_single_referee, candidates_to_referee))
-
-        # Ensure any unrefereed candidate NEVER blindly retains a "mitosis" label unless verifier explicitly confirmed it
-        refereed_ids = {c["id"] for c in candidates_to_referee}
-        for c in candidates:
-            if c["id"] not in refereed_ids:
-                if c.get("label") == "mitosis" and c.get("label_source") != "verifier_confirmed":
-                    c["label"] = "unreviewed"
-                    c["label_source"] = "unreviewed_candidate"
-
-        # Clean temporary composite/context bytes from all candidates
-        for c_item in candidates:
-            c_item.pop("_composite_bytes", None)
-            c_item.pop("_context_bytes", None)
-
-        # Post-referee physical NMS (20 um) to eliminate any residual coinciding/overlapping detections
-        candidates = apply_global_nms(candidates, nms_radius_um=nms_radius_um)
-        print(f"[Worker:Mitosis] Retained {len(candidates)} spatially distinct candidates after MedGemma refereeing and 20um NMS.")
-
-        # Concurrently upload all crop PNGs to GCS
+        # Upload each candidate's focus crop
         def _upload_single_crop(c_item):
-            c_id = c_item["id"]
-            c_data = c_item.pop("_crop_bytes", None)
-            if c_data:
+            focus, _ = c_item.pop("_referee_images")
+            for suffix in ("", "_orig"):
                 upload_blob_from_bytes(
                     settings.GCS_ARTIFACTS_BUCKET,
-                    f"cases/{case_id}/mitosis/crops/{c_id}.png",
-                    c_data,
-                    "image/png"
-                )
-                upload_blob_from_bytes(
-                    settings.GCS_ARTIFACTS_BUCKET,
-                    f"cases/{case_id}/mitosis/crops/{c_id}_orig.png",
-                    c_data,
+                    f"cases/{case_id}/mitosis/crops/{c_item['id']}{suffix}.png",
+                    focus.data,
                     "image/png"
                 )
 
@@ -463,7 +336,7 @@ def run_mitosis(stage_exec: Any, db: Session) -> Tuple[str, Dict[str, str]]:
         density_map, grid_meta = generate_mitosis_density_map(
             candidates,
             bounding_box_um=bbox_um,
-            grid_res_um=float(hpf_cfg.get("density_grid_res_um", 16.0)),
+            grid_res_um=hpf_cfg.density_grid_res_um,
             radius_um=radius_um
         )
 
@@ -476,11 +349,11 @@ def run_mitosis(stage_exec: Any, db: Session) -> Tuple[str, Dict[str, str]]:
             hotspot_polygons_um=hotspot_polys,
             count=hpf_count,
             radius_um=radius_um,
-            min_separation_um=float(hpf_cfg.get("min_separation_um", 524.0)),
-            relaxed_min_separation_um=float(hpf_cfg.get("relaxed_min_separation_um", 393.0)),
+            min_separation_um=hpf_cfg.min_separation_um,
+            relaxed_min_separation_um=hpf_cfg.relaxed_min_separation_um,
             tissue_mask=tissue_mask,
             slide_dimensions_um=slide_dimensions_um,
-            min_tissue_coverage=float(hpf_cfg.get("min_tissue_coverage", 0.70)),
+            min_tissue_coverage=hpf_cfg.min_tissue_coverage,
             hotspot_priorities=hotspot_prios
         )
 
@@ -498,7 +371,7 @@ def run_mitosis(stage_exec: Any, db: Session) -> Tuple[str, Dict[str, str]]:
             print(f"[Worker:Mitosis Note] Failed to load stain normalizer: {se}")
 
         hpf_uploads = []
-        dim_w, dim_h = getattr(openslide_slide, "dimensions", (width_px, height_px)) if openslide_slide else (width_px, height_px)
+        dim_w, dim_h = openslide_slide.dimensions
 
         # Reticle optical patch calibration:
         # HPF radius is 262.0 um. The viewer displays a 520x520 px canvas with reticle radius = 236 px.
@@ -514,18 +387,9 @@ def run_mitosis(stage_exec: Any, db: Session) -> Tuple[str, Dict[str, str]]:
             crop_w_px = max(1, int(round(field_um / mpp_x)))
             crop_h_px = max(1, int(round(field_um / mpp_y)))
 
-            patch_orig_raw = None
-            if openslide_slide is not None:
-                try:
-                    with OPENSLIDE_GLOBAL_LOCK:
-                        x0 = max(0, min(dim_w - crop_w_px, h_cx_px - crop_w_px // 2))
-                        y0 = max(0, min(dim_h - crop_h_px, h_cy_px - crop_h_px // 2))
-                        patch_orig_raw = openslide_slide.read_region((x0, y0), 0, (crop_w_px, crop_h_px)).convert("RGB")
-                except Exception:
-                    patch_orig_raw = None
-
-            if patch_orig_raw is None:
-                raise RuntimeError(f"Failed to extract authentic optical patch for HPF #{hpf_seq} from slide")
+            x0 = max(0, min(dim_w - crop_w_px, h_cx_px - crop_w_px // 2))
+            y0 = max(0, min(dim_h - crop_h_px, h_cy_px - crop_h_px // 2))
+            patch_orig_raw = _read_rgb(openslide_slide, (x0, y0), (crop_w_px, crop_h_px))
 
             # 40x base patch (2048x2048, 0.28 um/px)
             patch_40x_orig = patch_orig_raw.resize((2048, 2048), Image.Resampling.BILINEAR) if patch_orig_raw.size != (2048, 2048) else patch_orig_raw
@@ -572,14 +436,6 @@ def run_mitosis(stage_exec: Any, db: Session) -> Tuple[str, Dict[str, str]]:
         with ThreadPoolExecutor(max_workers=16) as pool:
             list(pool.map(_upload_hpf_item, hpf_uploads))
 
-        # Close OpenSlide
-        if openslide_slide is not None:
-            try:
-                with OPENSLIDE_GLOBAL_LOCK:
-                    openslide_slide.close()
-            except Exception:
-                pass
-
         # Fetch existing pathologist detections before re-populating to preserve reviews & additions (#464)
         existing_pathologist_dets = list(
             db.scalars(
@@ -617,7 +473,8 @@ def run_mitosis(stage_exec: Any, db: Session) -> Tuple[str, Dict[str, str]]:
         scoring_summary = compute_nottingham_mitotic_score(
             count_total=total_mitoses_in_hpfs,
             n_hpf=len(hpfs),
-            radius_um=radius_um
+            radius_um=radius_um,
+            config_dict={"scoring": mitosis_cfg.scoring.model_dump(mode="json")},
         )
 
         # Persist to Database: strictly preserve all pathologist annotations, delete previous model/referee detections (#464)
@@ -640,8 +497,8 @@ def run_mitosis(stage_exec: Any, db: Session) -> Tuple[str, Dict[str, str]]:
                 centroid_um=cand["centroid_um"],
                 det_conf=cand.get("det_conf"),
                 ver_conf=cand.get("ver_conf"),
-                label=cand.get("label", "unreviewed"),
-                label_source=cand.get("label_source", "model"),
+                label=cand["label"],
+                label_source=cand["label_source"],
                 medgemma_verdict=cand.get("medgemma_verdict"),
                 medgemma_rationale=cand.get("medgemma_rationale"),
                 medgemma_confidence=cand.get("medgemma_confidence"),
@@ -662,18 +519,7 @@ def run_mitosis(stage_exec: Any, db: Session) -> Tuple[str, Dict[str, str]]:
             )
             db.add(hpf_row)
 
-        # Build output.json structure
-        ref_model = getattr(settings, "GEMINI_REFEREE_MODEL", "gemini-2.5-flash")
-        referee_version = (
-            f"{ref_model}@van_diest"
-            if getattr(settings, "USE_GEMINI_FLASH_REFEREE", True)
-            else f"medgemma@{settings.VERTEX_MEDGEMMA_MODEL_VERSION}"
-        )
-        model_versions = {
-            "detector": detector.model_version,
-            "verifier": verifier.model_version,
-            "referee": referee_version
-        }
+        model_versions = {key: registry.version_of(key) for key in (det_cfg.producer, referee_cfg.producer)}
 
         output_payload = {
             "case_id": case_id,
@@ -718,4 +564,7 @@ def run_mitosis(stage_exec: Any, db: Session) -> Tuple[str, Dict[str, str]]:
         return output_uri, model_versions
 
     finally:
+        if openslide_slide is not None:
+            with OPENSLIDE_GLOBAL_LOCK:
+                openslide_slide.close()
         shutil.rmtree(scratch_dir, ignore_errors=True)

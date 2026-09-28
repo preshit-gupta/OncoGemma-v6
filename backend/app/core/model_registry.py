@@ -21,7 +21,7 @@ from app.core.config_types import (
 ModelKind = Literal["embedding", "classifier", "detector", "vlm"]
 # Request and response layout of a Vertex endpoint's serving container
 # (app.inference.adapters.vertex_endpoint.WIRE_FORMATS).
-WireFormat = Literal["path_foundation_v1", "kongnet_midog_v1", "medgemma_chat_v1"]
+WireFormat = Literal["path_foundation_v1", "kongnet_midog_v1", "kongnet_midog_v2", "medgemma_chat_v1"]
 PythonModulePath = Annotated[str, Field(pattern=r"^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)*$")]
 
 

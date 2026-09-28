@@ -202,7 +202,7 @@ def test_issue_38_missing_mpp_sets_needs_mpp_and_halts_pipeline(db_session, tmp_
 
     mitosis_exec = StageExecution(case_id=case_id, stage="mitosis", attempt=1, status="running", input_ref={"slide_id": str(slide_id)})
     with pytest.raises(ValueError) as exc_mit:
-        run_mitosis(mitosis_exec, db_session)
+        run_mitosis(mitosis_exec, db_session, make_runtime(mitosis_exec))
     assert "missing valid MPP" in str(exc_mit.value)
 
     grading_exec = StageExecution(case_id=case_id, stage="grading", attempt=1, status="running", input_ref={"slide_id": str(slide_id)})
@@ -364,7 +364,7 @@ def test_negative_and_zero_mpp_rejected_by_all_workers(db_session):
 
     exec_mitosis = StageExecution(case_id=case_id, stage="mitosis", attempt=1, status="running", input_ref={"slide_id": str(slide_id)})
     with pytest.raises(ValueError, match="missing valid MPP"):
-        run_mitosis(exec_mitosis, db_session)
+        run_mitosis(exec_mitosis, db_session, make_runtime(exec_mitosis))
 
     exec_grading = StageExecution(case_id=case_id, stage="grading", attempt=1, status="running", input_ref={"slide_id": str(slide_id)})
     with pytest.raises(ValueError, match="missing valid MPP"):

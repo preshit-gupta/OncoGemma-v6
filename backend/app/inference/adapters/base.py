@@ -31,6 +31,7 @@ class Unavailable(Exception):
 class AdapterImage:
     data: bytes           # encoded image bytes, already checked against the input contract
     mime_type: str        # image/png or image/jpeg
+    mpp: float | None = None  # resolution declared in the image's InputSpec
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,8 @@ class AdapterRequest:
     # receive it; the gateway validates the answer strictly either way.
     output_model: type[BaseModel] | None = None
     generation: Mapping[str, Any] = field(default_factory=dict)
+    # The call's other params (for example a detector's min_prob), as recorded and hashed.
+    parameters: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

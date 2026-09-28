@@ -45,6 +45,8 @@ models:
   kongnet_det_midog_1:
     kind: detector
     provider: vertex_endpoint_predict
+    # kongnet_midog_v1 is the request the deployed v5 service speaks. After the WP-7.1 service
+    # (SPEC-06 §4) is deployed, switch to kongnet_midog_v2 and update version.
     wire_format: kongnet_midog_v1
     endpoint_id: ${VERTEX_MITOSIS_ENDPOINT_ID}
     region: ${VERTEX_MITOSIS_LOCATION}
@@ -52,6 +54,8 @@ models:
     requires_image: true
     input: {mpp: 0.25, mpp_tolerance: 0.01, size_px: [512, 512], color: raw, format: png}
     output_schema: DetectionList        # [{cx, cy, prob}] in input-pixel coordinates
+    # Lossless PNG patches are ~0.3-0.5 MB, so few fit in one online-prediction request.
+    limits: {max_batch: 4, max_request_bytes: 1250000, qps: 8.0, deadline_s: 60.0, max_attempts: 4}
 
   gemini_referee:
     kind: vlm
@@ -72,5 +76,7 @@ models:
     requires_image: true
     params: {temperature: 0.0, max_output_tokens: 512}
 
+# Non-learned v5 producers, kept only for ablation replays (SPEC-06 §6.2 A0). No stage calls them.
 heuristics:
-  od_hyperchromatic_sweep: {version: "v5-2b87ab7", module: pipeline.detect}   # ablation only
+  od_hyperchromatic_sweep: {version: "v5-2b87ab7", module: pipeline.heuristics.od_sweep}
+  morph_verifier: {version: "v5-2b87ab7", module: pipeline.heuristics.morph_verifier}
