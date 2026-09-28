@@ -638,6 +638,7 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
                   setHasUserNavigated(true);
                   setActiveStage("mitosis");
                 }}
+                onRefreshCase={loadData}
               />
             </ErrorBoundary>
           ) : activeStage === "mitosis" ? (

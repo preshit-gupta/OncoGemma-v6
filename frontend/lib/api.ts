@@ -1,3 +1,5 @@
+import { apiFetch, getCookie } from "./api/auth";
+
 export const API_BASE = "";
 
 export interface Case {
@@ -76,9 +78,7 @@ export function formatApiError(errData: any, fallbackMessage: string): string {
 }
 
 export async function fetchCases(): Promise<Case[]> {
-  const res = await fetch(`${API_BASE}/api/v1/cases`, {
-    headers: { "X-User-Role": "pathologist" }
-  });
+  const res = await apiFetch(`${API_BASE}/api/v1/cases`);
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
     throw new Error(formatApiError(errData, "Failed to fetch cases"));
@@ -87,9 +87,8 @@ export async function fetchCases(): Promise<Case[]> {
 }
 
 export async function createCase(): Promise<Case> {
-  const res = await fetch(`${API_BASE}/api/v1/cases`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/cases`, {
     method: "POST",
-    headers: { "X-User-Role": "pathologist" }
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
@@ -121,17 +120,16 @@ export async function uploadSlideDirectToGCS(
 
   // 1. Request Signed Upload URL from FastAPI control plane if not cached
   if (!upload_url) {
-    const urlRes = await fetch(`${API_BASE}/api/v1/cases/${caseId}/slide/upload-url`, {
+    const urlRes = await apiFetch(`${API_BASE}/api/v1/cases/${caseId}/slide/upload-url`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-User-Role": "pathologist"
       },
       body: JSON.stringify({
         filename: file.name,
         size_bytes: file.size,
-        content_type: file.type || "application/octet-stream"
-      })
+        content_type: file.type || "application/octet-stream",
+      }),
     });
 
     if (!urlRes.ok) {
@@ -149,7 +147,7 @@ export async function uploadSlideDirectToGCS(
         gcs_uri,
         fileName: file.name,
         fileSize: file.size,
-        startedAt: Date.now()
+        startedAt: Date.now(),
       }));
     } catch (_) {}
   }
@@ -184,13 +182,12 @@ export async function uploadSlideDirectToGCS(
   });
 
   // 3. Finalize upload with API to record slide metadata and trigger cloud pipeline stage
-  const finalizeRes = await fetch(`${API_BASE}/api/v1/cases/${caseId}/slide/finalize`, {
+  const finalizeRes = await apiFetch(`${API_BASE}/api/v1/cases/${caseId}/slide/finalize`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
     },
-    body: JSON.stringify({ gcs_uri })
+    body: JSON.stringify({ gcs_uri }),
   });
 
   if (!finalizeRes.ok) {
@@ -256,19 +253,22 @@ export async function uploadSlideFile(
     xhr.addEventListener("abort", () => reject(new Error("Slide upload aborted")));
 
     xhr.open("POST", `${API_BASE}/api/v1/cases/${caseId}/slide/upload`);
-    xhr.setRequestHeader("X-User-Role", "pathologist");
+    xhr.withCredentials = true;
+    const csrf = getCookie("og_csrf");
+    if (csrf) {
+      xhr.setRequestHeader("X-CSRF-Token", csrf);
+    }
     xhr.send(formData);
   });
 }
 
 export async function retryStage(caseId: string, stageName: string) {
-  const res = await fetch(`${API_BASE}/api/v1/cases/${caseId}/stages/${stageName}/retry`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/cases/${caseId}/stages/${stageName}/retry`, {
     method: "POST",
     headers: { 
       "Content-Type": "application/json",
-      "X-User-Role": "pathologist" 
     },
-    body: JSON.stringify({})
+    body: JSON.stringify({}),
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
@@ -278,13 +278,12 @@ export async function retryStage(caseId: string, stageName: string) {
 }
 
 export async function approveStage(caseId: string, stageName: string, payload?: { override_justification?: string }) {
-  const res = await fetch(`${API_BASE}/api/v1/cases/${caseId}/stages/${stageName}/approve`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/cases/${caseId}/stages/${stageName}/approve`, {
     method: "POST",
     headers: { 
       "Content-Type": "application/json",
-      "X-User-Role": "pathologist" 
     },
-    body: JSON.stringify(payload || {})
+    body: JSON.stringify(payload || {}),
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
@@ -294,17 +293,16 @@ export async function approveStage(caseId: string, stageName: string, payload?: 
 }
 
 export async function confirmTriageStage(caseId: string, noInvasiveTumor: boolean = false) {
-  const res = await fetch(`${API_BASE}/api/v1/stages/triage/confirm`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/stages/triage/confirm`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
     },
     body: JSON.stringify({
       case_id: caseId,
       no_invasive_tumor: noInvasiveTumor,
-      reviewed_by: "pathologist_01"
-    })
+      reviewed_by: "pathologist_01",
+    }),
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
@@ -314,9 +312,8 @@ export async function confirmTriageStage(caseId: string, noInvasiveTumor: boolea
 }
 
 export async function deleteCase(caseId: string) {
-  const res = await fetch(`${API_BASE}/api/v1/cases/${caseId}`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/cases/${caseId}`, {
     method: "DELETE",
-    headers: { "X-User-Role": "pathologist" }
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
@@ -325,9 +322,8 @@ export async function deleteCase(caseId: string) {
 }
 
 export async function clearAllCases() {
-  const res = await fetch(`${API_BASE}/api/v1/cases`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/cases`, {
     method: "DELETE",
-    headers: { "X-User-Role": "pathologist" }
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
@@ -337,9 +333,7 @@ export async function clearAllCases() {
 }
 
 export async function fetchCaseDetail(caseId: string): Promise<CaseDetail> {
-  const res = await fetch(`${API_BASE}/api/v1/cases/${caseId}`, {
-    headers: { "X-User-Role": "pathologist" }
-  });
+  const res = await apiFetch(`${API_BASE}/api/v1/cases/${caseId}`);
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
     throw new Error(formatApiError(errData, "Failed to fetch case detail"));
@@ -394,9 +388,7 @@ export interface MitosisStageData {
 }
 
 export async function fetchMitosisStageData(caseId: string): Promise<MitosisStageData> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/mitosis/${caseId}`, {
-    headers: { "X-User-Role": "pathologist" }
-  });
+  const res = await apiFetch(`${API_BASE}/api/v1/stages/mitosis/${caseId}`);
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
     throw new Error(formatApiError(errData, `Failed to fetch mitosis stage data (Status: ${res.status})`));
@@ -410,13 +402,12 @@ export async function recomputeMitosis(payload: {
   hpfs?: Array<{ seq: number; center_um: [number, number]; radius_um?: number; source?: string }>;
   audit_toggle?: { id: string; from: string; to: string };
 }): Promise<{ case_id: string; hpfs: VirtualHpfSite[]; summary: MitoticScoreSummary }> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/mitosis/recompute`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/stages/mitosis/recompute`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
@@ -431,18 +422,17 @@ export async function addPathologistMitosis(
   label: string = "mitosis",
   reviewedBy: string = "pathologist_01"
 ): Promise<{ status: string; candidate: MitosisCandidate }> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/mitosis/add_candidate`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/stages/mitosis/add_candidate`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
     },
     body: JSON.stringify({
       case_id: caseId,
       centroid_um: centroidUm,
       label,
-      reviewed_by: reviewedBy
-    })
+      reviewed_by: reviewedBy,
+    }),
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
@@ -455,17 +445,16 @@ export async function bulkRejectUnreviewedMitosis(
   caseId: string,
   reviewedBy: string = "pathologist_01"
 ): Promise<MitosisStageData> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/mitosis/bulk_action`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/stages/mitosis/bulk_action`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
     },
     body: JSON.stringify({
       case_id: caseId,
       action: "reject_remaining_unreviewed",
-      reviewed_by: reviewedBy
-    })
+      reviewed_by: reviewedBy,
+    }),
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
@@ -475,16 +464,15 @@ export async function bulkRejectUnreviewedMitosis(
 }
 
 export async function replaceMitosisHpfs(caseId: string): Promise<MitosisStageData> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/mitosis/re_place_hpfs`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/stages/mitosis/re_place_hpfs`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
     },
     body: JSON.stringify({
       case_id: caseId,
-      action: "re_place_hpfs"
-    })
+      action: "re_place_hpfs",
+    }),
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
@@ -497,16 +485,15 @@ export async function confirmMitosisStage(
   caseId: string,
   reviewedBy: string = "pathologist_01"
 ): Promise<any> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/mitosis/confirm`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/stages/mitosis/confirm`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
     },
     body: JSON.stringify({
       case_id: caseId,
-      reviewed_by: reviewedBy
-    })
+      reviewed_by: reviewedBy,
+    }),
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
@@ -515,259 +502,7 @@ export async function confirmMitosisStage(
   return res.json();
 }
 
-// Stage 5: Nottingham Grading & Architectural Synthesis Interfaces
-export interface GradingPatch {
-  id: string;
-  index: number;
-  hotspot_id?: string;
-  tissue_density?: number;
-  source?: string;
-  center_um?: [number, number];
-  center_x_px: number;
-  center_y_px: number;
-  tumor_probability: number;
-  image_url: string;
-  tubule: {
-    tubule_percent: number;
-    tumor_present: boolean;
-    confidence: "low" | "medium" | "high";
-  };
-  pleo: {
-    pleomorphism_score: 1 | 2 | 3;
-    rationale: string;
-    confidence: "low" | "medium" | "high";
-  };
-  review_status: "suggested" | "approved" | "modified";
-  user_tubule_percent?: number | null;
-  user_tumor_present?: boolean | null;
-  user_pleo_score?: (1 | 2 | 3) | null;
-  user_notes?: string | null;
-  reviewed_by?: string | null;
-  reviewed_at?: string | null;
-}
-
-export interface HpfGradingSite {
-  seq: number;
-  center_um: [number, number];
-  radius_um: number;
-  mitotic_count: number;
-  density_mm2: number;
-  review_status: "suggested" | "approved" | "modified";
-  user_mitotic_count?: number | null;
-  user_notes?: string | null;
-  reviewed_by?: string | null;
-  reviewed_at?: string | null;
-}
-
-export interface ReviewSummary {
-  total_patches: number;
-  approved_patches: number;
-  all_patches_reviewed: boolean;
-  total_hpfs: number;
-  approved_hpfs: number;
-  all_hpfs_reviewed: boolean;
-  is_type_confirmed: boolean;
-  can_confirm: boolean;
-}
-
-export interface GradingSubscores {
-  tubule_percent?: number;
-  tubule_score: number;
-  pleo_score: number;
-  mitotic_score: number;
-  nottingham_sum: number;
-  grade: number;
-  flags?: string[];
-  is_overridden?: boolean;
-}
-
-export interface HistologicTypeMeta {
-  proposed_type: string;
-  differential: string[];
-  rationale: string;
-  confidence: "low" | "medium" | "high";
-  confirmed_type: string;
-  type_confirmed_by: string;
-  is_confirmed: boolean;
-}
-
-export interface GradingStageData {
-  case_id: string;
-  slide_id?: string | null;
-  status: string;
-  patches: GradingPatch[];
-  hpfs: HpfGradingSite[];
-  review_summary: ReviewSummary;
-  machine: GradingSubscores;
-  current: GradingSubscores;
-  histologic_type: HistologicTypeMeta;
-  narrative: string;
-  overrides: Record<string, any>;
-  mitotic_summary: {
-    total_mitoses: number;
-    mitotic_score: number;
-    evaluated_hpfs: number;
-    area_mm2?: number;
-    mitoses_per_mm2?: number;
-    classic_per_10hpf?: number;
-  };
-  slide?: {
-    mpp_x?: number;
-    mpp_y?: number;
-  } | null;
-  model_versions: Record<string, any>;
-}
-
-export interface SinglePatchReview {
-  patch_id: string;
-  tubule_percent?: number;
-  tumor_present?: boolean;
-  pleomorphism_score?: 1 | 2 | 3;
-  status: "suggested" | "approved" | "modified";
-  notes?: string;
-}
-
-export interface PatchReviewPayload {
-  case_id: string;
-  reviewed_by?: string;
-  action: "update" | "approve_all" | "reset_all";
-  reviews?: SinglePatchReview[];
-}
-
-export interface SingleHpfReview {
-  seq: number;
-  mitotic_count?: number;
-  status: "suggested" | "approved" | "modified";
-  notes?: string;
-}
-
-export interface HpfReviewPayload {
-  case_id: string;
-  reviewed_by?: string;
-  action: "update" | "approve_all" | "reset_all";
-  reviews?: SingleHpfReview[];
-}
-
-export async function fetchGradingStageData(caseId: string): Promise<GradingStageData> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/grading/${caseId}`, {
-    headers: { "X-User-Role": "pathologist" }
-  });
-  if (!res.ok) {
-    const errData = await res.json().catch(() => null);
-    throw new Error(formatApiError(errData, `Failed to fetch grading stage data (Status: ${res.status})`));
-  }
-  return res.json();
-}
-
-export async function reviewGradingPatches(payload: PatchReviewPayload): Promise<GradingStageData> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/grading/patches/review`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
-    },
-    body: JSON.stringify(payload)
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(formatApiError(data, "Failed to update patch reviews"));
-  }
-  return res.json();
-}
-
-export async function reviewGradingHpfs(payload: HpfReviewPayload): Promise<GradingStageData> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/grading/hpfs/review`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
-    },
-    body: JSON.stringify(payload)
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(formatApiError(data, "Failed to update HPF reviews"));
-  }
-  return res.json();
-}
-
-export async function recomputeGradingPreview(payload: {
-  case_id: string;
-  tubule_score?: number;
-  tubule_percent?: number;
-  pleo_score?: number;
-  mitotic_score?: number;
-}): Promise<{
-  tubule_score: number;
-  pleo_score: number;
-  mitotic_score: number;
-  nottingham_sum: number;
-  grade: number;
-  is_overridden: boolean;
-}> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/grading/recompute`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
-    },
-    body: JSON.stringify(payload)
-  });
-  if (!res.ok) {
-    const errData = await res.json().catch(() => null);
-    throw new Error(formatApiError(errData, "Failed to recompute grade preview"));
-  }
-  return res.json();
-}
-
-export async function confirmHistologicType(payload: {
-  case_id: string;
-  histologic_type: string;
-  justification?: string;
-  reviewed_by?: string;
-}): Promise<any> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/grading/type/confirm`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
-    },
-    body: JSON.stringify(payload)
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(formatApiError(data, "Failed to confirm histologic subtype"));
-  }
-  return res.json();
-}
-
-export async function confirmGradingStage(payload: {
-  case_id: string;
-  reviewed_by?: string;
-  histologic_type: string;
-  type_confirmed: boolean;
-  overrides: Record<string, any>;
-  tubule_score?: number | null;
-  tubule_percent?: number | null;
-  pleo_score?: number | null;
-  mitotic_score?: number | null;
-  nottingham_sum?: number | null;
-  grade?: number | null;
-}): Promise<any> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/grading/confirm`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
-    },
-    body: JSON.stringify(payload)
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(formatApiError(data, "Failed to confirm grading stage"));
-  }
-  return res.json();
-}
+// Stage 5 grading types and API functions migrated to @/lib/api/grading.ts (grading_v6 contract)
 
 
 
@@ -777,13 +512,12 @@ export async function updateSlideMpp(
   mppX: number,
   mppY?: number
 ): Promise<any> {
-  const res = await fetch(`${API_BASE}/api/v1/cases/${caseId}/slides/${slideId}/mpp`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/cases/${caseId}/slides/${slideId}/mpp`, {
     method: "PATCH",
     headers: {
       "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
     },
-    body: JSON.stringify({ mpp_x: mppX, mpp_y: mppY })
+    body: JSON.stringify({ mpp_x: mppX, mpp_y: mppY }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: "Failed to update MPP" }));
@@ -791,6 +525,3 @@ export async function updateSlideMpp(
   }
   return res.json();
 }
-
-
-
