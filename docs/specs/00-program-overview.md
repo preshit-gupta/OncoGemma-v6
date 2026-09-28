@@ -114,14 +114,14 @@ A missing prediction (a failed pipeline or `needs_human` with no grade) is a fou
 |---|---|
 | **Measurement-validity gate (every run)** | INT-PROV = 1.0 · INT-FALL = 0 · zero patients shared between train/val and test (checked from the manifest) · config hash, model registry hash and split-file hash recorded. |
 | **Promotion gate (P3 changes and SPEC-09)** | The lower bound of the paired-bootstrap ΔF1 on validation is > 0 for the target metric. No pre-registered slice drops by more than δ = 0.03 F1. The measurement-validity gate passes. |
-| **Performance targets** | *Proposed below; the program owner ratifies them after the P2 baseline.* |
+| **Performance targets** | *Accepted by the program owner on 2026-09-28, as below.* |
 
-| Metric | Proposed floor | Rationale |
+| Metric | Floor | Rationale |
 |---|---|---|
 | NS-M F1 (MIDOG++ breast test, 1:1) | ≥ 0.70 | Carries forward the v5 "clinical floor". It sits within the range reported by MIDOG challenge participants. |
-| NS-G macro-F1 (TCGA test) | ratify after P2 | There is no public component-sum baseline on these labels yet. |
-| `F1_high` | ratify after P2 | Pathologist request: extremes must be identified clearly. |
-| `macroF1_LM` | ratify after P2 | Pathologist request: consistent on low/medium cases. |
+| NS-G macro-F1 (TCGA test) | set from the P2 baseline | There is no public component-sum baseline on these labels yet. |
+| `F1_high` | set from the P2 baseline | Pathologist request: extremes must be identified clearly. |
+| `macroF1_LM` | set from the P2 baseline | Pathologist request: consistent on low/medium cases. |
 
 ## 3. Datasets (registry)
 
@@ -130,12 +130,29 @@ All datasets are registered in `eval/datasets/registry.yaml`. Each entry carries
 | Key | Dataset | Specimen | Role | Ground truth used | Notes / verification items |
 |---|---|---|---|---|---|
 | `tcga_brca_dx` | TCGA-BRCA diagnostic slides (GDC, open access, `.svs`) | Resection | **Primary** end-to-end benchmark (NS-G; slide-level `F1_M`; S3 via BCSS subset) | Nottingham grade and components parsed from TCGA pathology reports (SPEC-02 §4). Histologic type from the expert-committee review of TCGA-BRCA (Thennavan et al., *Cell Genomics* 2021; ≈1,058 annotated samples). | Only DX (FFPE) slides; frozen TS slides are excluded. Scans are a mix of ≈0.25 µm/px (40×) and ≈0.50 µm/px (20×), so resampling is mandatory (SPEC-04). Published precedent: ≈521 TCGA slides with report-derived Nottingham scores (Kim et al., *Breast Cancer Res.* 2025), so the expected labelled n is about 500. |
-| `bcnb` | BCNB — Early Breast Cancer Core-Needle Biopsy WSI | Core biopsy | Secondary end-to-end benchmark (NS-G for CNB). S3 (tumor polygons). | Clinical field "histological grading". Pathologist tumor-region polygons (two pathologists). | 1,058 WSIs from 1,058 patients, iScan Coreo scanner. Official split 630/210/218 is **adopted as-is**. Images are **JPG** (not OpenSlide-readable) and must be converted at ingest (SPEC-02 §3.2). **Verify:** MPP / scan magnification from the dataset documentation, and whether grade is Nottingham grade or a summary grade. |
-| `midogpp_breast` | MIDOG++ (human breast carcinoma subset) | Resection ROIs | **Primary NS-M** object-level benchmark; training data for the Stage-4 classifier (SPEC-06). | Mitotic figures **and imposters (hard negatives)**, pathologist consensus. | 150 human breast cases across 3 scanners (Hamamatsu XR, Hamamatsu S360, Leica CS2), 0.23/0.25 µm/px, CC BY 4.0. **Verify KongNet training overlap (§8 R1).** |
+| `bcnb` | BCNB — Early Breast Cancer Core-Needle Biopsy WSI | Core biopsy | Secondary end-to-end benchmark (NS-G for CNB). S3 (tumor polygons). | Clinical field "histological grading". Pathologist tumor-region polygons (two pathologists). | 1,058 WSIs from 1,058 patients, iScan Coreo scanner. Official split 630/210/218 is **adopted as-is**. Images are **JPG** (not OpenSlide-readable) and must be converted at ingest (SPEC-02 §3.2). MPP, scan magnification, grade-field semantics and licence **will be supplied by the program owner**. The adapter is fully parameterised and refuses to run until they are set (SPEC-02 §3.2). |
+| `midogpp_breast` | MIDOG++ (human breast carcinoma subset) | Resection ROIs | **Primary NS-M** object-level benchmark; training data for the Stage-4 classifier (SPEC-06). | Mitotic figures **and imposters (hard negatives)**, pathologist consensus. | 150 human breast cases across 3 scanners (Hamamatsu XR, Hamamatsu S360, Leica CS2), 0.23/0.25 µm/px, CC BY 4.0. KongNet is treated as externally validated (§8 R1). |
 | `midogpp_other` | MIDOG++ (other tumor types) | — | Training data only (domain diversity) | Same as above | Never used for NS-M. |
 | `bcss` | Breast Cancer Semantic Segmentation (TCGA-BRCA ROIs) | Resection | S3-F1 training and evaluation | Region masks (tumor, stroma, inflammatory, necrosis, …) | **Verify** the class map and the ROI→slide mapping. Split membership must follow the TCGA patient split (§4). |
-| `tupac16` | TUPAC16 (500 TCGA-BRCA WSIs, mitotic score 1–3; 73-case auxiliary mitosis set) | Resection | Optional slide-level `F1_M` cross-check; the auxiliary set is a candidate NS-M test set unseen by KongNet. | Mitotic score; mitosis points (auxiliary) | **Verify** current availability and licence. |
+| `tupac16` | TUPAC16 (500 TCGA-BRCA WSIs, mitotic score 1–3; 73-case auxiliary mitosis set) | Resection | Optional slide-level `F1_M` cross-check; the auxiliary set is an optional extra NS-M test set. | Mitotic score; mitosis points (auxiliary) | Optional; see §3.1. |
 | `tcga_gt_mitosis` | Program-created TCGA HPF mitosis annotations (optional) | Resection | Optional TCGA-native NS-M slice | Point annotations by two annotators (SPEC-08 §6) | Created only if pathologist capacity becomes available. |
+
+### 3.1 Licence and availability register (options; decisions pending where marked)
+
+*Engineering summary, not legal advice. Confirm with counsel before any commercial deployment.*
+
+| Asset | What is known | Options | Recommendation |
+|---|---|---|---|
+| **HoVer-Net weights trained on PanNuke** (SPEC-07 pleomorphism) | PanNuke is CC BY-NC-SA 4.0, and the HoVer-Net authors state that weights trained on it carry the same non-commercial licence ([hover_net README](https://github.com/vqdang/hover_net)) | (a) Use for the v6 research validation only, with registry `license_scope: research`, and replace before any commercial use. (b) Use a permissively licensed segmenter: StarDist `2D_versatile_he` (weights stated as CC BY 4.0; trained on MoNuSeg 2018 and TNBC). It has no cell types, so neoplastic nuclei are selected by the SPEC-05 tumour mask plus a size/shape filter. (c) Train our own segmenter on NuInsSeg (CC BY 4.0) plus program annotations. (d) Ask the PanNuke authors for a commercial licence | **(b) as the default segmenter; (a) as a research-only comparison arm.** This keeps the product path licence-clean from day one. (c) is a P3 option if (b) underperforms |
+| **TUPAC16** (optional mitotic-score labels on 821 TCGA WSIs; auxiliary mitosis set) | Published challenge data. Current download availability is unverified. Alternative auxiliary-set labels are public ([DeepMicroscopy/TUPAC16_AlternativeLabels](https://github.com/DeepMicroscopy/TUPAC16_AlternativeLabels)), but its images come from the original release | (a) Try the challenge site once; if unavailable, email the organisers. (b) Skip it; TCGA report-derived mitotic scores (SPEC-02 §4) remain the primary slide-level label | **(a) once, time-boxed; otherwise (b). Not blocking** |
+| **MITOS-ATYPIA-14** (optional field-level atypia scores for pleomorphism) | Download page on Grand Challenge; licence terms not confirmed | (a) Read the terms on the download page; use for internal validation only if permitted. (b) Skip; TCGA report components are the primary pleomorphism labels | **(a) if the terms allow research use; otherwise (b). Not blocking** |
+| **BCSS** | CC0 1.0 ([license page](https://bcsegmentation.grand-challenge.org/License/)) | — | Use |
+| **MIDOG++** | CC BY 4.0 | — | Use, with attribution |
+| **TCGA-BRCA** | GDC open-access tier | Review GDC/TCGA data-use and publication guidelines | Use for research validation |
+| **BCNB** | Terms to be supplied by the program owner | — | Pending |
+| **Path Foundation, MedGemma** | Google Health AI Developer Foundations terms | Review the terms for the intended deployment | Record in `docs/licenses/` (SPEC-01 §3.7 `license_ref`) |
+
+Every registry model and dataset entry carries `license_ref` and `license_scope ∈ {commercial_ok, research, pending}`. The harness writes the set of scopes used into `metrics.json`. A run that uses any `research`-scoped component is labelled "research-only" in the Research view.
 
 ## 4. Splits (summary; full rules in SPEC-02 §5)
 
@@ -251,7 +268,7 @@ The category decides the default remedy class:
 
 | ID | Risk | Mitigation |
 |---|---|---|
-| R1 | **Detector training contamination.** `KongNet_Det_MIDOG_1` was trained on MIDOG challenge data. If MIDOG++ breast test cases overlap its training set, NS-M on MIDOG++ is optimistically biased. | Before P2, obtain the model card and training case list (TIAToolbox) and remove overlapping cases from `midogpp_breast` test. If the overlap cannot be established, NS-M must be reported on data unseen by KongNet (the TUPAC16 auxiliary set if available, or `tcga_gt_mitosis`), and MIDOG++ numbers are labelled "possibly contaminated". |
+| R1 | **KongNet is treated as an externally validated component** (program-owner decision, 2026-09-28). v6 does no separate KongNet-only validation and no training-overlap audit. | NS-M still measures the **whole Stage-4 pipeline** (resampling, tiling, classifier, referee, NMS, tumour gate), which v6 changes. Paired comparisons between arms share KongNet and are unaffected. Known limitation, recorded in reports: if KongNet saw MIDOG++ breast cases during training, the absolute NS-M on MIDOG++ may read slightly high. |
 | R2 | **Pretraining exposure.** Path Foundation, Gemini and MedGemma may have seen TCGA images or reports during pretraining. | Documented as a limitation. BCNB (non-TCGA, different continent and scanner) is the external check. |
 | R3 | **Label noise in report-derived TCGA grades.** | Evidence-span extraction, consistency checks and dual QA (SPEC-02 §4). Report metrics on the high-confidence label subset as well as the full set. |
 | R4 | **Small n per class** (G1 is typically the minority). | Stratified splits. CI-width rule (§2.4). Label a result provisional rather than over-claim. |

@@ -43,10 +43,10 @@ Every component estimator in v5 has an **upward** bias. The Nottingham sum is ca
 
 | Label | Source | Expected coverage |
 |---|---|---|
-| Grade (1–3) | TCGA reports (SPEC-02 §4); BCNB clinical field (verify semantics) | High (≈500 TCGA; BCNB most) |
+| Grade (1–3) | TCGA reports (SPEC-02 §4); BCNB clinical field (mapping supplied by the program owner; SPEC-02 §3.2) | High (≈500 TCGA; BCNB most) |
 | Components T, P, M, total | TCGA reports, when stated | **Partial.** Coverage is measured in SPEC-02 §4. Component arms train and evaluate only where the label exists |
 | Histologic type | Thennavan et al. 2021 TCGA expert review | ≈1,058 samples |
-| Field-level atypia (auxiliary) | MITOS-ATYPIA-14 nuclear atypia scores (breast, ×20/×40 frames) | **Verify availability and licence** |
+| Field-level atypia (auxiliary) | MITOS-ATYPIA-14 nuclear atypia scores (breast, ×20/×40 frames) | Optional and not blocking (SPEC-00 §3.1) |
 
 ## 4. Sampling frame
 
@@ -118,13 +118,19 @@ The v5 MedGemma-doer → Gemini-verifier chain is **not** retained by default. A
 
 ### 6.2 Nuclear instance segmentation
 
-- **Model.** TIAToolbox HoVer-Net pretrained on PanNuke (`hovernet_fast-pannuke`). Its five types are neoplastic, inflammatory, connective, dead and non-neoplastic epithelial. It runs at its native resolution; **verify** the `ioconfig`.
-- **Serving.** Add it to the GPU microservice (`/segment_nuclei`) with the same contract rules as SPEC-06 §4: mpp-checked, lossless PNG, weights SHA-256.
-- **Licence gate.** The PanNuke dataset licence is non-commercial (**verify** it and the weights' licence). If it is incompatible with intended use, the arm is research-only and the registry marks it `license_scope: research`.
+A pluggable `NucleiSegmenter` interface, `segment(field) -> instances[{polygon, centroid, type?}]`, has two registered implementations. The licence reasoning is in SPEC-00 §3.1.
+
+| Segmenter | Licence scope | Cell types | Role |
+|---|---|---|---|
+| **StarDist `2D_versatile_he`** | `commercial_ok` (weights stated as CC BY 4.0; confirm with counsel) | None | **Default.** Neoplastic nuclei are selected as nuclei inside tumour tiles (SPEC-05 mask, `argmax = invasive_tumor`), excluding small round nuclei (area < 30 µm² and form factor > 0.85, i.e. lymphocyte-like) |
+| **HoVer-Net PanNuke** (TIAToolbox `hovernet_fast-pannuke`) | `research` (CC BY-NC-SA 4.0) | Neoplastic, inflammatory, connective, dead, non-neoplastic epithelial | Research-only comparison arm (P2-HV). If it beats the default by paired ΔF1 with lower bound > 0, program options are listed in SPEC-00 §3.1 (c)/(d) |
+
+- **Resolution.** Both run at their native resolution. **Verify** each model's expected µm/px and feed it via `read_region_at_mpp`.
+- **Serving.** Add to the GPU microservice (`/segment_nuclei?model=`) with the same contract rules as SPEC-06 §4: mpp-checked, lossless PNG, weights SHA-256.
 
 ### 6.3 Features
 
-Features are computed over neoplastic nuclei. If fewer than 200 nuclei are found across the fields, the case is flagged `insufficient_nuclei`.
+Features are computed over neoplastic nuclei, as selected by the segmenter in use. If fewer than 200 nuclei are found across the fields, the case is flagged `insufficient_nuclei`. The relative-size feature (normal vs neoplastic epithelium) is available only with a typed segmenter. With StarDist it is imputed as missing.
 
 - **Size:** area in µm² (mean, CV, p10, p50, p90, p90/p50).
 - **Shape:** perimeter, eccentricity, solidity, form factor `4πA/P²`.
@@ -227,5 +233,5 @@ For each step, report per-component mean signed error (by true band), `F1_T`, `F
 | Component labels are sparse in TCGA reports | Measure coverage early (SPEC-02). MIL arms need them, while T1/P1 need none for inference and are only *selected* on labelled val. Report n per component |
 | Class imbalance (G1 minority) | Stratified splits, ordinal losses, and macro-F1 as the metric (not accuracy) |
 | MIL overfitting on about 300 train slides | Frozen features, 5-fold ensembles, strong regularisation. CIs decide |
-| HoVer-Net compute and licence | The GPU service is shared with KongNet. Licence gate in §6.2 |
+| Segmenter compute and licence | The GPU service is shared with KongNet. The default segmenter is licence-clean. HoVer-Net is research-only (§6.2, SPEC-00 §3.1) |
 | Report-derived grade differs from the "true" grade (inter-observer variability) | Reported as a limitation. `label_confidence=high` subset analysis (SPEC-00 R3) |

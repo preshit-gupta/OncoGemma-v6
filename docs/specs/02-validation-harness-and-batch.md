@@ -74,16 +74,33 @@ class DatasetAdapter(Protocol):
 - **Conversion at ingest** (OpenSlide cannot open plain JPEG): `pyvips.Image.new_from_file(jpg).tiffsave(out, tile=True, tile_width=512, tile_height=512, pyramid=True, compression="jpeg", Q=90, bigtiff=True, xres=1000/mpp, yres=1000/mpp, resunit="cm")`.
   - libvips takes `xres`/`yres` in pixels per millimetre, hence `1000/mpp`. `resunit` only sets the unit written into the TIFF tags.
   - The output is a generic tiled TIFF, which OpenSlide reads. MPP is **always** taken from the manifest, never from the TIFF tags.
-  - `mpp_override` comes from the adapter config: `datasets.bcnb.mpp`, **value to be verified from the dataset documentation before first use**. The manifest records `mpp_source = "dataset_doc"`.
-- **Splits:** the official train/val/test (630/210/218) is adopted unchanged.
-- **Grade label:** the "histological grading" field is mapped to {1, 2, 3}. **Verify** that it is Nottingham grade. If it is recorded as "II–III" or similar, the case is excluded from NS-G and the exclusion is recorded.
+  - `mpp_override` comes from the adapter config. The manifest records `mpp_source = "dataset_doc"`.
+- **Splits:** the official train/val/test (630/210/218) is the default (`datasets.bcnb.split_source: official`). An override to a patient-level re-split is allowed via config.
+- **Grade label:** mapped through a configurable table. Values not in the table exclude the case from NS-G, and the exclusion is recorded.
+- **Flexible configuration.** The program owner will supply the BCNB details later. Until then every value is a **required config key with no default**, and the adapter raises `DatasetConfigMissing` naming the missing keys:
+
+  ```yaml
+  datasets:
+    bcnb:
+      mpp: null                     # µm/px of the JPG images (required)
+      native_mag: null              # e.g. 20 or 40 (informational; used for slices)
+      image_glob: "WSIs/*.jpg"
+      clinical_file: null           # path to the clinical spreadsheet
+      grade_field: null             # column name holding the grade
+      grade_map: {}                 # raw value -> 1|2|3, e.g. {"I":1,"II":2,"III":3}
+      tumor_polygons: {path: null, format: null}   # annotation format and location
+      split_source: official
+      license_ref: null
+  ```
+
+  Nothing else in the harness depends on BCNB specifics, so these values can arrive at any time before the first BCNB run.
 
 ### 3.3 `MIDOGppAdapter` (`midogpp_breast`, `midogpp_other`)
 
 - **Inputs:** ROI TIFFs, plus MS-COCO JSON (or the SlideRunner SQLite) with classes `mitotic figure` and `non-mitotic figure` (imposter). The MIDOG++ repository documents the class names; **verify** them.
 - **Tile geometry:** MIDOG++ images are ROIs, not WSIs, so they are evaluated with the **component harness** (§5.4). Stage 4 components run directly on the ROI, and the whole ROI is the evaluation region.
 - **mpp:** 0.23 µm/px (Hamamatsu) or 0.25 µm/px (Leica), per case metadata. All inputs are resampled to 0.25 by SPEC-04's `read_region_at_mpp`.
-- **Split:** case-level 60/20/20 stratified by scanner, plus LOSO folds (SPEC-00 §4). Cases excluded by SPEC-00 R1 are listed in `eval/splits/midogpp_excluded.csv` with a reason.
+- **Split:** case-level 60/20/20 stratified by scanner, plus LOSO folds (SPEC-00 §4).
 
 ### 3.4 `BCSSAdapter`, `TUPAC16Adapter`
 

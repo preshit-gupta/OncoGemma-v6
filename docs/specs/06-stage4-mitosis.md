@@ -122,7 +122,7 @@ hotspots (SPEC-05) ─► sweep tiles @0.25µm/px (ownership) ─► Stage A: Ko
 - **Output.** Points with `p_A`, stored raw at `min_prob = 0.01` in `mitosis/stage_a.parquet`.
 - **Calibration.** `p_A` is calibrated with isotonic regression on MIDOG++ breast **val**. A detection is labelled positive when it matches a ground-truth mitotic figure within 7.5 µm (1:1).
 - **`τ_A`.** The smallest threshold such that Stage-A recall on val is ≥ 0.95. If recall 0.95 is unreachable, `τ_A = 0.01` and the recall ceiling is reported.
-- **Arm A1** (KongNet only) instead uses `τ_A* = argmax F1(val)`.
+- **Arm A1** (KongNet only) instead uses `τ_A* = argmax F1(val)`. A1 is **not** a KongNet validation (SPEC-00 R1). It is the free reference row, computed from the same cached Stage-A detections, against which the value added by the rest of the pipeline is measured.
 
 ### 5.3 Stage B: trained mitotic-figure classifier
 
@@ -247,7 +247,7 @@ After decisions, a global greedy NMS with radius `r_nms` runs in µm, ordered by
 | NS-M development | MIDOG++ breast val (case-level split; component harness) | object |
 | NS-M domain robustness | MIDOG++ breast LOSO (train on 2 scanners, evaluate on the 3rd) | object |
 | `F1_M` development | TCGA val (full pipeline) | slide |
-| NS-M final | MIDOG++ breast test **after the contamination check** (SPEC-00 R1). Also the TUPAC16 auxiliary set if obtained, and `tcga_gt_mitosis` if created | object |
+| NS-M final | MIDOG++ breast test. Also the TUPAC16 auxiliary set if obtained (SPEC-00 §3.1), and `tcga_gt_mitosis` if created | object |
 | `F1_M` final | TCGA test (locked) | slide |
 
 ### 6.2 Attribution study (first deliverable; v5 → v6)
@@ -288,7 +288,7 @@ Each arm is run with the tumour-cell gate on and off for `F1_M`.
 | # | Criterion |
 |---|---|
 | AC1 | The attribution table (§6.2) exists. RC1 and RC2 removal each show precision gain with a paired CI lower bound > 0, **or** the table shows they were immaterial |
-| AC2 | The chosen arm's NS-M on uncontaminated breast test is reported with CI. Proposed floor ≥ 0.70 (SPEC-00 §2.5) |
+| AC2 | The chosen arm's NS-M on the MIDOG++ breast test is reported with CI. Floor ≥ 0.70 (SPEC-00 §2.5) |
 | AC3 | Over-count resolved: the mean signed count error per 2 mm² on MIDOG++ breast test has a 95% CI containing 0, or with upper bound ≤ +0.5 |
 | AC4 | `F1_M` on TCGA val improves over A0 (paired ΔF1 lower bound > 0) |
 | AC5 | mpp contract: every detector request carries `mpp = 0.25 ± 1%`. The service rejects 0.5 (integration test) |
@@ -331,7 +331,7 @@ Used only if capacity exists. It adds a TCGA-native NS-M slice, and produces `tc
 
 | Risk | Mitigation |
 |---|---|
-| KongNet training overlaps MIDOG++ breast (SPEC-00 R1) | Contamination check before test. Alternative test sets |
+| KongNet may have seen MIDOG++ breast cases in training (SPEC-00 R1) | Accepted: KongNet is treated as externally validated. Arm comparisons are paired and share KongNet. Absolute MIDOG++ NS-M carries the limitation note in reports |
 | MIDOG++ breast val is small (about 30 cases) | Use LOSO folds, report CIs, and treat results as provisional per the SPEC-00 §2.4 rule |
 | TCGA scanners and staining differ from MIDOG++ | `F1_M` on TCGA val is part of selection. Stain augmentation. SPEC-09 corrections |
 | An evaluation dataset annotates dividing cells as two figures | Ground-truth harmonisation (§3.1), applied identically to all arms and reported |
