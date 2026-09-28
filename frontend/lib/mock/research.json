@@ -1,0 +1,1834 @@
+{
+  "runs": [
+    {
+      "id": "run_01",
+      "name": "TCGA-BRCA Validated Arm P2",
+      "dataset": "tcga_brca_dx",
+      "split": "val",
+      "arm": "P2:ordinal_morph",
+      "status": "completed",
+      "is_locked_test": false,
+      "created_by": "lead_evaluator",
+      "created_at": "2026-09-28T09:30:00Z",
+      "finished_at": "2026-09-28T11:45:00Z",
+      "n_items": 20,
+      "n_failed": 0,
+      "headline": {
+        "ns_m": {
+          "value": 0.71,
+          "ci_low": 0.66,
+          "ci_high": 0.76,
+          "n": 30,
+          "status": "final"
+        },
+        "ns_g": {
+          "value": 0.58,
+          "ci_low": 0.49,
+          "ci_high": 0.67,
+          "n": 104,
+          "status": "provisional"
+        }
+      },
+      "gate": {
+        "valid": true,
+        "int_prov": 1.0,
+        "int_fall": 0,
+        "disjoint": true
+      },
+      "config_hash": "3f2a89c4b1e0",
+      "registry_sha256": "9d16e702c813a890e0b3c66f24d77618",
+      "splits_lock_sha256": "e3b0c44298fc1c149afbf4c8996fb924",
+      "manifest_sha256": "a1b2c3d4e5f67890123456789abcdef0",
+      "stages": [
+        "s3_triage",
+        "s4_mitosis",
+        "s5_grading"
+      ],
+      "license_scopes": [
+        "commercial_ok"
+      ]
+    },
+    {
+      "id": "run_02",
+      "name": "P1-VLM Unvalidated Fallback Arm",
+      "dataset": "tcga_brca_dx",
+      "split": "val",
+      "arm": "P1:vlm_prompt",
+      "status": "failed",
+      "is_locked_test": false,
+      "created_by": "eval_runner",
+      "created_at": "2026-09-28T08:00:00Z",
+      "finished_at": "2026-09-28T09:15:00Z",
+      "n_items": 20,
+      "n_failed": 2,
+      "headline": {
+        "ns_m": {
+          "value": 0.68,
+          "ci_low": 0.61,
+          "ci_high": 0.75,
+          "n": 30,
+          "status": "invalid"
+        },
+        "ns_g": {
+          "value": 0.54,
+          "ci_low": 0.45,
+          "ci_high": 0.63,
+          "n": 104,
+          "status": "invalid"
+        }
+      },
+      "gate": {
+        "valid": false,
+        "int_prov": 0.94,
+        "int_fall": 3,
+        "disjoint": false
+      },
+      "config_hash": "7c89b12a3e0f",
+      "registry_sha256": "9d16e702c813a890e0b3c66f24d77618",
+      "splits_lock_sha256": "e3b0c44298fc1c149afbf4c8996fb924",
+      "manifest_sha256": "a1b2c3d4e5f67890123456789abcdef0",
+      "stages": [
+        "s3_triage",
+        "s4_mitosis",
+        "s5_grading"
+      ],
+      "license_scopes": [
+        "commercial_ok",
+        "research"
+      ]
+    }
+  ],
+  "metrics": {
+    "metrics_schema_version": 1,
+    "run_id": "run_01",
+    "generated_at": "2026-09-28T12:00:00Z",
+    "bootstrap": {
+      "B": 2000,
+      "seed": 42
+    },
+    "coverage": 1.0,
+    "headline": {
+      "ns_m": {
+        "value": 0.71,
+        "ci_low": 0.66,
+        "ci_high": 0.76,
+        "n": 30,
+        "status": "final"
+      },
+      "ns_g": {
+        "value": 0.58,
+        "ci_low": 0.49,
+        "ci_high": 0.67,
+        "n": 104,
+        "status": "provisional"
+      }
+    },
+    "stages": {
+      "s3": {
+        "f1": {
+          "value": 0.84,
+          "ci_low": 0.81,
+          "ci_high": 0.87,
+          "n": 104,
+          "status": "final"
+        },
+        "p_at_k": {
+          "value": 0.89,
+          "ci_low": 0.85,
+          "ci_high": 0.93,
+          "n": 104,
+          "status": "final"
+        },
+        "coverage": 1.0
+      },
+      "s4": {
+        "f1": {
+          "value": 0.71,
+          "ci_low": 0.66,
+          "ci_high": 0.76,
+          "n": 30,
+          "status": "final"
+        },
+        "precision": {
+          "value": 0.74,
+          "ci_low": 0.68,
+          "ci_high": 0.8,
+          "n": 30,
+          "status": "final"
+        },
+        "recall": {
+          "value": 0.68,
+          "ci_low": 0.62,
+          "ci_high": 0.74,
+          "n": 30,
+          "status": "final"
+        },
+        "ap": 0.76,
+        "count_mae_per_2mm2": {
+          "value": 2.1,
+          "ci_low": 1.8,
+          "ci_high": 2.4,
+          "n": 30,
+          "status": "final"
+        },
+        "count_bias_per_2mm2": {
+          "value": -0.3,
+          "ci_low": -0.6,
+          "ci_high": 0.1,
+          "n": 30,
+          "status": "final"
+        },
+        "per_scanner": {
+          "Hamamatsu": {
+            "value": 0.72,
+            "ci_low": 0.65,
+            "ci_high": 0.79,
+            "n": 15,
+            "status": "final"
+          },
+          "Leica": {
+            "value": 0.7,
+            "ci_low": 0.63,
+            "ci_high": 0.77,
+            "n": 15,
+            "status": "final"
+          }
+        },
+        "per_mag": {
+          "40x": {
+            "value": 0.73,
+            "ci_low": 0.67,
+            "ci_high": 0.79,
+            "n": 20,
+            "status": "final"
+          },
+          "20x": {
+            "value": 0.67,
+            "ci_low": 0.58,
+            "ci_high": 0.76,
+            "n": 10,
+            "status": "provisional"
+          }
+        }
+      },
+      "s5": {
+        "f1_t": {
+          "value": 0.68,
+          "ci_low": 0.61,
+          "ci_high": 0.75,
+          "n": 104,
+          "status": "final"
+        },
+        "f1_p": {
+          "value": 0.63,
+          "ci_low": 0.56,
+          "ci_high": 0.7,
+          "n": 104,
+          "status": "final"
+        },
+        "f1_m": {
+          "value": 0.72,
+          "ci_low": 0.65,
+          "ci_high": 0.79,
+          "n": 104,
+          "status": "final"
+        },
+        "f1_high": {
+          "value": 0.81,
+          "ci_low": 0.74,
+          "ci_high": 0.88,
+          "n": 42,
+          "status": "final"
+        },
+        "macro_f1_lm": {
+          "value": 0.62,
+          "ci_low": 0.54,
+          "ci_high": 0.7,
+          "n": 62,
+          "status": "final"
+        },
+        "sum_mae": {
+          "value": 0.75,
+          "ci_low": 0.64,
+          "ci_high": 0.86,
+          "n": 104,
+          "status": "final"
+        },
+        "qwk": {
+          "value": 0.69,
+          "ci_low": 0.62,
+          "ci_high": 0.76,
+          "n": 104,
+          "status": "final"
+        },
+        "histotype_f1": {
+          "value": 0.88,
+          "ci_low": 0.82,
+          "ci_high": 0.94,
+          "n": 104,
+          "status": "final"
+        },
+        "ilc_f1": {
+          "value": 0.82,
+          "ci_low": 0.71,
+          "ci_high": 0.93,
+          "n": 24,
+          "status": "provisional"
+        }
+      }
+    },
+    "confusion": {
+      "grade": {
+        "labels": [
+          1,
+          2,
+          3,
+          "none"
+        ],
+        "matrix": [
+          [
+            18,
+            4,
+            0,
+            0
+          ],
+          [
+            3,
+            38,
+            5,
+            0
+          ],
+          [
+            0,
+            6,
+            30,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ]
+      },
+      "tubule": {
+        "labels": [
+          1,
+          2,
+          3,
+          "none"
+        ],
+        "matrix": [
+          [
+            14,
+            5,
+            1,
+            0
+          ],
+          [
+            4,
+            45,
+            6,
+            0
+          ],
+          [
+            0,
+            4,
+            25,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ]
+      },
+      "pleo": {
+        "labels": [
+          1,
+          2,
+          3,
+          "none"
+        ],
+        "matrix": [
+          [
+            12,
+            6,
+            0,
+            0
+          ],
+          [
+            5,
+            42,
+            7,
+            0
+          ],
+          [
+            1,
+            5,
+            26,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ]
+      },
+      "mitotic": {
+        "labels": [
+          1,
+          2,
+          3,
+          "none"
+        ],
+        "matrix": [
+          [
+            28,
+            4,
+            0,
+            0
+          ],
+          [
+            3,
+            32,
+            4,
+            0
+          ],
+          [
+            0,
+            3,
+            30,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    "slices": [
+      {
+        "slice": "specimen_type",
+        "key": "Resection",
+        "metric": "ns_g",
+        "value": 0.6,
+        "ci_low": 0.51,
+        "ci_high": 0.69,
+        "n": 78
+      },
+      {
+        "slice": "specimen_type",
+        "key": "CNB",
+        "metric": "ns_g",
+        "value": 0.52,
+        "ci_low": 0.39,
+        "ci_high": 0.65,
+        "n": 26
+      },
+      {
+        "slice": "scanner",
+        "key": "Aperio",
+        "metric": "ns_g",
+        "value": 0.59,
+        "ci_low": 0.48,
+        "ci_high": 0.7,
+        "n": 54
+      },
+      {
+        "slice": "scanner",
+        "key": "Hamamatsu",
+        "metric": "ns_g",
+        "value": 0.57,
+        "ci_low": 0.46,
+        "ci_high": 0.68,
+        "n": 50
+      },
+      {
+        "slice": "native_mag",
+        "key": "40x",
+        "metric": "ns_g",
+        "value": 0.61,
+        "ci_low": 0.51,
+        "ci_high": 0.71,
+        "n": 68
+      },
+      {
+        "slice": "native_mag",
+        "key": "20x",
+        "metric": "ns_g",
+        "value": 0.53,
+        "ci_low": 0.4,
+        "ci_high": 0.66,
+        "n": 36
+      },
+      {
+        "slice": "grade_band",
+        "key": "Low (3-5)",
+        "metric": "ns_g",
+        "value": 0.72,
+        "ci_low": 0.6,
+        "ci_high": 0.84,
+        "n": 22
+      },
+      {
+        "slice": "grade_band",
+        "key": "Mid (6-7)",
+        "metric": "ns_g",
+        "value": 0.58,
+        "ci_low": 0.47,
+        "ci_high": 0.69,
+        "n": 46
+      },
+      {
+        "slice": "grade_band",
+        "key": "High (8-9)",
+        "metric": "ns_g",
+        "value": 0.78,
+        "ci_low": 0.69,
+        "ci_high": 0.87,
+        "n": 36
+      }
+    ],
+    "calibration": {
+      "p_a": {
+        "ece": 0.038,
+        "bins": [
+          {
+            "p_mean": 0.1,
+            "frac_pos": 0.08,
+            "n": 250
+          },
+          {
+            "p_mean": 0.3,
+            "frac_pos": 0.28,
+            "n": 180
+          },
+          {
+            "p_mean": 0.5,
+            "frac_pos": 0.49,
+            "n": 140
+          },
+          {
+            "p_mean": 0.7,
+            "frac_pos": 0.72,
+            "n": 190
+          },
+          {
+            "p_mean": 0.9,
+            "frac_pos": 0.93,
+            "n": 310
+          }
+        ]
+      },
+      "p_b": {
+        "ece": 0.042,
+        "bins": [
+          {
+            "p_mean": 0.1,
+            "frac_pos": 0.07,
+            "n": 210
+          },
+          {
+            "p_mean": 0.3,
+            "frac_pos": 0.31,
+            "n": 160
+          },
+          {
+            "p_mean": 0.5,
+            "frac_pos": 0.53,
+            "n": 130
+          },
+          {
+            "p_mean": 0.7,
+            "frac_pos": 0.68,
+            "n": 175
+          },
+          {
+            "p_mean": 0.9,
+            "frac_pos": 0.91,
+            "n": 280
+          }
+        ]
+      },
+      "p_tumor": {
+        "ece": 0.029,
+        "bins": [
+          {
+            "p_mean": 0.1,
+            "frac_pos": 0.09,
+            "n": 1200
+          },
+          {
+            "p_mean": 0.3,
+            "frac_pos": 0.29,
+            "n": 800
+          },
+          {
+            "p_mean": 0.5,
+            "frac_pos": 0.51,
+            "n": 650
+          },
+          {
+            "p_mean": 0.7,
+            "frac_pos": 0.71,
+            "n": 920
+          },
+          {
+            "p_mean": 0.9,
+            "frac_pos": 0.92,
+            "n": 1500
+          }
+        ]
+      }
+    },
+    "curves": {
+      "mitosis_pr": {
+        "thresholds": [
+          0.1,
+          0.2,
+          0.3,
+          0.4,
+          0.5,
+          0.6,
+          0.7,
+          0.8,
+          0.9
+        ],
+        "precision": [
+          0.55,
+          0.62,
+          0.68,
+          0.72,
+          0.74,
+          0.78,
+          0.83,
+          0.89,
+          0.94
+        ],
+        "recall": [
+          0.85,
+          0.81,
+          0.76,
+          0.71,
+          0.68,
+          0.61,
+          0.54,
+          0.45,
+          0.32
+        ],
+        "f1": [
+          0.67,
+          0.7,
+          0.72,
+          0.71,
+          0.71,
+          0.68,
+          0.65,
+          0.6,
+          0.48
+        ]
+      }
+    },
+    "cost": {
+      "usd_total": 24.8,
+      "usd_per_slide": 1.24,
+      "by_model": {
+        "detector_yolo": {
+          "calls": 104,
+          "usd": 1.5,
+          "p50_ms": 120,
+          "p95_ms": 180
+        },
+        "classifier_resnet": {
+          "calls": 650,
+          "usd": 3.2,
+          "p50_ms": 45,
+          "p95_ms": 85
+        },
+        "verifier_vlm": {
+          "calls": 140,
+          "usd": 14.5,
+          "p50_ms": 850,
+          "p95_ms": 1450
+        },
+        "nuclei_stardist": {
+          "calls": 104,
+          "usd": 2.8,
+          "p50_ms": 230,
+          "p95_ms": 380
+        },
+        "tubule_gemini": {
+          "calls": 48,
+          "usd": 2.8,
+          "p50_ms": 920,
+          "p95_ms": 1520
+        }
+      }
+    }
+  },
+  "items": [
+    {
+      "slide_id": "TCGA-A2-1001",
+      "patient_id": "TCGA-A2-P1",
+      "status": "succeeded",
+      "failed_stage": null,
+      "error_class": null,
+      "gt": {
+        "grade": 3,
+        "total": 8,
+        "tubule": 2,
+        "pleo": 3,
+        "mitoses": 1,
+        "histotype": "IDC-NST"
+      },
+      "pred": {
+        "grade": 3,
+        "total": 8,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 1,
+        "histotype": "IDC-NST"
+      },
+      "sum_error": 0,
+      "runtime_s": 44.3,
+      "cost_usd": 1.17
+    },
+    {
+      "slide_id": "TCGA-A2-1002",
+      "patient_id": "TCGA-A2-P2",
+      "status": "succeeded",
+      "failed_stage": null,
+      "error_class": null,
+      "gt": {
+        "grade": 2,
+        "total": 6,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 2,
+        "histotype": "IDC-NST"
+      },
+      "pred": {
+        "grade": 2,
+        "total": 6,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 2,
+        "histotype": "IDC-NST"
+      },
+      "sum_error": 0,
+      "runtime_s": 46.1,
+      "cost_usd": 1.19
+    },
+    {
+      "slide_id": "TCGA-A2-1003",
+      "patient_id": "TCGA-A2-P3",
+      "status": "succeeded",
+      "failed_stage": null,
+      "error_class": null,
+      "gt": {
+        "grade": 1,
+        "total": 4,
+        "tubule": 2,
+        "pleo": 3,
+        "mitoses": 1,
+        "histotype": "IDC-NST"
+      },
+      "pred": {
+        "grade": 1,
+        "total": 4,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 1,
+        "histotype": "IDC-NST"
+      },
+      "sum_error": 0,
+      "runtime_s": 47.9,
+      "cost_usd": 1.21
+    },
+    {
+      "slide_id": "TCGA-A2-1004",
+      "patient_id": "TCGA-A2-P4",
+      "status": "succeeded",
+      "failed_stage": null,
+      "error_class": null,
+      "gt": {
+        "grade": 2,
+        "total": 6,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 2,
+        "histotype": "IDC-NST"
+      },
+      "pred": {
+        "grade": 2,
+        "total": 6,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 2,
+        "histotype": "IDC-NST"
+      },
+      "sum_error": 0,
+      "runtime_s": 49.7,
+      "cost_usd": 1.23
+    },
+    {
+      "slide_id": "TCGA-A2-1005",
+      "patient_id": "TCGA-A2-P5",
+      "status": "succeeded",
+      "failed_stage": null,
+      "error_class": null,
+      "gt": {
+        "grade": 3,
+        "total": 8,
+        "tubule": 2,
+        "pleo": 3,
+        "mitoses": 1,
+        "histotype": "IDC-NST"
+      },
+      "pred": {
+        "grade": 3,
+        "total": 8,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 1,
+        "histotype": "IDC-NST"
+      },
+      "sum_error": 0,
+      "runtime_s": 51.5,
+      "cost_usd": 1.25
+    },
+    {
+      "slide_id": "TCGA-A2-1006",
+      "patient_id": "TCGA-A2-P6",
+      "status": "succeeded",
+      "failed_stage": null,
+      "error_class": null,
+      "gt": {
+        "grade": 2,
+        "total": 6,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 2,
+        "histotype": "IDC-NST"
+      },
+      "pred": {
+        "grade": 2,
+        "total": 6,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 2,
+        "histotype": "IDC-NST"
+      },
+      "sum_error": 0,
+      "runtime_s": 53.3,
+      "cost_usd": 1.27
+    },
+    {
+      "slide_id": "TCGA-A2-1007",
+      "patient_id": "TCGA-A2-P7",
+      "status": "succeeded",
+      "failed_stage": null,
+      "error_class": null,
+      "gt": {
+        "grade": 3,
+        "total": 8,
+        "tubule": 2,
+        "pleo": 3,
+        "mitoses": 1,
+        "histotype": "IDC-NST"
+      },
+      "pred": {
+        "grade": 2,
+        "total": 7,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 1,
+        "histotype": "IDC-NST"
+      },
+      "sum_error": -1,
+      "runtime_s": 55.1,
+      "cost_usd": 1.29
+    },
+    {
+      "slide_id": "TCGA-A2-1008",
+      "patient_id": "TCGA-A2-P8",
+      "status": "succeeded",
+      "failed_stage": null,
+      "error_class": null,
+      "gt": {
+        "grade": 2,
+        "total": 6,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 2,
+        "histotype": "IDC-NST"
+      },
+      "pred": {
+        "grade": 2,
+        "total": 6,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 2,
+        "histotype": "IDC-NST"
+      },
+      "sum_error": 0,
+      "runtime_s": 56.9,
+      "cost_usd": 1.3099999999999998
+    },
+    {
+      "slide_id": "TCGA-A2-1009",
+      "patient_id": "TCGA-A2-P9",
+      "status": "succeeded",
+      "failed_stage": null,
+      "error_class": null,
+      "gt": {
+        "grade": 1,
+        "total": 4,
+        "tubule": 2,
+        "pleo": 3,
+        "mitoses": 1,
+        "histotype": "IDC-NST"
+      },
+      "pred": {
+        "grade": 1,
+        "total": 4,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 1,
+        "histotype": "IDC-NST"
+      },
+      "sum_error": 0,
+      "runtime_s": 58.7,
+      "cost_usd": 1.3299999999999998
+    },
+    {
+      "slide_id": "TCGA-A2-1010",
+      "patient_id": "TCGA-A2-P10",
+      "status": "succeeded",
+      "failed_stage": null,
+      "error_class": null,
+      "gt": {
+        "grade": 2,
+        "total": 6,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 2,
+        "histotype": "IDC-NST"
+      },
+      "pred": {
+        "grade": 2,
+        "total": 6,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 2,
+        "histotype": "IDC-NST"
+      },
+      "sum_error": 0,
+      "runtime_s": 60.5,
+      "cost_usd": 1.3499999999999999
+    },
+    {
+      "slide_id": "TCGA-A2-1011",
+      "patient_id": "TCGA-A2-P11",
+      "status": "succeeded",
+      "failed_stage": null,
+      "error_class": null,
+      "gt": {
+        "grade": 3,
+        "total": 8,
+        "tubule": 2,
+        "pleo": 3,
+        "mitoses": 1,
+        "histotype": "IDC-NST"
+      },
+      "pred": {
+        "grade": 3,
+        "total": 8,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 1,
+        "histotype": "IDC-NST"
+      },
+      "sum_error": 0,
+      "runtime_s": 62.3,
+      "cost_usd": 1.3699999999999999
+    },
+    {
+      "slide_id": "TCGA-A2-1012",
+      "patient_id": "TCGA-A2-P12",
+      "status": "succeeded",
+      "failed_stage": null,
+      "error_class": null,
+      "gt": {
+        "grade": 2,
+        "total": 6,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 2,
+        "histotype": "IDC-NST"
+      },
+      "pred": {
+        "grade": 2,
+        "total": 6,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 2,
+        "histotype": "IDC-NST"
+      },
+      "sum_error": 0,
+      "runtime_s": 64.1,
+      "cost_usd": 1.39
+    },
+    {
+      "slide_id": "TCGA-A2-1013",
+      "patient_id": "TCGA-A2-P13",
+      "status": "failed",
+      "failed_stage": "s4_mitosis",
+      "error_class": "tissue_fold_severe",
+      "gt": {
+        "grade": 3,
+        "total": 8,
+        "tubule": 2,
+        "pleo": 3,
+        "mitoses": 1,
+        "histotype": "IDC-NST"
+      },
+      "pred": {
+        "grade": 3,
+        "total": 8,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 1,
+        "histotype": "IDC-NST"
+      },
+      "sum_error": 0,
+      "runtime_s": 65.9,
+      "cost_usd": 1.41
+    },
+    {
+      "slide_id": "TCGA-A2-1014",
+      "patient_id": "TCGA-A2-P14",
+      "status": "succeeded",
+      "failed_stage": null,
+      "error_class": null,
+      "gt": {
+        "grade": 2,
+        "total": 6,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 2,
+        "histotype": "IDC-NST"
+      },
+      "pred": {
+        "grade": 2,
+        "total": 6,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 2,
+        "histotype": "IDC-NST"
+      },
+      "sum_error": 0,
+      "runtime_s": 67.7,
+      "cost_usd": 1.43
+    },
+    {
+      "slide_id": "TCGA-A2-1015",
+      "patient_id": "TCGA-A2-P15",
+      "status": "succeeded",
+      "failed_stage": null,
+      "error_class": null,
+      "gt": {
+        "grade": 1,
+        "total": 4,
+        "tubule": 2,
+        "pleo": 3,
+        "mitoses": 1,
+        "histotype": "IDC-NST"
+      },
+      "pred": {
+        "grade": 1,
+        "total": 4,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 1,
+        "histotype": "IDC-NST"
+      },
+      "sum_error": 0,
+      "runtime_s": 69.5,
+      "cost_usd": 1.45
+    },
+    {
+      "slide_id": "TCGA-A2-1016",
+      "patient_id": "TCGA-A2-P16",
+      "status": "succeeded",
+      "failed_stage": null,
+      "error_class": null,
+      "gt": {
+        "grade": 2,
+        "total": 6,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 2,
+        "histotype": "IDC-NST"
+      },
+      "pred": {
+        "grade": 2,
+        "total": 6,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 2,
+        "histotype": "IDC-NST"
+      },
+      "sum_error": 0,
+      "runtime_s": 71.3,
+      "cost_usd": 1.47
+    },
+    {
+      "slide_id": "TCGA-A2-1017",
+      "patient_id": "TCGA-A2-P17",
+      "status": "succeeded",
+      "failed_stage": null,
+      "error_class": null,
+      "gt": {
+        "grade": 3,
+        "total": 8,
+        "tubule": 2,
+        "pleo": 3,
+        "mitoses": 1,
+        "histotype": "IDC-NST"
+      },
+      "pred": {
+        "grade": 3,
+        "total": 8,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 1,
+        "histotype": "IDC-NST"
+      },
+      "sum_error": 0,
+      "runtime_s": 73.1,
+      "cost_usd": 1.49
+    },
+    {
+      "slide_id": "TCGA-A2-1018",
+      "patient_id": "TCGA-A2-P18",
+      "status": "succeeded",
+      "failed_stage": null,
+      "error_class": null,
+      "gt": {
+        "grade": 2,
+        "total": 6,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 2,
+        "histotype": "IDC-NST"
+      },
+      "pred": {
+        "grade": 2,
+        "total": 6,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 2,
+        "histotype": "IDC-NST"
+      },
+      "sum_error": 0,
+      "runtime_s": 74.9,
+      "cost_usd": 1.5099999999999998
+    },
+    {
+      "slide_id": "TCGA-A2-1019",
+      "patient_id": "TCGA-A2-P19",
+      "status": "succeeded",
+      "failed_stage": null,
+      "error_class": null,
+      "gt": {
+        "grade": 3,
+        "total": 8,
+        "tubule": 2,
+        "pleo": 3,
+        "mitoses": 1,
+        "histotype": "IDC-NST"
+      },
+      "pred": {
+        "grade": 3,
+        "total": 8,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 1,
+        "histotype": "IDC-NST"
+      },
+      "sum_error": 0,
+      "runtime_s": 76.7,
+      "cost_usd": 1.5299999999999998
+    },
+    {
+      "slide_id": "TCGA-A2-1020",
+      "patient_id": "TCGA-A2-P20",
+      "status": "succeeded",
+      "failed_stage": null,
+      "error_class": null,
+      "gt": {
+        "grade": 2,
+        "total": 6,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 2,
+        "histotype": "IDC-NST"
+      },
+      "pred": {
+        "grade": 2,
+        "total": 6,
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 2,
+        "histotype": "IDC-NST"
+      },
+      "sum_error": 0,
+      "runtime_s": 78.5,
+      "cost_usd": 1.5499999999999998
+    }
+  ],
+  "item_details": {
+    "TCGA-A2-1001": {
+      "item": {
+        "slide_id": "TCGA-A2-1001",
+        "patient_id": "TCGA-A2-P1",
+        "status": "succeeded",
+        "failed_stage": null,
+        "error_class": null,
+        "gt": {
+          "grade": 1,
+          "total": 4,
+          "tubule": 2,
+          "pleo": 1,
+          "mitoses": 1,
+          "histotype": "IDC-NST"
+        },
+        "pred": {
+          "grade": 1,
+          "total": 4,
+          "tubule": 2,
+          "pleo": 1,
+          "mitoses": 1,
+          "histotype": "IDC-NST"
+        },
+        "sum_error": 0,
+        "runtime_s": 44.3,
+        "cost_usd": 1.17
+      },
+      "case_id": "c_tcga_1001",
+      "decisions": [
+        {
+          "id": "dn_s3_01",
+          "task": "triage_heatmap",
+          "entity_type": "slide",
+          "entity_id": "TCGA-A2-1001",
+          "producer_kind": "model",
+          "producer_id": "tumor_unet",
+          "producer_version": "1.2.0",
+          "status": "ok",
+          "input_spec": {
+            "mpp": 1.0,
+            "patch_size_px": 224
+          },
+          "output": {
+            "hotspots_count": 10,
+            "mean_tumor_prob": 0.74
+          },
+          "latency_ms": 1240,
+          "children": [
+            {
+              "id": "dn_s4_01",
+              "task": "mitosis_detection",
+              "entity_type": "hotspot",
+              "entity_id": "hs_01",
+              "producer_kind": "model",
+              "producer_id": "detector_yolo",
+              "producer_version": "4.1.0",
+              "status": "ok",
+              "input_spec": {
+                "mpp": 0.25,
+                "roi_radius_um": 260
+              },
+              "output": {
+                "candidates": 12,
+                "p_a_max": 0.94
+              },
+              "latency_ms": 420,
+              "children": [
+                {
+                  "id": "dn_s4_02",
+                  "task": "mitosis_verification",
+                  "entity_type": "candidate",
+                  "entity_id": "cand_01",
+                  "producer_kind": "model",
+                  "producer_id": "vlm_verifier",
+                  "producer_version": "2.1.0",
+                  "status": "ok",
+                  "input_spec": {
+                    "crop_size_um": 64
+                  },
+                  "output": {
+                    "verdict": "MITOTIC_FIGURE",
+                    "criteria_met": true
+                  },
+                  "latency_ms": 890,
+                  "children": []
+                }
+              ]
+            },
+            {
+              "id": "dn_s5_01",
+              "task": "tubule_estimation",
+              "entity_type": "sample",
+              "entity_id": "tub_01",
+              "producer_kind": "model",
+              "producer_id": "tubule_gemini",
+              "producer_version": "2.5.0",
+              "status": "ok",
+              "input_spec": {
+                "sample_size_um": 512
+              },
+              "output": {
+                "tumor_present": true,
+                "tubule_percent": 35
+              },
+              "latency_ms": 950,
+              "children": []
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "mitosis_errors": [
+    {
+      "slide_id": "TCGA-A2-1002",
+      "kind": "fp",
+      "centroid_um": [
+        4250.0,
+        5180.0
+      ],
+      "crop_url": "/mock/err_01.png",
+      "gt_points_um": [],
+      "pred_points_um": [
+        [
+          4250.0,
+          5180.0
+        ]
+      ],
+      "p_a": 0.88,
+      "p_b": 0.79,
+      "vlm_verdict": "MITOTIC_FIGURE",
+      "rule_override": false,
+      "decision_record_id": "dr_fp_01"
+    },
+    {
+      "slide_id": "TCGA-A2-1003",
+      "kind": "fn",
+      "centroid_um": [
+        6120.0,
+        7840.0
+      ],
+      "crop_url": "/mock/err_02.png",
+      "gt_points_um": [
+        [
+          6120.0,
+          7840.0
+        ]
+      ],
+      "pred_points_um": [],
+      "p_a": 0.41,
+      "p_b": 0.32,
+      "vlm_verdict": "NOT_MITOTIC_FIGURE",
+      "rule_override": false,
+      "decision_record_id": "dr_fn_02"
+    },
+    {
+      "slide_id": "TCGA-A2-1005",
+      "kind": "fp",
+      "centroid_um": [
+        8420.0,
+        3190.0
+      ],
+      "crop_url": "/mock/err_03.png",
+      "gt_points_um": [],
+      "pred_points_um": [
+        [
+          8420.0,
+          3190.0
+        ]
+      ],
+      "p_a": 0.79,
+      "p_b": 0.65,
+      "vlm_verdict": "EQUIVOCAL",
+      "rule_override": true,
+      "decision_record_id": "dr_fp_03"
+    },
+    {
+      "slide_id": "TCGA-A2-1007",
+      "kind": "fn",
+      "centroid_um": [
+        11200.0,
+        9340.0
+      ],
+      "crop_url": "/mock/err_04.png",
+      "gt_points_um": [
+        [
+          11200.0,
+          9340.0
+        ]
+      ],
+      "pred_points_um": [],
+      "p_a": 0.35,
+      "p_b": 0.28,
+      "vlm_verdict": "NOT_MITOTIC_FIGURE",
+      "rule_override": false,
+      "decision_record_id": "dr_fn_04"
+    },
+    {
+      "slide_id": "TCGA-A2-1011",
+      "kind": "fp",
+      "centroid_um": [
+        5400.0,
+        6800.0
+      ],
+      "crop_url": "/mock/err_05.png",
+      "gt_points_um": [],
+      "pred_points_um": [
+        [
+          5400.0,
+          6800.0
+        ]
+      ],
+      "p_a": 0.91,
+      "p_b": 0.82,
+      "vlm_verdict": "MITOTIC_FIGURE",
+      "rule_override": false,
+      "decision_record_id": "dr_fp_05"
+    },
+    {
+      "slide_id": "TCGA-A2-1014",
+      "kind": "fn",
+      "centroid_um": [
+        7890.0,
+        4520.0
+      ],
+      "crop_url": "/mock/err_06.png",
+      "gt_points_um": [
+        [
+          7890.0,
+          4520.0
+        ]
+      ],
+      "pred_points_um": [],
+      "p_a": 0.44,
+      "p_b": 0.38,
+      "vlm_verdict": "EQUIVOCAL",
+      "rule_override": false,
+      "decision_record_id": "dr_fn_06"
+    }
+  ],
+  "compare": {
+    "a": {
+      "id": "run_01",
+      "name": "TCGA-BRCA Validated Arm P2",
+      "dataset": "tcga_brca_dx",
+      "split": "val",
+      "arm": "P2:ordinal_morph",
+      "status": "completed",
+      "is_locked_test": false,
+      "created_by": "lead_evaluator",
+      "created_at": "2026-09-28T09:30:00Z",
+      "finished_at": "2026-09-28T11:45:00Z",
+      "n_items": 20,
+      "n_failed": 0,
+      "headline": {
+        "ns_m": {
+          "value": 0.71,
+          "ci_low": 0.66,
+          "ci_high": 0.76,
+          "n": 30,
+          "status": "final"
+        },
+        "ns_g": {
+          "value": 0.58,
+          "ci_low": 0.49,
+          "ci_high": 0.67,
+          "n": 104,
+          "status": "provisional"
+        }
+      },
+      "gate": {
+        "valid": true,
+        "int_prov": 1.0,
+        "int_fall": 0,
+        "disjoint": true
+      }
+    },
+    "b": {
+      "id": "run_02",
+      "name": "P1-VLM Unvalidated Fallback Arm",
+      "dataset": "tcga_brca_dx",
+      "split": "val",
+      "arm": "P1:vlm_prompt",
+      "status": "failed",
+      "is_locked_test": false,
+      "created_by": "eval_runner",
+      "created_at": "2026-09-28T08:00:00Z",
+      "finished_at": "2026-09-28T09:15:00Z",
+      "n_items": 20,
+      "n_failed": 2,
+      "headline": {
+        "ns_m": {
+          "value": 0.68,
+          "ci_low": 0.61,
+          "ci_high": 0.75,
+          "n": 30,
+          "status": "invalid"
+        },
+        "ns_g": {
+          "value": 0.54,
+          "ci_low": 0.45,
+          "ci_high": 0.63,
+          "n": 104,
+          "status": "invalid"
+        }
+      },
+      "gate": {
+        "valid": false,
+        "int_prov": 0.94,
+        "int_fall": 3,
+        "disjoint": false
+      }
+    },
+    "manifest_sha256": "a1b2c3d4e5f67890123456789abcdef0",
+    "metrics": [
+      {
+        "metric": "NS-G macro-F1",
+        "a": {
+          "value": 0.58,
+          "ci_low": 0.49,
+          "ci_high": 0.67,
+          "n": 104,
+          "status": "provisional"
+        },
+        "b": {
+          "value": 0.54,
+          "ci_low": 0.45,
+          "ci_high": 0.63,
+          "n": 104,
+          "status": "invalid"
+        },
+        "delta": 0.04,
+        "delta_low": 0.01,
+        "delta_high": 0.07,
+        "mcnemar_p": 0.031
+      },
+      {
+        "metric": "NS-M F1",
+        "a": {
+          "value": 0.71,
+          "ci_low": 0.66,
+          "ci_high": 0.76,
+          "n": 30,
+          "status": "final"
+        },
+        "b": {
+          "value": 0.68,
+          "ci_low": 0.61,
+          "ci_high": 0.75,
+          "n": 30,
+          "status": "invalid"
+        },
+        "delta": 0.03,
+        "delta_low": -0.01,
+        "delta_high": 0.07
+      },
+      {
+        "metric": "F1_T (Tubules)",
+        "a": {
+          "value": 0.68,
+          "ci_low": 0.61,
+          "ci_high": 0.75,
+          "n": 104,
+          "status": "final"
+        },
+        "b": {
+          "value": 0.65,
+          "ci_low": 0.58,
+          "ci_high": 0.72,
+          "n": 104,
+          "status": "final"
+        },
+        "delta": 0.03,
+        "delta_low": 0.0,
+        "delta_high": 0.06
+      },
+      {
+        "metric": "F1_P (Pleomorphism)",
+        "a": {
+          "value": 0.63,
+          "ci_low": 0.56,
+          "ci_high": 0.7,
+          "n": 104,
+          "status": "final"
+        },
+        "b": {
+          "value": 0.57,
+          "ci_low": 0.49,
+          "ci_high": 0.65,
+          "n": 104,
+          "status": "invalid"
+        },
+        "delta": 0.06,
+        "delta_low": 0.02,
+        "delta_high": 0.1
+      }
+    ],
+    "slices": [
+      {
+        "slice": "specimen_type",
+        "key": "Resection",
+        "metric": "ns_g",
+        "delta": 0.05,
+        "delta_low": 0.01,
+        "delta_high": 0.09
+      },
+      {
+        "slice": "scanner",
+        "key": "Aperio",
+        "metric": "ns_g",
+        "delta": 0.04,
+        "delta_low": 0.0,
+        "delta_high": 0.08
+      },
+      {
+        "slice": "native_mag",
+        "key": "40x",
+        "metric": "ns_g",
+        "delta": 0.05,
+        "delta_low": 0.02,
+        "delta_high": 0.08
+      }
+    ],
+    "flips": [
+      {
+        "slide_id": "TCGA-A2-1007",
+        "component": "grade",
+        "a_correct": true,
+        "b_correct": false
+      },
+      {
+        "slide_id": "TCGA-A2-1012",
+        "component": "pleo",
+        "a_correct": true,
+        "b_correct": false
+      },
+      {
+        "slide_id": "TCGA-A2-1018",
+        "component": "tubule",
+        "a_correct": true,
+        "b_correct": false
+      }
+    ]
+  },
+  "issues": [
+    {
+      "id": "iss_01",
+      "title": "Pleomorphism overcall in lobular carcinoma nests",
+      "category": "biological",
+      "severity": "high",
+      "status": "triaged",
+      "metric_impact": {
+        "metric": "f1_p",
+        "slice": "histotype=ILC",
+        "est_delta": -0.08
+      },
+      "evidence": [
+        {
+          "run_id": "run_01",
+          "slide_id": "TCGA-A2-1007",
+          "entity_type": "field",
+          "entity_id": "p_03"
+        }
+      ],
+      "spec_ref": "SPEC-07 \u00a76.3",
+      "owner": "pathologist_01",
+      "created_by": "eval_auditor",
+      "created_at": "2026-09-28T10:15:00Z",
+      "resolved_in": null,
+      "resolution_note": null
+    },
+    {
+      "id": "iss_02",
+      "title": "Hamamatsu S360 boundary clipping false positive",
+      "category": "technical",
+      "severity": "medium",
+      "status": "open",
+      "metric_impact": {
+        "metric": "ns_m",
+        "slice": "scanner=Hamamatsu",
+        "est_delta": -0.03
+      },
+      "evidence": [
+        {
+          "run_id": "run_01",
+          "slide_id": "TCGA-A2-1002",
+          "decision_record_id": "dr_fp_01"
+        }
+      ],
+      "spec_ref": "SPEC-06 \u00a75.2",
+      "owner": null,
+      "created_by": "eval_auditor",
+      "created_at": "2026-09-28T11:00:00Z",
+      "resolved_in": null,
+      "resolution_note": null
+    },
+    {
+      "id": "iss_03",
+      "title": "Severe tissue fold causing triage timeout",
+      "category": "staging",
+      "severity": "low",
+      "status": "resolved",
+      "metric_impact": {
+        "metric": "coverage",
+        "slice": "tissue_coverage<0.4",
+        "est_delta": -0.01
+      },
+      "evidence": [
+        {
+          "run_id": "run_02",
+          "slide_id": "TCGA-A2-1013"
+        }
+      ],
+      "spec_ref": "SPEC-05 \u00a74.1",
+      "owner": "eval_engineer",
+      "created_by": "eval_runner",
+      "created_at": "2026-09-28T08:30:00Z",
+      "resolved_in": "run_01",
+      "resolution_note": "Fixed via adaptive QC threshold in commit 9d16e702"
+    }
+  ],
+  "annotation_tasks": [
+    {
+      "id": "task_mit_01",
+      "dataset": "midogpp_breast",
+      "slide_id": "MIDOG_CASE_42",
+      "kind": "mitosis_points",
+      "regions_um": [
+        [
+          [
+            4000.0,
+            4000.0
+          ],
+          [
+            4512.0,
+            4000.0
+          ],
+          [
+            4512.0,
+            4512.0
+          ],
+          [
+            4000.0,
+            4512.0
+          ]
+        ]
+      ],
+      "blind": true,
+      "definition_md": "# Mitotic Figure Protocol\nStandardised criteria per SPEC-06 \u00a73.",
+      "protocol_version": "sha256:prot_midog_v2",
+      "my_annotation": null
+    }
+  ],
+  "qa_items": [
+    {
+      "patient_id": "TCGA-A2-A0T0",
+      "report_text_url": "/mock/report_a0t0.txt",
+      "regex": {
+        "tubule": 2,
+        "pleo": 2,
+        "mitoses": 1,
+        "total": 5,
+        "grade": 1
+      },
+      "llm": {
+        "values": {
+          "tubule": 2,
+          "pleo": 2,
+          "mitoses": 1,
+          "total": 5,
+          "grade": 1
+        },
+        "evidence": [
+          {
+            "field": "grade",
+            "quote": "Nottingham combined histologic grade I (score 5)"
+          },
+          {
+            "field": "tubule",
+            "quote": "Tubule formation: moderate (score 2)"
+          },
+          {
+            "field": "pleo",
+            "quote": "Nuclear pleomorphism: moderate (score 2)"
+          },
+          {
+            "field": "mitoses",
+            "quote": "Mitotic count: low (score 1)"
+          }
+        ]
+      },
+      "status": "pending"
+    },
+    {
+      "patient_id": "TCGA-A2-A0T2",
+      "report_text_url": "/mock/report_a0t2.txt",
+      "regex": {
+        "tubule": 3,
+        "pleo": 3,
+        "mitoses": 2,
+        "total": 8,
+        "grade": 3
+      },
+      "llm": {
+        "values": {
+          "tubule": 3,
+          "pleo": 3,
+          "mitoses": 2,
+          "total": 8,
+          "grade": 3
+        },
+        "evidence": [
+          {
+            "field": "grade",
+            "quote": "Histologic Grade III (score 8/9)"
+          },
+          {
+            "field": "tubule",
+            "quote": "Glandular differentiation: score 3 (<10%)"
+          },
+          {
+            "field": "pleo",
+            "quote": "Nuclear pleomorphism: score 3 (marked)"
+          },
+          {
+            "field": "mitoses",
+            "quote": "Mitotic activity: score 2"
+          }
+        ]
+      },
+      "status": "accepted"
+    }
+  ]
+}
