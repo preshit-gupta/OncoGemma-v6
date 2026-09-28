@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { 
   Flame, 
   CheckCircle2, 
@@ -21,46 +21,18 @@ import {
   Edit3,
   Check
 } from "lucide-react";
-import { API_BASE, retryStage } from "@/lib/api";
+import { retryStage } from "@/lib/api";
+import { 
+  getTriage, 
+  postTriageEdits, 
+  confirmTriage, 
+  TriageStageV6, 
+  Hotspot, 
+  EditOp 
+} from "@/lib/api/triage";
 import { L } from "@/lib/labels";
 import { Provenance } from "../Provenance";
 import { OpenSeadragonViewer } from "./OpenSeadragonViewer";
-
-interface HotspotItem {
-  id: string;
-  polygon_um: number[][];
-  area_mm2: number;
-  prob_mean: number;
-  prob_max: number;
-  source: string;
-  excluded: boolean;
-  exclude_reason?: string | null;
-  thumbnail_url?: string | null;
-  medgemma_tumor_present?: boolean;
-  medgemma_lesion_type?: string;
-  medgemma_cellularity?: string;
-  medgemma_confidence?: string;
-  medgemma_rationale?: string;
-}
-
-interface TriageData {
-  case_id: string;
-  stage_execution_id: string;
-  status: string;
-  heatmap_png_uri: string | null;
-  heatmap_direct_url?: string | null;
-  prob_grid_uri: string | null;
-  grid: {
-    origin_um: number[];
-    stride_um: number;
-    nx: number;
-    ny: number;
-  };
-  machine_hotspots: HotspotItem[];
-  effective_hotspots: HotspotItem[];
-  review_edits: any[];
-  model_versions?: Record<string, string>;
-}
 
 interface TriageViewerProps {
   caseId: string;
@@ -83,7 +55,7 @@ export function TriageViewer({
   tileUrlTemplate = null,
   onAdvanceToMitosis
 }: TriageViewerProps) {
-  const [data, setData] = useState<TriageData | null>(null);
+  const [data, setData] = useState<TriageStageV6 | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [reprocessing, setReprocessing] = useState<boolean>(false);
@@ -91,75 +63,35 @@ export function TriageViewer({
   const [heatmapOpacity, setHeatmapOpacity] = useState<number>(0.6);
   const [showHeatmap, setShowHeatmap] = useState<boolean>(true);
   const [showHotspotMask, setShowHotspotMask] = useState<boolean>(true);
-  const [hotspotsList, setHotspotsList] = useState<HotspotItem[]>([]);
+  const [hotspotsList, setHotspotsList] = useState<Hotspot[]>([]);
+  const [conflictingHotspotIds, setConflictingHotspotIds] = useState<string[]>([]);
   const [selectedHotspotId, setSelectedHotspotId] = useState<string | null>(null);
-  const [previewHotspot, setPreviewHotspot] = useState<HotspotItem | null>(null);
-  const [modalMag, setModalMag] = useState<"10x" | "20x" | "40x">("10x");
-  const [stainMode, setStainMode] = useState<"norm" | "orig">("norm");
+  const [previewHotspot, setPreviewHotspot] = useState<Hotspot | null>(null);
   const [isAddingRoiMode, setIsAddingRoiMode] = useState<boolean>(false);
   const [noInvasiveTumor, setNoInvasiveTumor] = useState<boolean>(false);
   const [excludeReasonInput, setExcludeReasonInput] = useState<{ [id: string]: string }>({});
-  const [deletedHotspotIds, setDeletedHotspotIds] = useState<string[]>([]);
   const [roiDrawType, setRoiDrawType] = useState<"box" | "polygon">("box");
   const [activePolygonPoints, setActivePolygonPoints] = useState<[number, number][]>([]);
   const [editingVertexHotspotId, setEditingVertexHotspotId] = useState<string | null>(null);
 
-
-  const fetchTriageData = async (silent: boolean = false) => {
+  const fetchTriageData = useCallback(async (silent: boolean = false) => {
     try {
       if (!silent && !data) setLoading(true);
-      const res = await fetch(`${API_BASE}/api/v1/stages/triage/${caseId}?_t=${Date.now()}`, {
-        headers: { "X-User-Role": "pathologist" }
-      });
-      if (!res.ok) {
-        throw new Error(`Failed to fetch triage data (Status: ${res.status})`);
-      }
-      const json = await res.json();
-      setData(json);
-      const incomingHotspots = json.effective_hotspots || [];
-      setHotspotsList((prev) => {
-        // Retain unsaved user-added hotspots so background re-fetch never wipes them out
-        const userAdded = prev.filter(
-          (h) => h.source === "pathologist_added" && !incomingHotspots.some((ih: any) => ih.id === h.id)
-        );
-        return [...incomingHotspots, ...userAdded];
-      });
-      if (json.review_edits && Array.isArray(json.review_edits)) {
-        const deleted = json.review_edits
-          .filter((e: any) => e.op === "delete" && e.id)
-          .map((e: any) => e.id);
-        setDeletedHotspotIds(deleted);
-      }
+      setError(null);
+      const stageData = await getTriage(caseId);
+      setData(stageData);
+      setHotspotsList(stageData.hotspots || []);
+      setConflictingHotspotIds([]);
     } catch (err: any) {
-      if (!silent) setError(err.message || "Failed to load triage data");
+      if (!silent) setError(err.message || L.error.genericError);
     } finally {
       if (!silent) setLoading(false);
     }
-  };
-
-  const handleReprocessTriage = async () => {
-    try {
-      setReprocessing(true);
-      // Persist draft edits before reprocessing so the new attempt retains pathologist edits (#655)
-      try {
-        await handleSaveDraftEdits({ suppressSubmittingToggle: true });
-      } catch (saveErr) {
-        console.warn("Could not save draft edits before re-processing:", saveErr);
-      }
-      await retryStage(caseId, "triage");
-      if (onRefreshCase) onRefreshCase();
-      await fetchTriageData(true);
-    } catch (err: any) {
-      console.error(err);
-      setError(`Failed to re-process triage: ${err.message}`);
-    } finally {
-      setReprocessing(false);
-    }
-  };
+  }, [caseId, data]);
 
   useEffect(() => {
     fetchTriageData();
-  }, [caseId]);
+  }, [fetchTriageData]);
 
   // Auto-poll while triage is running or queued
   useEffect(() => {
@@ -169,28 +101,7 @@ export function TriageViewer({
       }, 3000);
       return () => clearInterval(timer);
     }
-  }, [caseId, data?.status]);
-
-  const handleExcludeHotspot = (id: string) => {
-    const reason = excludeReasonInput[id] || "Pathologist excluded";
-    setHotspotsList((prev) =>
-      prev.map((h) => (h.id === id ? { ...h, excluded: true, exclude_reason: reason } : h))
-    );
-  };
-
-  const handleRestoreHotspot = (id: string) => {
-    setHotspotsList((prev) =>
-      prev.map((h) => (h.id === id ? { ...h, excluded: false, exclude_reason: null } : h))
-    );
-  };
-
-  const handleDeleteHotspot = (id: string) => {
-    setDeletedHotspotIds((prev) => Array.from(new Set([...prev, id])));
-    setHotspotsList((prev) => prev.filter((h) => h.id !== id));
-    if (selectedHotspotId === id) setSelectedHotspotId(null);
-    if (previewHotspot?.id === id) setPreviewHotspot(null);
-    if (editingVertexHotspotId === id) setEditingVertexHotspotId(null);
-  };
+  }, [data, fetchTriageData]);
 
   const computePolygonAreaMm2 = (pts: number[][]): number => {
     if (!pts || pts.length < 3) return 0.36;
@@ -204,6 +115,51 @@ export function TriageViewer({
     return Number((Math.abs(area) / 2.0 / 1e6).toFixed(3));
   };
 
+  const executeEdits = async (edits: EditOp[]) => {
+    try {
+      setSubmitting(true);
+      setError(null);
+      const updated = await postTriageEdits(caseId, edits);
+      setData(updated);
+      setHotspotsList(updated.hotspots);
+      setConflictingHotspotIds([]);
+    } catch (err: any) {
+      if (err.data?.error === "hotspot_overlap") {
+        const ids = (err.data.ids || []).flat();
+        setConflictingHotspotIds(ids);
+        setError(L.error.hotspotOverlap);
+      } else if (err.data?.error === "invalid_polygon") {
+        setError(err.data.reason || L.error.invalidPolygon);
+      } else {
+        setError(err.message || L.error.genericError);
+      }
+      // Revert local hotspots list
+      if (data?.hotspots) {
+        setHotspotsList(data.hotspots);
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleExcludeHotspot = (id: string) => {
+    const reason = excludeReasonInput[id] || "Pathologist excluded";
+    executeEdits([{ op: "exclude", id, reason }]);
+  };
+
+  const handleRestoreHotspot = (id: string) => {
+    const target = hotspotsList.find((h) => h.id === id);
+    if (!target) return;
+    executeEdits([{ op: "modify", id, polygon_um: target.polygon_um }]);
+  };
+
+  const handleDeleteHotspot = (id: string) => {
+    executeEdits([{ op: "delete", id }]);
+    if (selectedHotspotId === id) setSelectedHotspotId(null);
+    if (previewHotspot?.id === id) setPreviewHotspot(null);
+    if (editingVertexHotspotId === id) setEditingVertexHotspotId(null);
+  };
+
   const handleAddRoiFromClick = (x_um: number, y_um: number) => {
     if (roiDrawType === "polygon") {
       const pt: [number, number] = [Number(x_um.toFixed(2)), Number(y_um.toFixed(2))];
@@ -211,9 +167,8 @@ export function TriageViewer({
       return;
     }
 
-    // Default 600x600 µm standardized HPF box
     const half_um = 300.0;
-    const polygon = [
+    const polygon: [number, number][] = [
       [Number((x_um - half_um).toFixed(2)), Number((y_um - half_um).toFixed(2))],
       [Number((x_um + half_um).toFixed(2)), Number((y_um - half_um).toFixed(2))],
       [Number((x_um + half_um).toFixed(2)), Number((y_um + half_um).toFixed(2))],
@@ -221,22 +176,8 @@ export function TriageViewer({
       [Number((x_um - half_um).toFixed(2)), Number((y_um - half_um).toFixed(2))]
     ];
 
-    // Collision-proof unique ROI identifier (#234)
-    const newId = `user_roi_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    const newHs: HotspotItem = {
-      id: newId,
-      polygon_um: polygon,
-      area_mm2: 0.36,
-      prob_mean: 0.88,
-      prob_max: 0.95,
-      source: "pathologist_added",
-      excluded: false
-    };
-
-    setHotspotsList((prev) => [...prev, newHs]);
     setIsAddingRoiMode(false);
-    setSelectedHotspotId(newId);
-    setPreviewHotspot(newHs);
+    executeEdits([{ op: "add", polygon_um: polygon }]);
   };
 
   const handleFinishCustomPolygon = () => {
@@ -245,7 +186,7 @@ export function TriageViewer({
       return;
     }
 
-    const closed = [...activePolygonPoints];
+    const closed: [number, number][] = [...activePolygonPoints];
     if (
       closed[0][0] !== closed[closed.length - 1][0] ||
       closed[0][1] !== closed[closed.length - 1][1]
@@ -253,192 +194,108 @@ export function TriageViewer({
       closed.push([closed[0][0], closed[0][1]]);
     }
 
-    const areaMm2 = computePolygonAreaMm2(closed);
-    // Collision-proof unique ROI identifier (#234)
-    const newId = `user_roi_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    const newHs: HotspotItem = {
-      id: newId,
-      polygon_um: closed,
-      area_mm2: areaMm2 > 0 ? areaMm2 : 0.36,
-      prob_mean: 0.88,
-      prob_max: 0.95,
-      source: "pathologist_added",
-      excluded: false
-    };
-
-    setHotspotsList((prev) => [...prev, newHs]);
     setActivePolygonPoints([]);
     setIsAddingRoiMode(false);
-    setSelectedHotspotId(newId);
-    setPreviewHotspot(newHs);
+    executeEdits([{ op: "add", polygon_um: closed }]);
   };
 
   const handleUpdateVertex = (hotspotId: string, vertexIndex: number, newX: number, newY: number) => {
-    setHotspotsList((prev) =>
-      prev.map((h) => {
-        if (h.id !== hotspotId) return h;
-        const newCoords = h.polygon_um.map((pt, idx) =>
-          idx === vertexIndex ? [Number(newX.toFixed(2)), Number(newY.toFixed(2))] : pt
-        );
-        if (vertexIndex === 0 && newCoords.length > 1) {
-          newCoords[newCoords.length - 1] = [newCoords[0][0], newCoords[0][1]];
-        }
-        const area = computePolygonAreaMm2(newCoords);
-        return {
-          ...h,
-          polygon_um: newCoords,
-          area_mm2: area > 0 ? area : h.area_mm2,
-          source: h.source === "pathologist_added" ? "pathologist_added" : "pathologist_modified"
-        };
-      })
+    const target = hotspotsList.find((h) => h.id === hotspotId);
+    if (!target) return;
+
+    const newCoords: [number, number][] = target.polygon_um.map((pt, idx) =>
+      idx === vertexIndex ? [Number(newX.toFixed(2)), Number(newY.toFixed(2))] : pt
     );
+    if (vertexIndex === 0 && newCoords.length > 1) {
+      newCoords[newCoords.length - 1] = [newCoords[0][0], newCoords[0][1]];
+    }
+
+    executeEdits([{ op: "modify", id: hotspotId, polygon_um: newCoords }]);
   };
 
   const handleAddVertex = (hotspotId: string, afterIndex: number) => {
-    setHotspotsList((prev) =>
-      prev.map((h) => {
-        if (h.id !== hotspotId) return h;
-        const pts = [...h.polygon_um];
-        const nextIdx = (afterIndex + 1) % pts.length;
-        const midX = (pts[afterIndex][0] + pts[nextIdx][0]) / 2.0;
-        const midY = (pts[afterIndex][1] + pts[nextIdx][1]) / 2.0;
-        pts.splice(afterIndex + 1, 0, [Number(midX.toFixed(2)), Number(midY.toFixed(2))]);
-        const area = computePolygonAreaMm2(pts);
-        return {
-          ...h,
-          polygon_um: pts,
-          area_mm2: area > 0 ? area : h.area_mm2,
-          source: h.source === "pathologist_added" ? "pathologist_added" : "pathologist_modified"
-        };
-      })
-    );
+    const target = hotspotsList.find((h) => h.id === hotspotId);
+    if (!target) return;
+
+    const pts: [number, number][] = [...target.polygon_um];
+    const nextIdx = (afterIndex + 1) % pts.length;
+    const midX = (pts[afterIndex][0] + pts[nextIdx][0]) / 2.0;
+    const midY = (pts[afterIndex][1] + pts[nextIdx][1]) / 2.0;
+    pts.splice(afterIndex + 1, 0, [Number(midX.toFixed(2)), Number(midY.toFixed(2))]);
+
+    executeEdits([{ op: "modify", id: hotspotId, polygon_um: pts }]);
   };
 
   const handleRemoveVertex = (hotspotId: string, vertexIndex: number) => {
-    setHotspotsList((prev) =>
-      prev.map((h) => {
-        if (h.id !== hotspotId) return h;
-        if (h.polygon_um.length <= 4) {
-          alert("Polygon must have at least 3 vertices (plus closing point).");
-          return h;
-        }
-        const pts = h.polygon_um.filter((_, idx) => idx !== vertexIndex);
-        if (vertexIndex === 0 && pts.length > 1) {
-          pts[pts.length - 1] = [pts[0][0], pts[0][1]];
-        }
-        const area = computePolygonAreaMm2(pts);
-        return {
-          ...h,
-          polygon_um: pts,
-          area_mm2: area > 0 ? area : h.area_mm2,
-          source: h.source === "pathologist_added" ? "pathologist_added" : "pathologist_modified"
-        };
-      })
-    );
+    const target = hotspotsList.find((h) => h.id === hotspotId);
+    if (!target) return;
+
+    if (target.polygon_um.length <= 4) {
+      alert("Polygon must have at least 3 vertices (plus closing point).");
+      return;
+    }
+    const pts: [number, number][] = target.polygon_um.filter((_, idx) => idx !== vertexIndex);
+    if (vertexIndex === 0 && pts.length > 1) {
+      pts[pts.length - 1] = [pts[0][0], pts[0][1]];
+    }
+
+    executeEdits([{ op: "modify", id: hotspotId, polygon_um: pts }]);
   };
 
-  const handleSaveDraftEdits = async (options?: { suppressSubmittingToggle?: boolean }) => {
-    if (!options?.suppressSubmittingToggle) {
-      setSubmitting(true);
-    }
-    try {
-      const machineIds = (data?.machine_hotspots || []).map((m: any) => m.id);
-      const survivingIds = new Set(hotspotsList.map((h) => h.id));
-      const missingMachineIds = machineIds.filter((mid) => !survivingIds.has(mid));
-      const allDeletedIds = Array.from(new Set([...deletedHotspotIds, ...missingMachineIds]));
-
-      const edits = [
-        ...allDeletedIds.map((id) => ({ op: "delete", id })),
-        ...hotspotsList.map((h) => {
-          if (h.excluded) {
-            return { op: "exclude", id: h.id, reason: h.exclude_reason };
-          } else if (h.source === "pathologist_added") {
-            return { op: "add", id: h.id, polygon_um: h.polygon_um, area_mm2: h.area_mm2 };
-          }
-          return { op: "modify", id: h.id, polygon_um: h.polygon_um };
-        })
-      ];
-
-      const res = await fetch(`${API_BASE}/api/v1/stages/triage/edits`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-User-Role": "pathologist"
-        },
-        body: JSON.stringify({ case_id: caseId, edits })
-      });
-
-      if (!res.ok) {
-        const errJson = await res.json().catch(() => ({}));
-        throw new Error(errJson.detail || `Failed to save draft edits (Status: ${res.status})`);
-      }
-      return true;
-    } catch (err: any) {
-      if (!options?.suppressSubmittingToggle) {
-        alert(`Error saving edits: ${err.message}`);
-      }
-      throw err;
-    } finally {
-      if (!options?.suppressSubmittingToggle) {
-        setSubmitting(false);
-      }
-    }
-  };
-
-  const handleConfirmStage = async () => {
+  const handleConfirmStage = async (zeroTumor: boolean = false) => {
     try {
       setSubmitting(true);
       setError(null);
-      await handleSaveDraftEdits({ suppressSubmittingToggle: true });
-
-      const res = await fetch(`${API_BASE}/api/v1/stages/triage/confirm`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-User-Role": "pathologist"
-        },
-        body: JSON.stringify({
-          case_id: caseId,
-          no_invasive_tumor: noInvasiveTumor,
-          reviewed_by: "pathologist_01"
-        })
-      });
-
-      if (!res.ok) {
-        const errJson = await res.json().catch(() => ({}));
-        throw new Error(errJson.detail || `Failed to confirm stage execution (Status: ${res.status})`);
-      }
-
-      const json = await res.json();
+      await confirmTriage(caseId, zeroTumor || noInvasiveTumor);
       if (data) {
         setData({ ...data, status: "confirmed" });
       }
-      if (onAdvanceToMitosis) {
+      if (onAdvanceToMitosis && !zeroTumor && !noInvasiveTumor) {
         onAdvanceToMitosis();
       } else if (onRefreshCase) {
         onRefreshCase();
       }
     } catch (err: any) {
-      console.error(err);
-      setError(`Error confirming triage: ${err.message}`);
+      setError(err.message || L.error.stageExecutionFailed);
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleReprocessTriage = async () => {
+    try {
+      setReprocessing(true);
+      await retryStage(caseId, "triage");
+      if (onRefreshCase) onRefreshCase();
+      await fetchTriageData(true);
+    } catch (err: any) {
+      setError(err.message || L.error.stageExecutionFailed);
+    } finally {
+      setReprocessing(false);
     }
   };
 
   const activeHotspotsCount = hotspotsList.filter((h) => !h.excluded).length;
   const totalAreaMm2 = hotspotsList
     .filter((h) => !h.excluded)
-    .reduce((sum, h) => sum + (h.area_mm2 || 0), 0);
+    .reduce((sum, h) => sum + computePolygonAreaMm2(h.polygon_um), 0);
 
-  const isHeatmapAvailable = Boolean(
-    data?.heatmap_png_uri ||
-    data?.status === "awaiting_review" ||
-    data?.status === "done" ||
-    data?.status === "confirmed"
-  );
-  const heatmapOverlayUri = isHeatmapAvailable
-    ? `${API_BASE}/api/v1/stages/triage/${caseId}/heatmap?v=${data?.stage_execution_id || ''}`
+  const viewerHotspots = hotspotsList.map((hs) => ({
+    id: hs.id,
+    polygon_um: hs.polygon_um,
+    area_mm2: computePolygonAreaMm2(hs.polygon_um),
+    source: hs.source,
+    excluded: hs.excluded,
+    conflicting: conflictingHotspotIds.includes(hs.id),
+  }));
+
+  const overlayGrid = data?.heatmap
+    ? {
+        origin_um: data.heatmap.origin_um,
+        stride_um: data.heatmap.tile_um,
+        nx: data.heatmap.nx,
+        ny: data.heatmap.ny,
+      }
     : null;
 
   if (loading) {
@@ -446,15 +303,6 @@ export function TriageViewer({
       <div className="w-full h-full bg-slate-950 flex flex-col items-center justify-center text-slate-400">
         <Loader2 className="w-8 h-8 animate-spin text-sky-500 mb-2" />
         <p className="text-sm font-medium">{L.status.extractingHotspots}</p>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="w-full h-full bg-slate-950 flex flex-col items-center justify-center text-rose-400">
-        <ShieldAlert className="w-10 h-10 mb-2" />
-        <p className="text-sm font-semibold">{error}</p>
       </div>
     );
   }
@@ -469,32 +317,76 @@ export function TriageViewer({
           mppY={mppY || mppX}
           imageWidthPx={imageWidthPx}
           imageHeightPx={imageHeightPx}
-          overlayImageUri={heatmapOverlayUri}
+          overlayImageUri={data?.heatmap?.png_url || null}
           overlayOpacity={heatmapOpacity}
-          showOverlay={showHeatmap}
+          showOverlay={showHeatmap && Boolean(data?.heatmap)}
           showHotspotMask={showHotspotMask}
-          hotspots={hotspotsList}
+          hotspots={viewerHotspots}
           selectedHotspotId={selectedHotspotId}
           onSelectHotspot={setSelectedHotspotId}
           isAddingRoiMode={isAddingRoiMode}
           onAddRoiClick={handleAddRoiFromClick}
           tileUrlTemplate={tileUrlTemplate}
-          grid={data?.grid}
+          grid={overlayGrid}
         />
+
+        {/* Flag banners */}
+        <div className="absolute top-4 left-4 right-4 z-20 flex flex-col space-y-2 pointer-events-none">
+          {data?.flags?.includes("hotspots_limited_by_tissue") && (
+            <div className="pointer-events-auto bg-sky-950/90 border border-sky-800 text-sky-200 text-xs px-4 py-2.5 rounded-lg shadow-lg flex items-center space-x-2 backdrop-blur">
+              <Info className="w-4 h-4 text-sky-400 shrink-0" />
+              <span>{L.help.hotspotsLimited}</span>
+            </div>
+          )}
+
+          {data?.flags?.includes("no_invasive_tumor_detected") && (
+            <div className="pointer-events-auto bg-amber-950/90 border border-amber-800 text-amber-200 text-xs px-4 py-2.5 rounded-lg shadow-lg flex items-center justify-between backdrop-blur">
+              <div className="flex items-center space-x-2">
+                <Info className="w-4 h-4 text-amber-400 shrink-0" />
+                <span>{L.help.noInvasiveDetected}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleConfirmStage(true)}
+                className="px-3 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded font-medium shadow-sm transition"
+              >
+                {L.action.confirmZeroTumor}
+              </button>
+            </div>
+          )}
+
+          {error && (
+            <div className="pointer-events-auto bg-rose-950/90 border border-rose-800 text-rose-200 text-xs px-4 py-2.5 rounded-lg shadow-lg flex items-center justify-between backdrop-blur">
+              <div className="flex items-center space-x-2">
+                <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{error}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setError(null)}
+                className="text-rose-400 hover:text-rose-200"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+        </div>
 
         {/* Interactive Click-to-Add ROI Floating Banner */}
         {isAddingRoiMode && (
-          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 bg-sky-950/95 border-2 border-sky-400 rounded-2xl px-5 py-2.5 shadow-2xl flex flex-col md:flex-row items-center space-y-2 md:space-y-0 md:space-x-3 backdrop-blur">
+          <div className="absolute top-16 left-1/2 -translate-x-1/2 z-30 bg-sky-950/95 border-2 border-sky-400 rounded-2xl px-5 py-2.5 shadow-2xl flex flex-col md:flex-row items-center space-y-2 md:space-y-0 md:space-x-3 backdrop-blur">
             <div className="flex items-center space-x-2">
               <Crosshair className="w-4 h-4 text-sky-400 animate-spin" />
               <div className="flex items-center bg-slate-900 border border-slate-700 rounded-lg p-0.5 text-xs font-bold">
                 <button
+                  type="button"
                   onClick={() => { setRoiDrawType("box"); setActivePolygonPoints([]); }}
                   className={`px-2.5 py-1 rounded ${roiDrawType === "box" ? "bg-sky-600 text-white" : "text-slate-400 hover:text-white"}`}
                 >
                   {L.action.boxRoi}
                 </button>
                 <button
+                  type="button"
                   onClick={() => { setRoiDrawType("polygon"); }}
                   className={`px-2.5 py-1 rounded flex items-center space-x-1 ${roiDrawType === "polygon" ? "bg-sky-600 text-white" : "text-slate-400 hover:text-white"}`}
                 >
@@ -513,6 +405,7 @@ export function TriageViewer({
             <div className="flex items-center space-x-2">
               {roiDrawType === "polygon" && activePolygonPoints.length >= 3 && (
                 <button
+                  type="button"
                   onClick={handleFinishCustomPolygon}
                   className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition flex items-center space-x-1 shadow-md"
                 >
@@ -521,6 +414,7 @@ export function TriageViewer({
                 </button>
               )}
               <button
+                type="button"
                 onClick={() => {
                   setIsAddingRoiMode(false);
                   setActivePolygonPoints([]);
@@ -534,7 +428,7 @@ export function TriageViewer({
         )}
 
         {/* Heatmap & Hotspot Locations Mask Floating Toolbar */}
-        <div className="absolute top-16 left-4 z-20 bg-slate-900/95 backdrop-blur border border-slate-800 rounded-lg p-3 shadow-xl flex flex-col space-y-2.5">
+        <div className="absolute bottom-6 left-4 z-20 bg-slate-900/95 backdrop-blur border border-slate-800 rounded-lg p-3 shadow-xl flex flex-col space-y-2.5">
           {/* Row 1: Tumor Heatmap Toggle */}
           <div className="flex items-center space-x-3 justify-between">
             <div className="flex items-center space-x-2 text-xs font-semibold text-slate-200">
@@ -590,25 +484,6 @@ export function TriageViewer({
               <div className="w-8 h-4 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-sky-600"></div>
             </label>
           </div>
-
-          {/* Colormap Legend */}
-          {showHeatmap && (
-            <div className="pt-2 border-t border-slate-800/80 flex items-center space-x-2 text-[10px] text-slate-400">
-              <span className="font-semibold text-slate-500">{L.field.scale}:</span>
-              <div className="flex items-center space-x-1">
-                <div className="w-2.5 h-2.5 rounded-sm bg-[#440154]" />
-                <span>{L.field.stroma}</span>
-              </div>
-              <div className="flex items-center space-x-1">
-                <div className="w-2.5 h-2.5 rounded-sm bg-[#21918c]" />
-                <span>{L.field.moderate}</span>
-              </div>
-              <div className="flex items-center space-x-1">
-                <div className="w-2.5 h-2.5 rounded-sm bg-[#fde725]" />
-                <span className="text-amber-300 font-semibold">{L.field.hotspotArea} {`(>75%)`}</span>
-              </div>
-            </div>
-          )}
         </div>
       </div>
 
@@ -623,8 +498,9 @@ export function TriageViewer({
             </h2>
           </div>
           <div className="flex items-center space-x-2">
-            <Provenance model_versions={data?.model_versions} />
+            {data?.provenance && <Provenance provenance={data.provenance} />}
             <button
+              type="button"
               onClick={() => fetchTriageData()}
               className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-xs font-semibold flex items-center space-x-1 transition shadow-sm"
               title={L.action.refresh}
@@ -633,6 +509,7 @@ export function TriageViewer({
               <span className="hidden sm:inline">{L.action.refresh}</span>
             </button>
             <button
+              type="button"
               onClick={handleReprocessTriage}
               disabled={reprocessing}
               className="p-1.5 bg-amber-600/20 hover:bg-amber-600/40 text-amber-400 border border-amber-500/30 rounded-lg text-xs font-semibold flex items-center space-x-1 transition shadow-sm"
@@ -666,6 +543,7 @@ export function TriageViewer({
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">{L.heading.proposedRois}</span>
             <button
+              type="button"
               onClick={() => setIsAddingRoiMode(!isAddingRoiMode)}
               className={`px-2.5 py-1 rounded text-xs font-semibold flex items-center space-x-1.5 transition ${
                 isAddingRoiMode
@@ -686,11 +564,23 @@ export function TriageViewer({
           ) : (
             hotspotsList.map((hs) => {
               const isSelected = selectedHotspotId === hs.id;
+              const isConflicting = conflictingHotspotIds.includes(hs.id);
+              const scoreKindLabel =
+                hs.score_kind === "prescan_then_tumor"
+                  ? L.field.prescanThenTumor
+                  : hs.score_kind === "prescan_expected_count"
+                  ? L.field.prescanExpectedCount
+                  : hs.score_kind === "mean_p_tumor"
+                  ? L.field.meanTumorProb
+                  : null;
+
               return (
                 <div
                   key={hs.id}
                   className={`p-3 rounded-lg border transition ${
-                    isSelected
+                    isConflicting
+                      ? "bg-rose-950/40 border-rose-500 ring-2 ring-rose-500/50 shadow-lg text-rose-200"
+                      : isSelected
                       ? "bg-slate-900 border-sky-500 ring-1 ring-sky-500/50 shadow-lg"
                       : hs.excluded
                       ? "bg-slate-950/40 border-slate-800/60 opacity-60"
@@ -699,7 +589,9 @@ export function TriageViewer({
                 >
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center space-x-2">
-                      <span className="font-mono text-xs font-bold text-sky-400">{hs.id}</span>
+                      <span className="font-mono text-xs font-bold text-sky-400">
+                        {hs.rank !== null ? `#${hs.rank}` : hs.id}
+                      </span>
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 font-mono">
                         {hs.source}
                       </span>
@@ -709,6 +601,7 @@ export function TriageViewer({
                       {!hs.excluded && (
                         <>
                           <button
+                            type="button"
                             onClick={() => {
                               setSelectedHotspotId(null);
                               setTimeout(() => setSelectedHotspotId(hs.id), 50);
@@ -725,6 +618,7 @@ export function TriageViewer({
                           </button>
 
                           <button
+                            type="button"
                             onClick={() => setEditingVertexHotspotId(editingVertexHotspotId === hs.id ? null : hs.id)}
                             className={`px-2 py-0.5 rounded text-[11px] font-semibold flex items-center space-x-1 transition ${
                               editingVertexHotspotId === hs.id
@@ -741,6 +635,7 @@ export function TriageViewer({
 
                       {hs.excluded ? (
                         <button
+                          type="button"
                           onClick={() => handleRestoreHotspot(hs.id)}
                           className="text-xs text-emerald-400 hover:underline font-semibold"
                         >
@@ -748,6 +643,7 @@ export function TriageViewer({
                         </button>
                       ) : (
                         <button
+                          type="button"
                           onClick={() => handleDeleteHotspot(hs.id)}
                           className="p-1 hover:bg-slate-800 text-slate-500 hover:text-rose-400 rounded"
                           title={L.help.deleteHotspot}
@@ -764,6 +660,7 @@ export function TriageViewer({
                       <div className="flex items-center justify-between text-[11px] font-bold text-amber-300">
                         <span>{L.heading.polygonVertices} {L.fmt.pointsCount(hs.polygon_um?.length || 0)}</span>
                         <button
+                          type="button"
                           onClick={() => handleAddVertex(hs.id, 0)}
                           className="px-1.5 py-0.5 bg-amber-950 hover:bg-amber-900 border border-amber-700 text-[10px] text-amber-200 rounded font-semibold"
                         >
@@ -791,6 +688,7 @@ export function TriageViewer({
                               />
                             </div>
                             <button
+                              type="button"
                               onClick={() => handleRemoveVertex(hs.id, vIdx)}
                               className="text-slate-600 hover:text-rose-400 p-0.5"
                               title={L.help.deletePoint}
@@ -803,53 +701,27 @@ export function TriageViewer({
                     </div>
                   )}
 
-                  {/* 10x Microscopic Patch Preview */}
-                  {!hs.excluded && (
-                    <div
-                      className="relative group/thumb cursor-pointer overflow-hidden rounded border border-slate-800 bg-slate-950 h-28 mb-2 flex items-center justify-center shadow-inner"
-                      onClick={() => setPreviewHotspot(hs)}
-                      title={L.help.inspectMorphology}
-                    >
-                      {(() => {
-                        const poly = hs.polygon_um || [];
-                        const cx = poly.length > 0 ? Math.round(poly.reduce((sum, p) => sum + p[0], 0) / poly.length) : 0;
-                        const cy = poly.length > 0 ? Math.round(poly.reduce((sum, p) => sum + p[1], 0) / poly.length) : 0;
-                        const thumbSrc = hs.thumbnail_url && !hs.thumbnail_url.includes("storage.googleapis.com")
-                          ? (hs.thumbnail_url.startsWith("http") ? hs.thumbnail_url : `${API_BASE}${hs.thumbnail_url}`)
-                          : `${API_BASE}/api/v1/stages/triage/${caseId}/hotspots/${hs.id}/thumbnail?mag=10x&cx=${cx}&cy=${cy}`;
-                        return (
-                          <img
-                            src={thumbSrc}
-                            alt={hs.id}
-                            className="w-full h-full object-cover group-hover/thumb:scale-105 transition-transform duration-200"
-                          />
-                        );
-                      })()}
-                      <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent flex items-end justify-between p-2 opacity-90 group-hover/thumb:opacity-100 transition">
-                        <span className="text-[10px] text-sky-300 font-semibold flex items-center space-x-1">
-                          <ZoomIn className="w-3 h-3" />
-                          <span>{L.unit.mag10x} {L.heading.patchView}</span>
-                        </span>
-                        <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-900/90 text-amber-300 border border-amber-500/30">
-                          {((hs.prob_mean || 0.7) * 100).toFixed(0)}{L.unit.percent} {L.field.tumorArea}
-                        </span>
+                  {/* Hotspot metadata */}
+                  <div className="grid grid-cols-2 gap-1.5 text-[11px] font-mono text-slate-400 mb-2">
+                    {scoreKindLabel && (
+                      <div className="col-span-2">
+                        {L.field.scoreKind}: <span className="text-sky-300">{scoreKindLabel}</span>
                       </div>
+                    )}
+                    {hs.tumor_fraction !== null && (
+                      <div>
+                        {L.field.tumorFraction}: <span className="text-slate-200">{Math.round(hs.tumor_fraction * 100)}%</span>
+                      </div>
+                    )}
+                    {hs.prescan_expected !== null && (
+                      <div>
+                        {L.field.expectedMitoses}: <span className="text-slate-200">{hs.prescan_expected.toFixed(1)}</span>
+                      </div>
+                    )}
+                    <div>
+                      {L.field.tumorArea}: <span className="text-slate-200">{L.fmt.areaMm2(computePolygonAreaMm2(hs.polygon_um))}</span>
                     </div>
-                  )}
-
-                  <div className="grid grid-cols-3 gap-1 text-[11px] font-mono text-slate-400 mb-2">
-                    <div>{L.field.tumorArea}: <span className="text-slate-200">{L.fmt.areaMm2(hs.area_mm2)}</span></div>
-                    <div>{L.field.meanTumorProb}: <span className="text-slate-200">{hs.prob_mean}</span></div>
-                    <div>{L.field.peakTumorProb}: <span className="text-slate-200">{hs.prob_max}</span></div>
                   </div>
-
-                  {hs.medgemma_rationale && (
-                    <div className="text-[10px] text-sky-300 bg-sky-950/40 p-1.5 rounded border border-sky-800/40 mb-2 leading-relaxed">
-                      <span className="font-semibold text-sky-400">{L.field.refereeVerdict}: </span>
-                      <span className="font-mono text-slate-200 uppercase text-[9px] mr-1">[{hs.medgemma_lesion_type?.replace('_', ' ') || 'TUMOR'}]</span>
-                      <span>{hs.medgemma_rationale}</span>
-                    </div>
-                  )}
 
                   {!hs.excluded && (
                     <div className="flex items-center space-x-2 pt-2 border-t border-slate-800/80">
@@ -861,6 +733,7 @@ export function TriageViewer({
                         className="flex-1 bg-slate-950 border border-slate-800 text-xs px-2 py-1 rounded text-slate-300 placeholder-slate-600 focus:outline-none focus:border-slate-700"
                       />
                       <button
+                        type="button"
                         onClick={() => handleExcludeHotspot(hs.id)}
                         className="px-2 py-1 bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-800/60 rounded text-xs font-semibold transition"
                       >
@@ -896,6 +769,7 @@ export function TriageViewer({
 
           <div className="flex items-center space-x-2">
             <button
+              type="button"
               onClick={handleReprocessTriage}
               disabled={reprocessing}
               className="px-3 py-2.5 bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/40 rounded-lg text-xs font-semibold flex items-center justify-center space-x-1.5 transition shadow-sm"
@@ -906,7 +780,8 @@ export function TriageViewer({
             </button>
 
             <button
-              onClick={handleConfirmStage}
+              type="button"
+              onClick={() => handleConfirmStage(false)}
               disabled={submitting || data?.status === "confirmed" || (activeHotspotsCount === 0 && !noInvasiveTumor)}
               className={`flex-1 py-2.5 rounded-lg text-xs font-bold flex items-center justify-center space-x-2 shadow-lg transition ${
                 data?.status === "confirmed"
@@ -934,144 +809,6 @@ export function TriageViewer({
           </div>
         </div>
       </div>
-
-      {/* Microscopic Patch Morphology Inspector Modal */}
-      {previewHotspot && (
-        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-700 rounded-xl shadow-2xl max-w-lg w-full max-h-[92vh] overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-150">
-            {/* Modal Header */}
-            <div className="p-3.5 border-b border-slate-800 flex items-center justify-between bg-slate-950/80 shrink-0">
-              <div className="flex items-center space-x-2">
-                <Activity className="w-4 h-4 text-sky-400" />
-                <h3 className="text-sm font-bold text-slate-100">
-                  {L.heading.morphology} — <span className="font-mono text-sky-400">{previewHotspot.id}</span>
-                </h3>
-              </div>
-              <button
-                onClick={() => setPreviewHotspot(null)}
-                className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            {/* Modal Body with Scroll */}
-            <div className="p-4 flex-1 overflow-y-auto flex flex-col items-center space-y-3">
-              {/* Controls Bar: Magnification + Stain Normalization Toggle */}
-              <div className="flex items-center space-x-2 w-full justify-between max-w-sm">
-                {/* Magnification Selector Tabs */}
-                <div className="flex items-center bg-slate-950 p-1 rounded-lg border border-slate-800 space-x-1 flex-1 justify-center">
-                  {(["10x", "20x", "40x"] as const).map((m) => (
-                    <button
-                      key={m}
-                      onClick={() => setModalMag(m)}
-                      className={`flex-1 py-1 px-2 rounded text-xs font-semibold font-mono transition ${
-                        modalMag === m
-                          ? "bg-sky-600 text-white shadow-sm"
-                          : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
-                      }`}
-                    >
-                      {m === "10x" ? L.unit.mag10x : m === "20x" ? L.unit.mag20x : L.unit.mag40x}
-                    </button>
-                  ))}
-                </div>
-
-                {/* Stain Normalization Mode Switcher */}
-                <div className="flex items-center bg-slate-950 p-1 rounded-lg border border-slate-800 space-x-1">
-                  <button
-                    onClick={() => setStainMode("norm")}
-                    className={`py-1 px-2.5 rounded text-xs font-semibold flex items-center space-x-1 transition ${
-                      stainMode === "norm"
-                        ? "bg-emerald-600 text-white shadow-sm"
-                        : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
-                    }`}
-                    title={L.help.stainNormHelp}
-                  >
-                    <span>{L.action.normColor}</span>
-                  </button>
-                  <button
-                    onClick={() => setStainMode("orig")}
-                    className={`py-1 px-2.5 rounded text-xs font-semibold flex items-center space-x-1 transition ${
-                      stainMode === "orig"
-                        ? "bg-amber-600 text-white shadow-sm"
-                        : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
-                    }`}
-                    title={L.action.origColor}
-                  >
-                    <span>{L.action.origColor}</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* High-Resolution Microscopic Patch Display */}
-              <div className="relative w-64 h-64 sm:w-72 sm:h-72 rounded-lg overflow-hidden border border-slate-700 bg-slate-950 shadow-2xl shrink-0 flex items-center justify-center">
-                {(() => {
-                  const poly = previewHotspot.polygon_um || [];
-                  const cx = poly.length > 0 ? Math.round(poly.reduce((sum, p) => sum + p[0], 0) / poly.length) : 0;
-                  const cy = poly.length > 0 ? Math.round(poly.reduce((sum, p) => sum + p[1], 0) / poly.length) : 0;
-                  return (
-                    <img
-                      key={`${previewHotspot.id}-${modalMag}-${stainMode}`}
-                      src={`${API_BASE}/api/v1/stages/triage/${caseId}/hotspots/${previewHotspot.id}/thumbnail?mag=${modalMag}&stain=${stainMode}&cx=${cx}&cy=${cy}`}
-                      alt={previewHotspot.id}
-                      className="w-full h-full object-cover transition-opacity duration-200"
-                    />
-                  );
-                })()}
-                <div className="absolute top-2 right-2 px-2 py-0.5 bg-slate-900/90 border border-slate-700 rounded text-[10px] font-mono text-sky-300 font-semibold shadow">
-                  {modalMag.toUpperCase()} • {stainMode === "norm" ? "Norm" : "Orig"}
-                </div>
-              </div>
-
-              {/* Morphologic Metrics */}
-              <div className="w-full grid grid-cols-3 gap-2">
-                <div className="bg-slate-950/80 p-2 rounded-lg border border-slate-800 text-center">
-                  <div className="text-[9px] text-slate-400 font-semibold uppercase">{L.field.tumorArea}</div>
-                  <div className="text-sm font-bold font-mono text-slate-100 mt-0.5">{L.fmt.areaMm2(previewHotspot.area_mm2)}</div>
-                </div>
-                <div className="bg-slate-950/80 p-2 rounded-lg border border-slate-800 text-center">
-                  <div className="text-[9px] text-slate-400 font-semibold uppercase">{L.field.meanTumorProb}</div>
-                  <div className="text-sm font-bold font-mono text-sky-400 mt-0.5">{(previewHotspot.prob_mean * 100).toFixed(0)}%</div>
-                </div>
-                <div className="bg-slate-950/80 p-2 rounded-lg border border-slate-800 text-center">
-                  <div className="text-[9px] text-slate-400 font-semibold uppercase">{L.field.peakTumorProb}</div>
-                  <div className="text-sm font-bold font-mono text-amber-400 mt-0.5">{(previewHotspot.prob_max * 100).toFixed(0)}%</div>
-                </div>
-              </div>
-
-              {previewHotspot.medgemma_rationale && (
-                <div className="w-full text-xs text-slate-300 bg-sky-950/40 p-3 rounded-lg border border-sky-800/60 flex items-start space-x-2.5">
-                  <Activity className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
-                  <div className="space-y-1">
-                    <div className="flex items-center space-x-2">
-                      <span className="font-semibold text-sky-300">{L.field.refereeVerdict}:</span>
-                      <span className="font-mono text-[10px] uppercase px-1.5 py-0.5 rounded bg-sky-900/60 text-sky-200 border border-sky-700/60">
-                        {previewHotspot.medgemma_lesion_type?.replace('_', ' ')}
-                      </span>
-                      {previewHotspot.medgemma_cellularity && (
-                        <span className="text-[10px] text-slate-400">
-                          ({previewHotspot.medgemma_cellularity} {L.field.cellularity.toLowerCase()})
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-slate-200 leading-relaxed text-[11px]">{previewHotspot.medgemma_rationale}</p>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Pinned Modal Footer */}
-            <div className="p-3 border-t border-slate-800 bg-slate-950/80 flex items-center justify-end shrink-0">
-              <button
-                onClick={() => setPreviewHotspot(null)}
-                className="px-5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold transition border border-slate-700"
-              >
-                {L.action.close}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
