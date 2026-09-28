@@ -17,9 +17,21 @@ ALLOWED_WSI_EXTS = {".svs", ".ndpi", ".mrxs", ".tif", ".tiff", ".bif", ".vms"}
 
 _LOCAL_STORAGE_DIR = os.path.join(tempfile.gettempdir(), "oncogemma_local_gcs")
 
+def _local_fs_path(path: str) -> str:
+    """GCS object names (up to 1024 bytes) joined to the temp dir can exceed Windows MAX_PATH (260 chars);
+    the extended-length form lifts that limit. No-op on other platforms."""
+    if os.name != "nt":
+        return path
+    path = os.path.abspath(path)
+    if path.startswith("\\\\?\\"):
+        return path
+    if path.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + path[2:]
+    return "\\\\?\\" + path
+
 def _get_local_blob_path(bucket_name: str, blob_name: str) -> str:
     clean_blob = blob_name.replace("\\", "/").lstrip("/")
-    return os.path.join(_LOCAL_STORAGE_DIR, bucket_name, *clean_blob.split("/"))
+    return _local_fs_path(os.path.join(_LOCAL_STORAGE_DIR, bucket_name, *clean_blob.split("/")))
 
 class LocalMockBlob:
     def __init__(self, bucket_name: str, name: str):
@@ -84,7 +96,7 @@ class MockBlobList(list):
 class LocalMockBucket:
     def __init__(self, name: str):
         self.name = name
-        self._dir = os.path.join(_LOCAL_STORAGE_DIR, name)
+        self._dir = _local_fs_path(os.path.join(_LOCAL_STORAGE_DIR, name))
         os.makedirs(self._dir, exist_ok=True)
         self.prefixes = []
 
