@@ -1,0 +1,2032 @@
+[
+  {
+    "path": "backend/app/core/gcs.py",
+    "rule": "L1",
+    "line_hash": "6afc5a1397814a372215b040d38238ed270ac3f4"
+  },
+  {
+    "path": "backend/app/routers/admin.py",
+    "rule": "L2",
+    "line_hash": "059b4e72957ae68f50cc1c86157351a6d88380ff"
+  },
+  {
+    "path": "backend/app/routers/audit.py",
+    "rule": "L1",
+    "line_hash": "29422943c787c19f24ebe1497c789e15e43b0be8"
+  },
+  {
+    "path": "backend/app/routers/cases.py",
+    "rule": "L1",
+    "line_hash": "5da1f27625e53ceb611ccee604ffb72b938d4a79"
+  },
+  {
+    "path": "backend/app/routers/cases.py",
+    "rule": "L1",
+    "line_hash": "956ca8a3af151eedd6ff3cacb879d9ca3daf7907"
+  },
+  {
+    "path": "backend/app/routers/cases.py",
+    "rule": "L1",
+    "line_hash": "e5875c2342b7863f88a2d8def7af5fe759782796"
+  },
+  {
+    "path": "backend/app/routers/cases.py",
+    "rule": "L1",
+    "line_hash": "e8a955ec9a8c1f7aaf58604c2f7da65992c84ed5"
+  },
+  {
+    "path": "backend/app/routers/cases.py",
+    "rule": "L2",
+    "line_hash": "639223902bb8bc292955d874f775bfd5ecf4a7e2"
+  },
+  {
+    "path": "backend/app/routers/grading.py",
+    "rule": "L1",
+    "line_hash": "0f3160e3065884536eebd23d119ae9114c6ea6b8"
+  },
+  {
+    "path": "backend/app/routers/grading.py",
+    "rule": "L1",
+    "line_hash": "5120c123a025c2f764acda836b15ab034be88fa6"
+  },
+  {
+    "path": "backend/app/routers/grading.py",
+    "rule": "L1",
+    "line_hash": "6c0e7dc4b63b736a08bdba00328c8b637fda897f"
+  },
+  {
+    "path": "backend/app/routers/grading.py",
+    "rule": "L1",
+    "line_hash": "c71bf9798e3278b6d662b908330bcf9620789aa3"
+  },
+  {
+    "path": "backend/app/routers/grading.py",
+    "rule": "L2",
+    "line_hash": "2f3ce790e299eb0542c08aa8af0f4d0d7b8ec0b6"
+  },
+  {
+    "path": "backend/app/routers/grading.py",
+    "rule": "L2",
+    "line_hash": "6d374ee5a4e83544470d8d9651ad73d8e05f92e3"
+  },
+  {
+    "path": "backend/app/routers/grading.py",
+    "rule": "L2",
+    "line_hash": "775325aff3689717a963ed4a0d3fc34943cf1c88"
+  },
+  {
+    "path": "backend/app/routers/grading.py",
+    "rule": "L2",
+    "line_hash": "8de3ed1af7c32d6d8c05cfc169195e42cfecc07e"
+  },
+  {
+    "path": "backend/app/routers/grading.py",
+    "rule": "L2",
+    "line_hash": "8f17ed016db9c53f64b6c7b55ac36c3114f0f3cc"
+  },
+  {
+    "path": "backend/app/routers/grading.py",
+    "rule": "L2",
+    "line_hash": "a80a0f79b49dddfc0a1efbf218a492eee43cbc09"
+  },
+  {
+    "path": "backend/app/routers/grading.py",
+    "rule": "L2",
+    "line_hash": "bcee0c84d1e0363cbca873fbf233a625da81a8b3"
+  },
+  {
+    "path": "backend/app/routers/grading.py",
+    "rule": "L2",
+    "line_hash": "c2a0cb43f3d14ef367f3c01f4459f1c030ba35e0"
+  },
+  {
+    "path": "backend/app/routers/grading.py",
+    "rule": "L2",
+    "line_hash": "d8d47d29c592cbd97f1fec2e0557755be474d905"
+  },
+  {
+    "path": "backend/app/routers/grading.py",
+    "rule": "L2",
+    "line_hash": "dd2067406b3d31f8085cfee42f8f1fe931ea0bbb"
+  },
+  {
+    "path": "backend/app/routers/grading.py",
+    "rule": "L2",
+    "line_hash": "e3884aa873496bc5d1c7470b0ddb8105711f4ec1"
+  },
+  {
+    "path": "backend/app/routers/grading.py",
+    "rule": "L2",
+    "line_hash": "fac05c2f4717cddcba85b2b42b09510f8368edcd"
+  },
+  {
+    "path": "backend/app/routers/mitosis.py",
+    "rule": "L1",
+    "line_hash": "0d842891101900cca0df636532b082551417a9a4"
+  },
+  {
+    "path": "backend/app/routers/mitosis.py",
+    "rule": "L1",
+    "line_hash": "34fc92f5482222323bdf0e7113c20ed81969114f"
+  },
+  {
+    "path": "backend/app/routers/mitosis.py",
+    "rule": "L1",
+    "line_hash": "85f0e90d7d5648f4195f17c601c2b3476cf5a691"
+  },
+  {
+    "path": "backend/app/routers/mitosis.py",
+    "rule": "L1",
+    "line_hash": "a2d218d0d65a6ce08ac0218db923a7ad09e2333e"
+  },
+  {
+    "path": "backend/app/routers/mitosis.py",
+    "rule": "L1",
+    "line_hash": "bc53b6bfbdcd166495dcaac8c570221e71be5f2e"
+  },
+  {
+    "path": "backend/app/routers/mitosis.py",
+    "rule": "L1",
+    "line_hash": "d0ade8fca2ea3c7c6453b0c3a9f640edb134e8a2"
+  },
+  {
+    "path": "backend/app/routers/mitosis.py",
+    "rule": "L1",
+    "line_hash": "d9e78742aa3060cebd7dfade65cb4b43e7f3479c"
+  },
+  {
+    "path": "backend/app/routers/mitosis.py",
+    "rule": "L1",
+    "line_hash": "fd2009b48bc0d431cc666dadb46d669620555b33"
+  },
+  {
+    "path": "backend/app/routers/report.py",
+    "rule": "L2",
+    "line_hash": "19497091a92e2e46c40097795f43bb4220e5d8e0"
+  },
+  {
+    "path": "backend/app/routers/report.py",
+    "rule": "L2",
+    "line_hash": "19497091a92e2e46c40097795f43bb4220e5d8e0"
+  },
+  {
+    "path": "backend/app/routers/report.py",
+    "rule": "L2",
+    "line_hash": "19497091a92e2e46c40097795f43bb4220e5d8e0"
+  },
+  {
+    "path": "backend/app/routers/report.py",
+    "rule": "L2",
+    "line_hash": "25553670a291133cb079eeb7a59f75f1759968bc"
+  },
+  {
+    "path": "backend/app/routers/report.py",
+    "rule": "L2",
+    "line_hash": "25553670a291133cb079eeb7a59f75f1759968bc"
+  },
+  {
+    "path": "backend/app/routers/report.py",
+    "rule": "L2",
+    "line_hash": "25553670a291133cb079eeb7a59f75f1759968bc"
+  },
+  {
+    "path": "backend/app/routers/tiles.py",
+    "rule": "L1",
+    "line_hash": "48cef262400e069652a868bcf75fa68227d915e3"
+  },
+  {
+    "path": "backend/app/routers/tiles.py",
+    "rule": "L1",
+    "line_hash": "e53d47c96ef82b279e8b0e1940ec334b0192c866"
+  },
+  {
+    "path": "backend/app/routers/tiles.py",
+    "rule": "L1",
+    "line_hash": "f438af3fec4dffe69fe5323886f1ae8957ac55c1"
+  },
+  {
+    "path": "backend/app/routers/triage.py",
+    "rule": "L1",
+    "line_hash": "32770ec2b1d2ee1499a65d251810720f517e34a6"
+  },
+  {
+    "path": "backend/app/routers/triage.py",
+    "rule": "L1",
+    "line_hash": "594ad856a319273c0c08b58ec0397ea298040a33"
+  },
+  {
+    "path": "backend/app/routers/triage.py",
+    "rule": "L1",
+    "line_hash": "dbafbaca2a712f414d897d02f5be2383c29cfc2f"
+  },
+  {
+    "path": "backend/app/routers/triage.py",
+    "rule": "L1",
+    "line_hash": "dbafbaca2a712f414d897d02f5be2383c29cfc2f"
+  },
+  {
+    "path": "backend/app/routers/triage.py",
+    "rule": "L1",
+    "line_hash": "e8a955ec9a8c1f7aaf58604c2f7da65992c84ed5"
+  },
+  {
+    "path": "backend/app/routers/triage.py",
+    "rule": "L2",
+    "line_hash": "639223902bb8bc292955d874f775bfd5ecf4a7e2"
+  },
+  {
+    "path": "backend/app/routers/triage.py",
+    "rule": "L2",
+    "line_hash": "bdc4fad2d9d733f39aefe052dccb5322bbd7ba01"
+  },
+  {
+    "path": "backend/app/routers/triage.py",
+    "rule": "L3",
+    "line_hash": "50c347ff8e06209c329b24ba3be4cca17b17a0c9"
+  },
+  {
+    "path": "backend/cli/validate.py",
+    "rule": "L1",
+    "line_hash": "4f7c573fa11f6ceff123f8325236f7c68e604b89"
+  },
+  {
+    "path": "backend/cli/validate.py",
+    "rule": "L1",
+    "line_hash": "88160b7857bf6b6591c999e544f783180b13d3a2"
+  },
+  {
+    "path": "backend/cli/validate.py",
+    "rule": "L1",
+    "line_hash": "b89935e3541a5a426ed9797309888001d7a4c852"
+  },
+  {
+    "path": "backend/cli/validate.py",
+    "rule": "L1",
+    "line_hash": "de2f1c9405b01c3948e6274ec104a86a8d7adec1"
+  },
+  {
+    "path": "backend/pipeline/detect.py",
+    "rule": "L1",
+    "line_hash": "3066fe86419fc2568f18f5cf417aab83ec7b567e"
+  },
+  {
+    "path": "backend/pipeline/detect.py",
+    "rule": "L2",
+    "line_hash": "1c3eb7937af16ef969ff8df0307c09f3e11c999f"
+  },
+  {
+    "path": "backend/pipeline/detect.py",
+    "rule": "L2",
+    "line_hash": "61c30412c626ba0b2a92701e37c268718744796b"
+  },
+  {
+    "path": "backend/pipeline/detect.py",
+    "rule": "L2",
+    "line_hash": "7601b43cbaf655b71ddb77c43f2b83c76282a71d"
+  },
+  {
+    "path": "backend/pipeline/detect.py",
+    "rule": "L2",
+    "line_hash": "7601b43cbaf655b71ddb77c43f2b83c76282a71d"
+  },
+  {
+    "path": "backend/pipeline/detect.py",
+    "rule": "L2",
+    "line_hash": "9dc94fe109473fc1afaaf05672c782b49b1b3d6a"
+  },
+  {
+    "path": "backend/pipeline/detect.py",
+    "rule": "L2",
+    "line_hash": "9dc94fe109473fc1afaaf05672c782b49b1b3d6a"
+  },
+  {
+    "path": "backend/pipeline/detect.py",
+    "rule": "L2",
+    "line_hash": "f868a16fe923933e307dfe404c4ba1c845e310aa"
+  },
+  {
+    "path": "backend/pipeline/detect.py",
+    "rule": "L3",
+    "line_hash": "0555884261f756f64de8402137420d62b94be96e"
+  },
+  {
+    "path": "backend/pipeline/detect.py",
+    "rule": "L3",
+    "line_hash": "d59ea19c839a33eac1907cfcc04d3916ca589f04"
+  },
+  {
+    "path": "backend/pipeline/detect.py",
+    "rule": "L4",
+    "line_hash": "00d1a047857ddd2afa58d2cf257392381560e81e"
+  },
+  {
+    "path": "backend/pipeline/detect.py",
+    "rule": "L4",
+    "line_hash": "00d1a047857ddd2afa58d2cf257392381560e81e"
+  },
+  {
+    "path": "backend/pipeline/detect.py",
+    "rule": "L4",
+    "line_hash": "00d1a047857ddd2afa58d2cf257392381560e81e"
+  },
+  {
+    "path": "backend/pipeline/detect.py",
+    "rule": "L4",
+    "line_hash": "04846d6e2e107dca42fa208347a7f421c287a201"
+  },
+  {
+    "path": "backend/pipeline/detect.py",
+    "rule": "L4",
+    "line_hash": "04846d6e2e107dca42fa208347a7f421c287a201"
+  },
+  {
+    "path": "backend/pipeline/detect.py",
+    "rule": "L4",
+    "line_hash": "3159703e01501e695a81ff856e30051980b80275"
+  },
+  {
+    "path": "backend/pipeline/detect.py",
+    "rule": "L4",
+    "line_hash": "37777a7985ecd82048139aa4b44a4cb3956bbbb2"
+  },
+  {
+    "path": "backend/pipeline/detect.py",
+    "rule": "L4",
+    "line_hash": "4768bbb4c551fee692d2d484925d6b19057aea73"
+  },
+  {
+    "path": "backend/pipeline/detect.py",
+    "rule": "L4",
+    "line_hash": "4c8179a782b799bd3fb2ad50f32974b296fcb5d3"
+  },
+  {
+    "path": "backend/pipeline/detect.py",
+    "rule": "L4",
+    "line_hash": "4c8179a782b799bd3fb2ad50f32974b296fcb5d3"
+  },
+  {
+    "path": "backend/pipeline/detect.py",
+    "rule": "L4",
+    "line_hash": "97b8a6b4234d39bdea61f767ffc2f289f07a6143"
+  },
+  {
+    "path": "backend/pipeline/detect.py",
+    "rule": "L4",
+    "line_hash": "97b8a6b4234d39bdea61f767ffc2f289f07a6143"
+  },
+  {
+    "path": "backend/pipeline/detect.py",
+    "rule": "L4",
+    "line_hash": "a181eb1b1a79e970e3a5face2299fd2272ed1764"
+  },
+  {
+    "path": "backend/pipeline/detect.py",
+    "rule": "L4",
+    "line_hash": "a181eb1b1a79e970e3a5face2299fd2272ed1764"
+  },
+  {
+    "path": "backend/pipeline/diagnose_system.py",
+    "rule": "L4",
+    "line_hash": "377a9cfea2efacaf05ba3ff22ec64e7b5dd42fe5"
+  },
+  {
+    "path": "backend/pipeline/diagnose_system.py",
+    "rule": "L4",
+    "line_hash": "7c214aea43479c89ba6d97ca6d15813c7664553d"
+  },
+  {
+    "path": "backend/pipeline/diagnose_system.py",
+    "rule": "L4",
+    "line_hash": "a4e04799abf1d99a5886b818d658400ccc268665"
+  },
+  {
+    "path": "backend/pipeline/diagnose_system.py",
+    "rule": "L4",
+    "line_hash": "aed2f6d388532c139942f5f72726b531b1a46118"
+  },
+  {
+    "path": "backend/pipeline/diagnose_system.py",
+    "rule": "L4",
+    "line_hash": "eb71a5969290a9018d6a0c4b94c455eda7c1564e"
+  },
+  {
+    "path": "backend/pipeline/grading.py",
+    "rule": "L2",
+    "line_hash": "10c2aca8eb62b7f8c097c5164ebc93f1bc266210"
+  },
+  {
+    "path": "backend/pipeline/grading.py",
+    "rule": "L2",
+    "line_hash": "10c2aca8eb62b7f8c097c5164ebc93f1bc266210"
+  },
+  {
+    "path": "backend/pipeline/grading.py",
+    "rule": "L2",
+    "line_hash": "2993b0c9faf778e6ece2a69f381fa0cb7c05f177"
+  },
+  {
+    "path": "backend/pipeline/grading.py",
+    "rule": "L2",
+    "line_hash": "694dcd2511dd3a761f00deee5e6b08275aa29151"
+  },
+  {
+    "path": "backend/pipeline/grading.py",
+    "rule": "L2",
+    "line_hash": "694dcd2511dd3a761f00deee5e6b08275aa29151"
+  },
+  {
+    "path": "backend/pipeline/grading.py",
+    "rule": "L2",
+    "line_hash": "7221eb05c5c14c37a6293eb1bed6453d5f939b57"
+  },
+  {
+    "path": "backend/pipeline/grading.py",
+    "rule": "L2",
+    "line_hash": "7ea05913cfe708096bd42382d1e2c2a994060aa9"
+  },
+  {
+    "path": "backend/pipeline/grading.py",
+    "rule": "L2",
+    "line_hash": "d6c719d411665ead0e889fffa5c1f164601e63ae"
+  },
+  {
+    "path": "backend/pipeline/grading.py",
+    "rule": "L3",
+    "line_hash": "7e564520abfd62d43dc08db26e08cf2b7ea7a00a"
+  },
+  {
+    "path": "backend/pipeline/grading.py",
+    "rule": "L4",
+    "line_hash": "1f82fb0a246bd3d17a66b7601482a11d22705904"
+  },
+  {
+    "path": "backend/pipeline/hotspots.py",
+    "rule": "L2",
+    "line_hash": "5ab1dc08a5c41e05b34aac4b2ea90f4efd8fe6ba"
+  },
+  {
+    "path": "backend/pipeline/hotspots.py",
+    "rule": "L2",
+    "line_hash": "7598f99f199210eb4d3a21f10f0b473184b3286c"
+  },
+  {
+    "path": "backend/pipeline/hotspots.py",
+    "rule": "L2",
+    "line_hash": "9fca706f40945b19680c2fb871207251aeb41a77"
+  },
+  {
+    "path": "backend/pipeline/hotspots.py",
+    "rule": "L2",
+    "line_hash": "d6e5130cf622543b67d6ae77007f688fa4f0a38d"
+  },
+  {
+    "path": "backend/pipeline/hotspots.py",
+    "rule": "L4",
+    "line_hash": "314694e3de4ed74d25287f6a4d5408de2b4c3443"
+  },
+  {
+    "path": "backend/pipeline/hotspots.py",
+    "rule": "L4",
+    "line_hash": "4921da7d6e7bf3a14031e06cd659db7c4d01050e"
+  },
+  {
+    "path": "backend/pipeline/hotspots.py",
+    "rule": "L4",
+    "line_hash": "5597c195e15d6615d36968ea926f858d0fcecc46"
+  },
+  {
+    "path": "backend/pipeline/hotspots.py",
+    "rule": "L4",
+    "line_hash": "76d1d456a21f9a931f4f5c069f5996593f0ff9bf"
+  },
+  {
+    "path": "backend/pipeline/hpf.py",
+    "rule": "L1",
+    "line_hash": "38937ee266bbaf058e5122965e845b4185d91dfe"
+  },
+  {
+    "path": "backend/pipeline/hpf.py",
+    "rule": "L2",
+    "line_hash": "817e4eadeec3b797cea3293f73ecb9c2fd4bc8ec"
+  },
+  {
+    "path": "backend/pipeline/hpf.py",
+    "rule": "L2",
+    "line_hash": "f087276cc74c510922b8627c8151d9a6ca6f2bf0"
+  },
+  {
+    "path": "backend/pipeline/hpf.py",
+    "rule": "L3",
+    "line_hash": "08c888f612a30cebccaa9790ae568e2f10b9e5c5"
+  },
+  {
+    "path": "backend/pipeline/hpf.py",
+    "rule": "L3",
+    "line_hash": "46b141c9bac05485e642c82f66df348b451896fa"
+  },
+  {
+    "path": "backend/pipeline/hpf.py",
+    "rule": "L3",
+    "line_hash": "72d24dcb5eacf54253d21a4e2b1e7342997b7a24"
+  },
+  {
+    "path": "backend/pipeline/hpf.py",
+    "rule": "L3",
+    "line_hash": "7e564520abfd62d43dc08db26e08cf2b7ea7a00a"
+  },
+  {
+    "path": "backend/pipeline/hpf.py",
+    "rule": "L3",
+    "line_hash": "7e564520abfd62d43dc08db26e08cf2b7ea7a00a"
+  },
+  {
+    "path": "backend/pipeline/hpf.py",
+    "rule": "L3",
+    "line_hash": "f06979219ad2ecac43febf711cc8c1d762bf67fb"
+  },
+  {
+    "path": "backend/pipeline/hpf.py",
+    "rule": "L4",
+    "line_hash": "c98174a5cfe0f70c4fc5cc69b670a6180fc299d8"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L1",
+    "line_hash": "de29d0632ee23cd93802dc3dc50b1c4f200360b5"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L1",
+    "line_hash": "de29d0632ee23cd93802dc3dc50b1c4f200360b5"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L1",
+    "line_hash": "de29d0632ee23cd93802dc3dc50b1c4f200360b5"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L1",
+    "line_hash": "de29d0632ee23cd93802dc3dc50b1c4f200360b5"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L2",
+    "line_hash": "0dc3c7e17dd2ffa54427bfca4c20406f7ed273c8"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L2",
+    "line_hash": "32ae417bbc05419e9a2273401a12609b6715807c"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L2",
+    "line_hash": "3ba85f614baa2e2d4e36661a58cd90f1214f0a98"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L2",
+    "line_hash": "5f8d837c64413bd64298dfa06d5a7035123e97c2"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L2",
+    "line_hash": "6a89356ef52e8abd2c75a49af85adb3423200e70"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L2",
+    "line_hash": "6ece791a815d3b3b09c0016ef9e98b5965eb538e"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L2",
+    "line_hash": "7355d26f40aea1960bc7b7476365f0ed9c648c7d"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L2",
+    "line_hash": "752770eefb8059d6e84a8ed458d86b276cf85d24"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L2",
+    "line_hash": "7b6c58b22554cc7bb720718a54e3a0dd36f606bc"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L2",
+    "line_hash": "8c90bf5f68d76fab7c896e312a3899417a4e4e6d"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L2",
+    "line_hash": "8c90bf5f68d76fab7c896e312a3899417a4e4e6d"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L2",
+    "line_hash": "9214995a3fb73f32642ecb8bb810fe696f3e7de1"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L2",
+    "line_hash": "9c29ee2a2a46b8e544b42800e234f01e7d6e83da"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L2",
+    "line_hash": "a41bb0ffe89a491dc1bbe62ecb6766a73c9aca99"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L2",
+    "line_hash": "a750e3c5343eb1fe751e0077329298089f6bda5e"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L2",
+    "line_hash": "a7dcc37bfe5593d4ad6c49bbe4d86f1b9d8261ff"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L2",
+    "line_hash": "bc5c354e1913a8b6e940fc9184155d7b9a2870c7"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L2",
+    "line_hash": "cab49a6779702e140157eb6e48cebcedfc0c4c50"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L2",
+    "line_hash": "d0da56a221748605a0df771db99b5e4da9aae833"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L2",
+    "line_hash": "d75f3ba5e4e321dc9e43f98b340129c0a8f6de76"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L2",
+    "line_hash": "da5c49d651b6958caebf8bf0b5b3695915a1fa00"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L2",
+    "line_hash": "dde0927301ac286071013377d6870f320f054099"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L2",
+    "line_hash": "e516814d212f432eeecd1890bee4497e423bfe7b"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L2",
+    "line_hash": "ea006bc6a025fd713d81adf8024f584df80a4c47"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L2",
+    "line_hash": "f18076ed88102d3049f26fa9b4799ab26115f80d"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "018d5f9545f6576b7227c329cfb6faf1449b0349"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "1302ee078f6e54101580413d52c86a10edffcb53"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "1302ee078f6e54101580413d52c86a10edffcb53"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "1302ee078f6e54101580413d52c86a10edffcb53"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "1302ee078f6e54101580413d52c86a10edffcb53"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "1302ee078f6e54101580413d52c86a10edffcb53"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "1302ee078f6e54101580413d52c86a10edffcb53"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "17b70b44d430b5b7df4c16ad3aeaecb52263e9f3"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "17b70b44d430b5b7df4c16ad3aeaecb52263e9f3"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "18cea9ba395d144edd70a9609e465294e5e6b272"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "291b307bda1081846fe06bf0f30414250f65147f"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "291b307bda1081846fe06bf0f30414250f65147f"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "3199030f1b03ce7bef7e0703139a9bc2eaeeb5e3"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "3199030f1b03ce7bef7e0703139a9bc2eaeeb5e3"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "3a6764f5b4cb3d0e351ae66ddad2d29ccb81a6b0"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "3a6764f5b4cb3d0e351ae66ddad2d29ccb81a6b0"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "3a6764f5b4cb3d0e351ae66ddad2d29ccb81a6b0"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "42d2f56022143101e57017e8d4294b18e592aa6f"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "48ebd91a41152b55800efb482882bda166624a5a"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "56124aa1155f022c6674860423207d601fc8dce1"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "56124aa1155f022c6674860423207d601fc8dce1"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "5ea3855ddf5e199a1ed6fac864161637cfd40a96"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "5ea3855ddf5e199a1ed6fac864161637cfd40a96"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "5ea3855ddf5e199a1ed6fac864161637cfd40a96"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "64c68f51516c2e9bce08566374431ee3b16fed02"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "64c68f51516c2e9bce08566374431ee3b16fed02"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "7adac3849dd4f7228c8941603a2ea772dee2b2cf"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "7adac3849dd4f7228c8941603a2ea772dee2b2cf"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "7dc65070bbaa2ce2eb90040cd298c281cd96c475"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "7ddf7a189c4d1c6032601677d68d3a26f4fd6686"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "7ddf7a189c4d1c6032601677d68d3a26f4fd6686"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "7ddf7a189c4d1c6032601677d68d3a26f4fd6686"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "7ddf7a189c4d1c6032601677d68d3a26f4fd6686"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "7ddf7a189c4d1c6032601677d68d3a26f4fd6686"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "7ddf7a189c4d1c6032601677d68d3a26f4fd6686"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "91bc9a777813d28b39ad65a916bd75fba7c9e1d4"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "92ae11581aa92642d091ab2da6e6a62966abda76"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "950feec49a31571bb4e8f499343d7feb2dc46936"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "a29c7a462e9c747ec6c02ef58f292bf4c1cbe37f"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "a58bf7262203ae3442e8d9394d57116725b620fd"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "a58bf7262203ae3442e8d9394d57116725b620fd"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "b04269a31ddf7285248809ed59aa735d70c8359e"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "baf74d41d7c13829655f6c836937fd4ef11fb9fd"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "baf74d41d7c13829655f6c836937fd4ef11fb9fd"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "bdb4bc8e4b5468c3a0a3a8bc7444eaee3c597e2d"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "bf5fc61d1b42b0bce584aea71fc4ddffc8d15fa7"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "bf5fc61d1b42b0bce584aea71fc4ddffc8d15fa7"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "bf5fc61d1b42b0bce584aea71fc4ddffc8d15fa7"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "bf5fc61d1b42b0bce584aea71fc4ddffc8d15fa7"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "bf5fc61d1b42b0bce584aea71fc4ddffc8d15fa7"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "bf5fc61d1b42b0bce584aea71fc4ddffc8d15fa7"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "c79ed2f91dfae8e61ea26686b085e9dedd35003b"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "c79ed2f91dfae8e61ea26686b085e9dedd35003b"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "c79ed2f91dfae8e61ea26686b085e9dedd35003b"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "c79ed2f91dfae8e61ea26686b085e9dedd35003b"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "d1bd4eb3f98ba5d528933124e200fa44a6bd05c7"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "dcb263cd1ac02100723484ac264288bc3107059e"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "df8a72e47019ef7fb75f2ec05d150e9238346a1e"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "e1bc35870cc3e1a0e57c23e834b9b0be937250a5"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "e6aa2bdb2e4d02b6abc235a51ab39ee157ecac1a"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "f48ebba00769ad6210fd719e252d2e18c053a9db"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "f5d5e317e27aff6ac829fe0a828008bac42df0ce"
+  },
+  {
+    "path": "backend/pipeline/medgemma.py",
+    "rule": "L4",
+    "line_hash": "f91e2b54118533dc74930926932fd26cfa56cf91"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L1",
+    "line_hash": "9508cb86956e10a8f50fc3a3e30d6e320b4dd5fe"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L1",
+    "line_hash": "9508cb86956e10a8f50fc3a3e30d6e320b4dd5fe"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L1",
+    "line_hash": "9508cb86956e10a8f50fc3a3e30d6e320b4dd5fe"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L1",
+    "line_hash": "baf088170612b56a894503bb5efcd829859ef8bb"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L1",
+    "line_hash": "baf088170612b56a894503bb5efcd829859ef8bb"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L1",
+    "line_hash": "baf088170612b56a894503bb5efcd829859ef8bb"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L2",
+    "line_hash": "3c223216ff7b95129e43fa0bbdda58436639f6a9"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L2",
+    "line_hash": "49a69e23d1bc4842e14dd475cbcc8c7b592fe938"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L2",
+    "line_hash": "61a5c4f93427a5c949fb6814d385eed774b4ced1"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L2",
+    "line_hash": "661a937416c4e4c7ef7c749b3e70e83da5fc6fb0"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L2",
+    "line_hash": "694a9b89bc89260c5878e7bc176ad4c7c14ac40d"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L2",
+    "line_hash": "841dff51e75fa954ce4fbf27745c2d91134022f0"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L2",
+    "line_hash": "84def4165f5a46506995e23d5908780051cda695"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L2",
+    "line_hash": "9fc1bae375c0df53cca3619f89cab22b75a55326"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L2",
+    "line_hash": "ad68a8094b5603069ad46abcab1cedc00d3b6770"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L2",
+    "line_hash": "bcb997dc4a23dfe7135d8ded5eb00db50a5132bf"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L2",
+    "line_hash": "bfc8998e226e492d38505957138de10992d1b0bf"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L2",
+    "line_hash": "c11c3bf5c653120d2fd58c8325aa0ba9c3ed3e10"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L2",
+    "line_hash": "d52a8c96ccebf88743a1723e45241a610d87a213"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L2",
+    "line_hash": "d9dd904de034d372264fc649d98ed3c0ded95525"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L2",
+    "line_hash": "db793f41175978a6a9721e258de471578de39efb"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L2",
+    "line_hash": "e2f43b15be7ac86c979b3f2600d8e321f62a8eb3"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L2",
+    "line_hash": "e86b799adfc66683fbacce696e74d429780635e1"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L2",
+    "line_hash": "f31d5f26bab3332b3418e5121327be88db2ad404"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L2",
+    "line_hash": "f55088f427311e2ee4fe843beb7546cfe49adf77"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L2",
+    "line_hash": "f8882aeadbf6351d03fa861f3f459928201c61c5"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L3",
+    "line_hash": "3b9f0ca70dc1ac082ed5905b7043e0aab1c741f9"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L3",
+    "line_hash": "3b9f0ca70dc1ac082ed5905b7043e0aab1c741f9"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L3",
+    "line_hash": "3b9f0ca70dc1ac082ed5905b7043e0aab1c741f9"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L3",
+    "line_hash": "3b9f0ca70dc1ac082ed5905b7043e0aab1c741f9"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L3",
+    "line_hash": "c875f743490b27f1c9d67b4f4c20c451654c0fb8"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L3",
+    "line_hash": "c875f743490b27f1c9d67b4f4c20c451654c0fb8"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L3",
+    "line_hash": "c875f743490b27f1c9d67b4f4c20c451654c0fb8"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L3",
+    "line_hash": "c875f743490b27f1c9d67b4f4c20c451654c0fb8"
+  },
+  {
+    "path": "backend/pipeline/qc_checks.py",
+    "rule": "L4",
+    "line_hash": "fc58761968fe3ed9b630e2ce84bb8b55280f278e"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L1",
+    "line_hash": "0a6858ce486696117e7978d1e5c6c9adc20e7890"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L1",
+    "line_hash": "0fdb6949c6fb59244e8e7d498c3b4f7e7e1ef3da"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L1",
+    "line_hash": "425a983ba90e881c985455b29522604e276e9104"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L1",
+    "line_hash": "85707a7f8c7478a9d4567b912658ba21ad2f942d"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L1",
+    "line_hash": "8e745cb4b3591014cc4a0132a0497037393d9d8a"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L1",
+    "line_hash": "92ecdba721e6a0dbea7cd0dd9c8b764800bacbea"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L1",
+    "line_hash": "c653cb85596d3d8b636aafb13c64704d32199d52"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L1",
+    "line_hash": "c83a3256d87b1e23eb5eb53366d0f17051e69579"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L1",
+    "line_hash": "d2aabe6e5e80a312c50808f80a2b205524cbc8df"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L1",
+    "line_hash": "ec1314af35a178bb8dc154959dd3aa8d832599d5"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L2",
+    "line_hash": "02672befe8bf83b67791e098f39c6fc3770e2b99"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L2",
+    "line_hash": "03ff4abfabfc97d52c60317cc9ed8e8ad4804a0f"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L2",
+    "line_hash": "068c37a5e67ac8947bec5162b8bd4d7afff71750"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L2",
+    "line_hash": "102dcd4830666c9f03d47a38af0eeb04a41b159d"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L2",
+    "line_hash": "40f1a6c7aea1fa1022173bb650291267d4d967c5"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L2",
+    "line_hash": "4b31af19a28ebf8e538bc9ab92258bce10c20fa1"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L2",
+    "line_hash": "4b31af19a28ebf8e538bc9ab92258bce10c20fa1"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L2",
+    "line_hash": "6096a42b16d1e8a5ce3cd96ce537d9d19b5e1c71"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L2",
+    "line_hash": "6096a42b16d1e8a5ce3cd96ce537d9d19b5e1c71"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L2",
+    "line_hash": "699687dc906dff65309af5c3ce460cf87660e3d1"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L2",
+    "line_hash": "6ad998dcb802007870525a4e3527a1a593a157e5"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L2",
+    "line_hash": "6ad998dcb802007870525a4e3527a1a593a157e5"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L2",
+    "line_hash": "6ccf11d4484fd4ee5a08ab2843d836d2e775bb83"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L2",
+    "line_hash": "72725c478efc54eb3f0127a6b20d4031fefed922"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L2",
+    "line_hash": "808e762bdd7c8dbfdb76739655e317d95bbfc1b7"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L2",
+    "line_hash": "aedafdd6dcdb5b58ac24c040f91795c85a99a1ae"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L2",
+    "line_hash": "bd0409ce5964a82cad35f264f1cec768a2cf89b4"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L2",
+    "line_hash": "bd0409ce5964a82cad35f264f1cec768a2cf89b4"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L2",
+    "line_hash": "bd9a860ab841bf3256a3f5c0116ce94b21646386"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L2",
+    "line_hash": "c01f07bed42af7eff0d67a497e9e2f79432383b6"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L2",
+    "line_hash": "cf5597d854f28578d399907ee441bdb2e0f47b26"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L2",
+    "line_hash": "dbfa91f895c26cf4063b32d39ff35b30df06151d"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L2",
+    "line_hash": "dbfa91f895c26cf4063b32d39ff35b30df06151d"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L2",
+    "line_hash": "e7873ddd67e1586cf2d2cb23778e8a2d227d7aad"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L2",
+    "line_hash": "ec50d5bc5f82f130611198df0331aab017d75368"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L2",
+    "line_hash": "f782a97c19242875ce5697a4af10c15c8f466574"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L4",
+    "line_hash": "079600c3e0979e90e3cd8490121e860c1b35f1bd"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L4",
+    "line_hash": "1c432b061013eaa91c137f30271ba9db806e188d"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L4",
+    "line_hash": "6ab38f136424eac984c8edccb6cb031b9f810082"
+  },
+  {
+    "path": "backend/pipeline/report_pdf.py",
+    "rule": "L4",
+    "line_hash": "e2b7b6fa17b6eb1ff8cd4be065580109ad0e72ac"
+  },
+  {
+    "path": "backend/pipeline/scoring.py",
+    "rule": "L2",
+    "line_hash": "9c9ac81a40dbd941e026a9fa4a6de9aab03a4280"
+  },
+  {
+    "path": "backend/pipeline/scoring.py",
+    "rule": "L3",
+    "line_hash": "f06979219ad2ecac43febf711cc8c1d762bf67fb"
+  },
+  {
+    "path": "backend/pipeline/staging.py",
+    "rule": "L2",
+    "line_hash": "390786f2e8a72955ea71f80016665e8a5d562b2b"
+  },
+  {
+    "path": "backend/pipeline/staging.py",
+    "rule": "L2",
+    "line_hash": "c2e84d0437c25aff829a8fe68e7bbce8f84381f9"
+  },
+  {
+    "path": "backend/pipeline/staging.py",
+    "rule": "L2",
+    "line_hash": "ec779c318509d146c255a13e300f8c2219babfb2"
+  },
+  {
+    "path": "backend/pipeline/staging.py",
+    "rule": "L4",
+    "line_hash": "144eb500d8ddefbd073a6043ed8f0cff76580a1f"
+  },
+  {
+    "path": "backend/pipeline/staging.py",
+    "rule": "L4",
+    "line_hash": "307ffeddae698208adeb2a4a124c6154bc29fb76"
+  },
+  {
+    "path": "backend/pipeline/staging.py",
+    "rule": "L4",
+    "line_hash": "307ffeddae698208adeb2a4a124c6154bc29fb76"
+  },
+  {
+    "path": "backend/pipeline/staging.py",
+    "rule": "L4",
+    "line_hash": "4090b15bdf602c57f37f988f1fb7b951d9fd7ef5"
+  },
+  {
+    "path": "backend/pipeline/staging.py",
+    "rule": "L4",
+    "line_hash": "51d87f88566ce7cc3ddf7fd73967db1a5734a8f7"
+  },
+  {
+    "path": "backend/pipeline/staging.py",
+    "rule": "L4",
+    "line_hash": "840c416d73e331f55a0e13f36466c1a3b75e0fb1"
+  },
+  {
+    "path": "backend/pipeline/staging.py",
+    "rule": "L4",
+    "line_hash": "840c416d73e331f55a0e13f36466c1a3b75e0fb1"
+  },
+  {
+    "path": "backend/pipeline/staging.py",
+    "rule": "L4",
+    "line_hash": "e97393304962f7832364572012d1e1224949aebb"
+  },
+  {
+    "path": "backend/pipeline/staging.py",
+    "rule": "L4",
+    "line_hash": "f37f05ddabadf60f894eff37b44a4f92235beca6"
+  },
+  {
+    "path": "backend/pipeline/staging.py",
+    "rule": "L4",
+    "line_hash": "ffa4533173db4846fe933e407e6b1505468b3266"
+  },
+  {
+    "path": "backend/pipeline/stain.py",
+    "rule": "L1",
+    "line_hash": "9508cb86956e10a8f50fc3a3e30d6e320b4dd5fe"
+  },
+  {
+    "path": "backend/pipeline/stain.py",
+    "rule": "L1",
+    "line_hash": "baf088170612b56a894503bb5efcd829859ef8bb"
+  },
+  {
+    "path": "backend/pipeline/stain.py",
+    "rule": "L3",
+    "line_hash": "2d8c352a876dda0c9c88cdeb737f51681e9662ef"
+  },
+  {
+    "path": "backend/pipeline/stain.py",
+    "rule": "L3",
+    "line_hash": "3b9f0ca70dc1ac082ed5905b7043e0aab1c741f9"
+  },
+  {
+    "path": "backend/pipeline/stain.py",
+    "rule": "L4",
+    "line_hash": "19a2a597d8dd6f111e8a7022bc61e615608c8f54"
+  },
+  {
+    "path": "backend/pipeline/stain.py",
+    "rule": "L4",
+    "line_hash": "275266cd5212c2ac3fba30e86965da5896e0bfb1"
+  },
+  {
+    "path": "backend/pipeline/stain.py",
+    "rule": "L4",
+    "line_hash": "5b7e15edf4d5acee089d28f266352a6395d954b0"
+  },
+  {
+    "path": "backend/pipeline/stain.py",
+    "rule": "L4",
+    "line_hash": "5e86433f6c7dc219c730d97079adbae066401c15"
+  },
+  {
+    "path": "backend/pipeline/stain.py",
+    "rule": "L4",
+    "line_hash": "845bdc17c5e038c484278d3ab2d32a3a33c57dea"
+  },
+  {
+    "path": "backend/pipeline/stain.py",
+    "rule": "L4",
+    "line_hash": "845bdc17c5e038c484278d3ab2d32a3a33c57dea"
+  },
+  {
+    "path": "backend/pipeline/stain.py",
+    "rule": "L4",
+    "line_hash": "bf37fe0235d6948106ebac550d8eac446716f253"
+  },
+  {
+    "path": "backend/pipeline/stain.py",
+    "rule": "L4",
+    "line_hash": "d0c9f2730be03e9797195558f3b5d519d0815690"
+  },
+  {
+    "path": "backend/pipeline/stain.py",
+    "rule": "L4",
+    "line_hash": "f53b1c8c267ac8bd5d66c5592ddf8333075f7fb9"
+  },
+  {
+    "path": "backend/pipeline/stain.py",
+    "rule": "L4",
+    "line_hash": "f8e4b56a3949bab22539279ad741cfd1ec7c16fa"
+  },
+  {
+    "path": "backend/pipeline/tiles.py",
+    "rule": "L3",
+    "line_hash": "2d8c352a876dda0c9c88cdeb737f51681e9662ef"
+  },
+  {
+    "path": "backend/pipeline/tiles.py",
+    "rule": "L3",
+    "line_hash": "3b9f0ca70dc1ac082ed5905b7043e0aab1c741f9"
+  },
+  {
+    "path": "backend/pipeline/tiles.py",
+    "rule": "L3",
+    "line_hash": "3b9f0ca70dc1ac082ed5905b7043e0aab1c741f9"
+  },
+  {
+    "path": "backend/pipeline/tiles.py",
+    "rule": "L3",
+    "line_hash": "c875f743490b27f1c9d67b4f4c20c451654c0fb8"
+  },
+  {
+    "path": "backend/pipeline/tiles.py",
+    "rule": "L4",
+    "line_hash": "7d835850d4283c7924efe4f23d7202e4c7dcbdf6"
+  },
+  {
+    "path": "backend/pipeline/tiles.py",
+    "rule": "L4",
+    "line_hash": "94e6270332d4c6d501ba5edf27b661309d2d2a13"
+  },
+  {
+    "path": "backend/pipeline/tiles.py",
+    "rule": "L4",
+    "line_hash": "a55a80084125f3ea9b19bbefb379d1ccc282b89e"
+  },
+  {
+    "path": "backend/pipeline/tiles.py",
+    "rule": "L4",
+    "line_hash": "a55a80084125f3ea9b19bbefb379d1ccc282b89e"
+  },
+  {
+    "path": "backend/pipeline/tiles.py",
+    "rule": "L4",
+    "line_hash": "f12bd5fa3d1dc2a39eeb2219f69d68242eea526b"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L2",
+    "line_hash": "89a66b4d1be76c797ba1a802d42eb16e499fffe8"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L3",
+    "line_hash": "4510845f7edb8cdcf832d8adddfe5224ca3efd1a"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L3",
+    "line_hash": "a693e74fd2bc0eccf45d24dc5746defa915aa4bc"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L4",
+    "line_hash": "271ee5125098b814f8113ac1cde2fd468a799bcf"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L4",
+    "line_hash": "271ee5125098b814f8113ac1cde2fd468a799bcf"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L4",
+    "line_hash": "271ee5125098b814f8113ac1cde2fd468a799bcf"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L4",
+    "line_hash": "34bd1df3086f7b27692d1b869682e36c0f0fbf3a"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L4",
+    "line_hash": "7c71a3b01141ddb2008aea090c660277f6c40de6"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L4",
+    "line_hash": "7c71a3b01141ddb2008aea090c660277f6c40de6"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L4",
+    "line_hash": "7c71a3b01141ddb2008aea090c660277f6c40de6"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L4",
+    "line_hash": "9150a8cb12b6da5908f01209e48c0b1c319adf1d"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L4",
+    "line_hash": "97b8a6b4234d39bdea61f767ffc2f289f07a6143"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L4",
+    "line_hash": "97b8a6b4234d39bdea61f767ffc2f289f07a6143"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L4",
+    "line_hash": "bda29e686b0c3b92525f45e225c334d4c8ea6984"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L4",
+    "line_hash": "bda29e686b0c3b92525f45e225c334d4c8ea6984"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L4",
+    "line_hash": "bda29e686b0c3b92525f45e225c334d4c8ea6984"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L4",
+    "line_hash": "bda29e686b0c3b92525f45e225c334d4c8ea6984"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L4",
+    "line_hash": "d62dea9c98ba8e15f735459e8547cc19299a10ef"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L4",
+    "line_hash": "ed525a692b990c33aa0b1061d6e27268acb07b58"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L4",
+    "line_hash": "ed525a692b990c33aa0b1061d6e27268acb07b58"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L4",
+    "line_hash": "ed525a692b990c33aa0b1061d6e27268acb07b58"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L4",
+    "line_hash": "ed525a692b990c33aa0b1061d6e27268acb07b58"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L4",
+    "line_hash": "fd20299b1889aaf876efddaa37db532c8daea720"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L4",
+    "line_hash": "fd20299b1889aaf876efddaa37db532c8daea720"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L4",
+    "line_hash": "fd20299b1889aaf876efddaa37db532c8daea720"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L4",
+    "line_hash": "fd20299b1889aaf876efddaa37db532c8daea720"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L4",
+    "line_hash": "fd20299b1889aaf876efddaa37db532c8daea720"
+  },
+  {
+    "path": "backend/pipeline/verify.py",
+    "rule": "L4",
+    "line_hash": "fe8eaae2d77664fdccd6027725005365e7cc6bb5"
+  },
+  {
+    "path": "backend/tools/regrade_case_9d16e702.py",
+    "rule": "L1",
+    "line_hash": "0f3160e3065884536eebd23d119ae9114c6ea6b8"
+  },
+  {
+    "path": "backend/tools/regrade_case_9d16e702.py",
+    "rule": "L1",
+    "line_hash": "6c0e7dc4b63b736a08bdba00328c8b637fda897f"
+  },
+  {
+    "path": "backend/worker/grading.py",
+    "rule": "L1",
+    "line_hash": "0f3160e3065884536eebd23d119ae9114c6ea6b8"
+  },
+  {
+    "path": "backend/worker/grading.py",
+    "rule": "L1",
+    "line_hash": "6c0e7dc4b63b736a08bdba00328c8b637fda897f"
+  },
+  {
+    "path": "backend/worker/grading.py",
+    "rule": "L1",
+    "line_hash": "930710967e2c76759eb67f3b7f6054a39fabd7d5"
+  },
+  {
+    "path": "backend/worker/grading.py",
+    "rule": "L1",
+    "line_hash": "e8a955ec9a8c1f7aaf58604c2f7da65992c84ed5"
+  },
+  {
+    "path": "backend/worker/grading.py",
+    "rule": "L2",
+    "line_hash": "6967e780af2b2a90aa30dc0f8021e6a2e6823b57"
+  },
+  {
+    "path": "backend/worker/grading.py",
+    "rule": "L2",
+    "line_hash": "d0be388b0f50a67b4c866fbc4cfa11fe30c1245e"
+  },
+  {
+    "path": "backend/worker/grading.py",
+    "rule": "L2",
+    "line_hash": "e0729025431c4a128868210a78b28436dc00bff8"
+  },
+  {
+    "path": "backend/worker/grading.py",
+    "rule": "L3",
+    "line_hash": "4278a5a2425519feae2767048a5939b48addc278"
+  },
+  {
+    "path": "backend/worker/grading.py",
+    "rule": "L3",
+    "line_hash": "db1ec62de70daf89d54be069015ece40c44c9ecd"
+  },
+  {
+    "path": "backend/worker/grading.py",
+    "rule": "L3",
+    "line_hash": "ee9bf91b01149468f1bd88590e8305eba07dd003"
+  },
+  {
+    "path": "backend/worker/ingest.py",
+    "rule": "L1",
+    "line_hash": "5f7bc7b2bead46ee7648f18e83629f108e0289a8"
+  },
+  {
+    "path": "backend/worker/ingest.py",
+    "rule": "L2",
+    "line_hash": "f1b3678de17a758ea46613fa8fbdb23dd3a81ea8"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L1",
+    "line_hash": "32770ec2b1d2ee1499a65d251810720f517e34a6"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L1",
+    "line_hash": "49e573a1a263a875fc0948c0ea93e60aeea025c7"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L1",
+    "line_hash": "5014ae02a3d565973eaf8ee69fa06bfabede482d"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L1",
+    "line_hash": "594ad856a319273c0c08b58ec0397ea298040a33"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L1",
+    "line_hash": "7b485ba1ecd388748c2d5dd1403b650cfd94551a"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L1",
+    "line_hash": "9e5c642bf9f0420b1a13f451d2b413bc6e7d0b54"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L1",
+    "line_hash": "ae8e64835cf8913a612f3486cb659fbf9f8663e4"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L1",
+    "line_hash": "c39f8f82593bb6449d2788e99c01f4253ff12a1d"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L1",
+    "line_hash": "e8a955ec9a8c1f7aaf58604c2f7da65992c84ed5"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L2",
+    "line_hash": "04cecbf04daf0fa3ebd91f11ff8b0ff53bb4a4da"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L2",
+    "line_hash": "064134195ee9f23644f655698f4a20580c51a995"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L2",
+    "line_hash": "1dafcc2e873c7d5fadea19514424000b3eac1e36"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L2",
+    "line_hash": "2a2787a41499498a4e9b615112ef5dd934a5e279"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L2",
+    "line_hash": "3bac7083546ae09c054411aba032ec1143cf2ca5"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L2",
+    "line_hash": "51527e8b9338af728e79f994a8166b41ea2c2dfb"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L2",
+    "line_hash": "610c5265bc8794a96ff91c1bd302f6a25fa8b919"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L2",
+    "line_hash": "639223902bb8bc292955d874f775bfd5ecf4a7e2"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L2",
+    "line_hash": "83377e186685cf2c83caecc034f293df8c3baa9b"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L2",
+    "line_hash": "9ff5234198dbfbe7cdf069c8e7257c4b056757f8"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L2",
+    "line_hash": "b185633da40cd467c917ed50ece7c87cb0a11a8f"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L2",
+    "line_hash": "b78e5e537b27c4cfa7633ffba6376b206f7fe70e"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L2",
+    "line_hash": "c07e74b7d67bccbde1e5f65c82f0d38a1f3cb43e"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L2",
+    "line_hash": "c0886ecef294eacfe4b644d0a5eefd1a7fcb8a50"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L2",
+    "line_hash": "e83d2fe3a936f312148ecdd646638c3bfc554bdf"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L2",
+    "line_hash": "ef486ac7f6f498466a59b368667c89d748feeed3"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L2",
+    "line_hash": "f55ca278fd901743e8020a75705152812ea1149d"
+  },
+  {
+    "path": "backend/worker/mitosis.py",
+    "rule": "L2",
+    "line_hash": "fd7e700717c605fe1f5aa9b7d1cf85831731ad5a"
+  },
+  {
+    "path": "backend/worker/preprocess.py",
+    "rule": "L1",
+    "line_hash": "2714ab2d41333dcc563973f5524d76bb86952c25"
+  },
+  {
+    "path": "backend/worker/preprocess.py",
+    "rule": "L1",
+    "line_hash": "572219b146742e49ed9ad2aaa50cf1a91b330095"
+  },
+  {
+    "path": "backend/worker/preprocess.py",
+    "rule": "L1",
+    "line_hash": "9508cb86956e10a8f50fc3a3e30d6e320b4dd5fe"
+  },
+  {
+    "path": "backend/worker/preprocess.py",
+    "rule": "L1",
+    "line_hash": "baf088170612b56a894503bb5efcd829859ef8bb"
+  },
+  {
+    "path": "backend/worker/preprocess.py",
+    "rule": "L1",
+    "line_hash": "c2ff1807579847fbfebdc8fb62a5d8a9ebdb332f"
+  },
+  {
+    "path": "backend/worker/preprocess.py",
+    "rule": "L1",
+    "line_hash": "e8a955ec9a8c1f7aaf58604c2f7da65992c84ed5"
+  },
+  {
+    "path": "backend/worker/qc.py",
+    "rule": "L1",
+    "line_hash": "572219b146742e49ed9ad2aaa50cf1a91b330095"
+  },
+  {
+    "path": "backend/worker/qc.py",
+    "rule": "L1",
+    "line_hash": "e8a955ec9a8c1f7aaf58604c2f7da65992c84ed5"
+  },
+  {
+    "path": "backend/worker/report.py",
+    "rule": "L1",
+    "line_hash": "29be498da93bb3c2a97d7b6e792faf8735bb558b"
+  },
+  {
+    "path": "backend/worker/report.py",
+    "rule": "L1",
+    "line_hash": "76d38e8e650e68b60f8e42e8dc74e799b28062c5"
+  },
+  {
+    "path": "backend/worker/report.py",
+    "rule": "L2",
+    "line_hash": "19497091a92e2e46c40097795f43bb4220e5d8e0"
+  },
+  {
+    "path": "backend/worker/report.py",
+    "rule": "L2",
+    "line_hash": "25553670a291133cb079eeb7a59f75f1759968bc"
+  },
+  {
+    "path": "backend/worker/triage.py",
+    "rule": "L1",
+    "line_hash": "32770ec2b1d2ee1499a65d251810720f517e34a6"
+  },
+  {
+    "path": "backend/worker/triage.py",
+    "rule": "L1",
+    "line_hash": "594ad856a319273c0c08b58ec0397ea298040a33"
+  },
+  {
+    "path": "backend/worker/triage.py",
+    "rule": "L1",
+    "line_hash": "e8a955ec9a8c1f7aaf58604c2f7da65992c84ed5"
+  },
+  {
+    "path": "backend/worker/triage.py",
+    "rule": "L1",
+    "line_hash": "ead6e704c4e1a1cff54bae94dc36005c72bf4532"
+  },
+  {
+    "path": "backend/worker/triage.py",
+    "rule": "L2",
+    "line_hash": "0a0475ad5df1ddf861cc933eaa07c4acdc685391"
+  },
+  {
+    "path": "backend/worker/triage.py",
+    "rule": "L2",
+    "line_hash": "1454ba13427e675f79f1fe64a62d00110e254a0e"
+  },
+  {
+    "path": "backend/worker/triage.py",
+    "rule": "L2",
+    "line_hash": "3bf114154dae2ea870773a21f9e0e975cb5bcf2c"
+  },
+  {
+    "path": "backend/worker/triage.py",
+    "rule": "L2",
+    "line_hash": "9b602677b46f4e6a1795b3eba1ab9a5d328b79c5"
+  },
+  {
+    "path": "backend/worker/triage.py",
+    "rule": "L2",
+    "line_hash": "9df1af2fc66a59d5e24cdd98032e6a33bd5a403c"
+  },
+  {
+    "path": "backend/worker/triage.py",
+    "rule": "L2",
+    "line_hash": "cfd327d9b3c407c9c3f27793cd58fb81f5192809"
+  }
+]
