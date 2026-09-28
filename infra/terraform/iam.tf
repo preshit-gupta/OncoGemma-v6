@@ -36,6 +36,13 @@ resource "google_project_iam_member" "sa_cloud_sql_client" {
   member  = "serviceAccount:${google_service_account.cloud_run_sa.email}"
 }
 
+# Grant read access to the database password secret only (not project-wide)
+resource "google_secret_manager_secret_iam_member" "sa_db_password_accessor" {
+  secret_id = var.db_password_secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.cloud_run_sa.email}"
+}
+
 # Grant Cloud Run Invoker to Cloud Tasks
 resource "google_project_iam_member" "sa_run_invoker" {
   project = var.project_id

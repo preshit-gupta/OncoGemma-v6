@@ -40,9 +40,8 @@ variable "db_user" {
   default     = "oncogemma"
 }
 
-variable "db_password" {
+variable "db_password_secret_id" {
   type        = string
-  description = "PostgreSQL password"
-  sensitive   = true
-  default     = "oncogemma_secure_cloud_password"
+  description = "Secret Manager secret holding the PostgreSQL user's password. Created outside Terraform; Cloud Run reads its latest version into DB_PASSWORD"
+  default     = "og-db-password"
 }

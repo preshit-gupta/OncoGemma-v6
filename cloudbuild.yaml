@@ -65,6 +65,8 @@ steps:
       - '--memory=8Gi'
       - '--no-cpu-throttling'
       - '--min-instances=1'
+      - '--update-env-vars=CLOUD_SQL_CONNECTION_NAME=$PROJECT_ID:$_REGION:oncogemma-dev-psql'
+      - '--set-secrets=DB_PASSWORD=og-db-password:latest'
     id: 'deploy-api'
 
   # 6. Deploy Next.js Frontend to Cloud Run
@@ -95,6 +97,8 @@ steps:
       - '--image=$_REGION-docker.pkg.dev/$PROJECT_ID/oncogemma-repo/worker:latest'
       - '--region=$_REGION'
       - '--add-cloudsql-instances=$PROJECT_ID:$_REGION:oncogemma-dev-psql'
+      - '--update-env-vars=CLOUD_SQL_CONNECTION_NAME=$PROJECT_ID:$_REGION:oncogemma-dev-psql'
+      - '--set-secrets=DB_PASSWORD=og-db-password:latest'
     id: 'update-worker-job'
 
 substitutions:
