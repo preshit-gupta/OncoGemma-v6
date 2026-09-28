@@ -266,6 +266,14 @@ class ConfidenceWeights(StrictModel):
     high: PositiveFloat
 
 
+class GradingEstimatorsConfig(StrictModel):
+    producer: RegistryKey
+    tubule_prompt: PromptFileName
+    pleo_prompt: PromptFileName
+    histotype_prompt: PromptFileName
+    histotype_images: PositiveInt
+
+
 class GradingSamplingConfig(StrictModel):
     n_patches: PositiveInt
     patch_size_px: PositiveInt
@@ -273,6 +281,7 @@ class GradingSamplingConfig(StrictModel):
     min_tumor_patches: PositiveInt
     max_disp: Fraction
     confidence_weights: ConfidenceWeights
+    estimators: GradingEstimatorsConfig
 
     @model_validator(mode="after")
     def _ordered(self) -> "GradingSamplingConfig":
@@ -374,7 +383,26 @@ class PipelineConfig(StrictModel):
         )
         self._triage_models_exist()
         self._mitosis_models_exist()
+        self._grading_models_exist()
         return self
+
+    def _grading_models_exist(self) -> None:
+        estimators = self.scoring.grading.estimators
+        vlm = self.models.models.get(estimators.producer)
+        _require(
+            vlm is not None and vlm.kind == "vlm",
+            f"scoring.yaml grading.estimators.producer {estimators.producer!r} must be a VLM in models.yaml",
+        )
+        for field in ("tubule_prompt", "pleo_prompt", "histotype_prompt"):
+            prompt = getattr(estimators, field)
+            _require(
+                prompt in self.prompts,
+                f"scoring.yaml grading.estimators.{field} {prompt!r} is not in configs/prompts",
+            )
+        _require(
+            estimators.histotype_images <= self.scoring.grading.n_patches,
+            "scoring.yaml grading.estimators.histotype_images must not exceed n_patches",
+        )
 
     def _mitosis_models_exist(self) -> None:
         models, detector, referee = self.models.models, self.mitosis.detector, self.mitosis.referee

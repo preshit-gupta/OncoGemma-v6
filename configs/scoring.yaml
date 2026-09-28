@@ -31,6 +31,14 @@ grading:
     low: 0.5
     medium: 1.0
     high: 1.5
+  # The VLM that estimates each component (configs/models.yaml) and the prompt per task.
+  # v5 prompts with strict output schemas and no numeric anchor (SPEC-07 §5.4).
+  estimators:
+    producer: gemini_referee
+    tubule_prompt: tubule@v1.md
+    pleo_prompt: pleo@v1.md
+    histotype_prompt: histologic_type@v1.md
+    histotype_images: 6 # the first patches, shown together (v5 sent 6 to Gemini)
 
 hpf:
   radius_um: 262.0 # 250-270 um field radius (area ≈ 0.2157 mm²)

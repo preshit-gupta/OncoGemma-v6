@@ -58,7 +58,7 @@ STAGE_HANDLERS: dict[str, StageHandler] = {
     "qc": _without_runtime(run_qc),
     "triage": run_triage,
     "mitosis": run_mitosis,
-    "grading": _without_runtime(run_grading),
+    "grading": run_grading,
 }
 
 

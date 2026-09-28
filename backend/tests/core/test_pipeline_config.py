@@ -190,6 +190,22 @@ def test_mitosis_models_must_exist_in_the_registry(tmp_path, edit, message):
         load(configs)
 
 
+@pytest.mark.parametrize(
+    "edit, message",
+    [
+        (lambda d: d["grading"]["estimators"].update(producer="triage_probe"), "must be a VLM"),
+        (lambda d: d["grading"]["estimators"].update(pleo_prompt="pleo@v2.md"), "pleo_prompt 'pleo@v2.md' is not in configs/prompts"),
+        (lambda d: d["grading"]["estimators"].update(histotype_images=30), "must not exceed n_patches"),
+        (lambda d: d["grading"]["estimators"].pop("tubule_prompt"), "tubule_prompt"),
+    ],
+)
+def test_grading_estimators_must_exist_in_the_registry(tmp_path, edit, message):
+    configs = copy_configs(tmp_path)
+    edit_yaml(configs / "scoring.yaml", edit)
+    with pytest.raises(ConfigLoadError, match=message):
+        load(configs)
+
+
 def test_duplicate_yaml_key_is_rejected(tmp_path):
     configs = copy_configs(tmp_path)
     text = (configs / "triage.yaml").read_text(encoding="utf-8")

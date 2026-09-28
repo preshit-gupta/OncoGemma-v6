@@ -207,7 +207,7 @@ def test_issue_38_missing_mpp_sets_needs_mpp_and_halts_pipeline(db_session, tmp_
 
     grading_exec = StageExecution(case_id=case_id, stage="grading", attempt=1, status="running", input_ref={"slide_id": str(slide_id)})
     with pytest.raises(ValueError) as exc_grad:
-        run_grading(grading_exec, db_session)
+        run_grading(grading_exec, db_session, make_runtime(grading_exec))
     assert "missing valid MPP" in str(exc_grad.value)
 
 
@@ -368,7 +368,7 @@ def test_negative_and_zero_mpp_rejected_by_all_workers(db_session):
 
     exec_grading = StageExecution(case_id=case_id, stage="grading", attempt=1, status="running", input_ref={"slide_id": str(slide_id)})
     with pytest.raises(ValueError, match="missing valid MPP"):
-        run_grading(exec_grading, db_session)
+        run_grading(exec_grading, db_session, make_runtime(exec_grading))
 
 
 def test_mitosis_router_endpoints_reject_missing_mpp(db_session):

@@ -11,7 +11,7 @@ import json
 import math
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Literal
+from typing import Any, Dict, List, Optional, Literal, get_args
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, status, Response
 from pydantic import BaseModel, Field, field_validator
@@ -28,6 +28,7 @@ from app.models.hpf_site import HpfSite
 from app.models.detection import Detection
 from app.models.grading import Grading
 from app.models.audit import AuditEvent
+from app.inference.schemas import HistotypeVerdict
 from pipeline.grading import (
     calculate_nottingham_grade,
     calculate_tubule_score,
@@ -49,9 +50,9 @@ VALID_OVERRIDE_COMPONENTS = {"tubule", "pleo", "mitotic", "patches", "hpfs"}
 ALLOWED_CONFIRM_OVERRIDE_COMPONENTS = {"tubule", "pleo", "mitotic"}
 
 
-VALID_HISTOLOGIC_TYPES = {
-    "IDC-NST", "ILC", "mucinous", "tubular", "papillary",
-    "micropapillary", "metaplastic", "apocrine", "medullary_features", "other"
+# Every type the estimator can propose (HistotypeVerdict) plus the pathologist-only ones.
+VALID_HISTOLOGIC_TYPES = set(get_args(HistotypeVerdict.model_fields["type"].annotation)) | {
+    "apocrine", "medullary_features"
 }
 
 class ScoreOverrideItem(BaseModel):
@@ -110,7 +111,8 @@ class RecomputeGradePayload(BaseModel):
 class ConfirmGradingPayload(BaseModel):
     case_id: str
     reviewed_by: str = Field(default="user_pathologist_001")
-    histologic_type: str = Field(default="IDC-NST")
+    # None keeps the type already confirmed; there is no default type.
+    histologic_type: Optional[str] = None
     type_confirmed: bool = Field(default=False, description="Mandatory confirmation gate")
     overrides: Dict[str, Any] = Field(default_factory=dict)
     tubule_score: int = Field(ge=1, le=3)
@@ -413,11 +415,12 @@ def _build_grading_stage_data_dict(
             "grade": eff_grade,
             "is_overridden": bool(overrides)
         },
+        # No proposal when the estimate failed: an unassessed type never reads as IDC-NST.
         "histologic_type": {
-            "proposed_type": machine_data.get("histologic_type", {}).get("type", "IDC-NST"),
-            "differential": machine_data.get("histologic_type", {}).get("differential", []),
-            "rationale": machine_data.get("histologic_type", {}).get("rationale", ""),
-            "confidence": machine_data.get("histologic_type", {}).get("confidence", "medium"),
+            "proposed_type": (machine_data.get("histologic_type") or {}).get("type"),
+            "differential": (machine_data.get("histologic_type") or {}).get("differential", []),
+            "rationale": (machine_data.get("histologic_type") or {}).get("rationale"),
+            "confidence": (machine_data.get("histologic_type") or {}).get("confidence"),
             "confirmed_type": grading_record.histologic_type,
             "type_confirmed_by": grading_record.type_confirmed_by,
             "is_confirmed": is_type_confirmed
@@ -885,13 +888,21 @@ def confirm_grading_stage(
         )
 
     # 1. Mandatory Histologic Type Confirmation Gate
-    if payload.histologic_type not in VALID_HISTOLOGIC_TYPES:
+    if payload.histologic_type is None:
+        if grading_record.type_confirmed_by == "unconfirmed" or grading_record.histologic_type is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Clinical Confirmation Gate: Histologic Type must be explicitly confirmed by the pathologist before confirming grading."
+            )
+    elif payload.histologic_type not in VALID_HISTOLOGIC_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid histologic type '{payload.histologic_type}'. Must be one of {sorted(VALID_HISTOLOGIC_TYPES)}."
         )
 
-    if grading_record.type_confirmed_by == "unconfirmed":
+    if payload.histologic_type is None:
+        pass
+    elif grading_record.type_confirmed_by == "unconfirmed":
         if payload.type_confirmed:
             grading_record.histologic_type = payload.histologic_type
             grading_record.type_confirmed_by = actor
@@ -1024,8 +1035,9 @@ def confirm_grading_stage(
     grading_record.mitotic_score = payload.mitotic_score
     grading_record.nottingham_sum = computed_sum
     grading_record.grade = computed_grade
-    grading_record.histologic_type = payload.histologic_type
-    grading_record.type_confirmed_by = actor
+    if payload.histologic_type is not None:
+        grading_record.histologic_type = payload.histologic_type
+        grading_record.type_confirmed_by = actor
     
     # Merge overrides ensuring patch and HPF reviews are preserved (#602)
     merged_overrides = dict(grading_record.overrides or {})
@@ -1046,7 +1058,7 @@ def confirm_grading_stage(
         "value": {
             "grade": computed_grade,
             "nottingham_sum": computed_sum,
-            "histologic_type": payload.histologic_type
+            "histologic_type": grading_record.histologic_type
         },
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "actor": actor
@@ -1065,7 +1077,7 @@ def confirm_grading_stage(
         payload={
             "nottingham_sum": computed_sum,
             "grade": computed_grade,
-            "histologic_type": payload.histologic_type,
+            "histologic_type": grading_record.histologic_type,
             "approved_patches_count": rev_summary["approved_patches"],
             "approved_hpfs_count": rev_summary["approved_hpfs"],
             "has_overrides": bool(payload.overrides)
@@ -1097,6 +1109,6 @@ def confirm_grading_stage(
         "next_stage": None,
         "grade": computed_grade,
         "nottingham_sum": computed_sum,
-        "histologic_type": payload.histologic_type
+        "histologic_type": grading_record.histologic_type
     }
 

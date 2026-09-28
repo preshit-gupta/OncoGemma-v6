@@ -137,6 +137,18 @@ def test_0003_0004_add_decision_records_and_mark_existing_executions_clinical(en
     assert "run_mode" not in {c["name"] for c in inspect(engine).get_columns("stage_executions")}
 
 
+def test_0005_makes_histologic_type_nullable_and_downgrade_refuses_to_invent_one(engine):
+    upgrade_to_head(engine)
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO cases (id, created_by, status, created_at) VALUES ('c1', 'v6', 'open', '2026-09-29')"))
+        conn.execute(text(
+            "INSERT INTO gradings (case_id, histologic_type, type_confirmed_by, machine, overrides, created_at, updated_at) "
+            "VALUES ('c1', NULL, 'unconfirmed', '{}', '{}', '2026-09-29', '2026-09-29')"
+        ))
+    with pytest.raises(RuntimeError, match="1 gradings have no histologic type"):
+        run(engine, command.downgrade, "0004_stage_run_mode")
+
+
 # --- API startup ------------------------------------------------------------------
 
 def test_startup_migrates_outside_test_env(monkeypatch):
