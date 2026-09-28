@@ -1,3 +1,5 @@
+import { apiFetch, getCookie } from "./api/auth";
+
 export const API_BASE = "";
 
 export interface Case {
@@ -76,9 +78,7 @@ export function formatApiError(errData: any, fallbackMessage: string): string {
 }
 
 export async function fetchCases(): Promise<Case[]> {
-  const res = await fetch(`${API_BASE}/api/v1/cases`, {
-    headers: { "X-User-Role": "pathologist" }
-  });
+  const res = await apiFetch(`${API_BASE}/api/v1/cases`);
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
     throw new Error(formatApiError(errData, "Failed to fetch cases"));
@@ -87,9 +87,8 @@ export async function fetchCases(): Promise<Case[]> {
 }
 
 export async function createCase(): Promise<Case> {
-  const res = await fetch(`${API_BASE}/api/v1/cases`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/cases`, {
     method: "POST",
-    headers: { "X-User-Role": "pathologist" }
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
@@ -121,17 +120,16 @@ export async function uploadSlideDirectToGCS(
 
   // 1. Request Signed Upload URL from FastAPI control plane if not cached
   if (!upload_url) {
-    const urlRes = await fetch(`${API_BASE}/api/v1/cases/${caseId}/slide/upload-url`, {
+    const urlRes = await apiFetch(`${API_BASE}/api/v1/cases/${caseId}/slide/upload-url`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-User-Role": "pathologist"
       },
       body: JSON.stringify({
         filename: file.name,
         size_bytes: file.size,
-        content_type: file.type || "application/octet-stream"
-      })
+        content_type: file.type || "application/octet-stream",
+      }),
     });
 
     if (!urlRes.ok) {
@@ -149,7 +147,7 @@ export async function uploadSlideDirectToGCS(
         gcs_uri,
         fileName: file.name,
         fileSize: file.size,
-        startedAt: Date.now()
+        startedAt: Date.now(),
       }));
     } catch (_) {}
   }
@@ -184,13 +182,12 @@ export async function uploadSlideDirectToGCS(
   });
 
   // 3. Finalize upload with API to record slide metadata and trigger cloud pipeline stage
-  const finalizeRes = await fetch(`${API_BASE}/api/v1/cases/${caseId}/slide/finalize`, {
+  const finalizeRes = await apiFetch(`${API_BASE}/api/v1/cases/${caseId}/slide/finalize`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
     },
-    body: JSON.stringify({ gcs_uri })
+    body: JSON.stringify({ gcs_uri }),
   });
 
   if (!finalizeRes.ok) {
@@ -256,19 +253,22 @@ export async function uploadSlideFile(
     xhr.addEventListener("abort", () => reject(new Error("Slide upload aborted")));
 
     xhr.open("POST", `${API_BASE}/api/v1/cases/${caseId}/slide/upload`);
-    xhr.setRequestHeader("X-User-Role", "pathologist");
+    xhr.withCredentials = true;
+    const csrf = getCookie("og_csrf");
+    if (csrf) {
+      xhr.setRequestHeader("X-CSRF-Token", csrf);
+    }
     xhr.send(formData);
   });
 }
 
 export async function retryStage(caseId: string, stageName: string) {
-  const res = await fetch(`${API_BASE}/api/v1/cases/${caseId}/stages/${stageName}/retry`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/cases/${caseId}/stages/${stageName}/retry`, {
     method: "POST",
     headers: { 
       "Content-Type": "application/json",
-      "X-User-Role": "pathologist" 
     },
-    body: JSON.stringify({})
+    body: JSON.stringify({}),
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
@@ -278,13 +278,12 @@ export async function retryStage(caseId: string, stageName: string) {
 }
 
 export async function approveStage(caseId: string, stageName: string, payload?: { override_justification?: string }) {
-  const res = await fetch(`${API_BASE}/api/v1/cases/${caseId}/stages/${stageName}/approve`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/cases/${caseId}/stages/${stageName}/approve`, {
     method: "POST",
     headers: { 
       "Content-Type": "application/json",
-      "X-User-Role": "pathologist" 
     },
-    body: JSON.stringify(payload || {})
+    body: JSON.stringify(payload || {}),
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
@@ -294,17 +293,16 @@ export async function approveStage(caseId: string, stageName: string, payload?: 
 }
 
 export async function confirmTriageStage(caseId: string, noInvasiveTumor: boolean = false) {
-  const res = await fetch(`${API_BASE}/api/v1/stages/triage/confirm`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/stages/triage/confirm`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
     },
     body: JSON.stringify({
       case_id: caseId,
       no_invasive_tumor: noInvasiveTumor,
-      reviewed_by: "pathologist_01"
-    })
+      reviewed_by: "pathologist_01",
+    }),
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
@@ -314,9 +312,8 @@ export async function confirmTriageStage(caseId: string, noInvasiveTumor: boolea
 }
 
 export async function deleteCase(caseId: string) {
-  const res = await fetch(`${API_BASE}/api/v1/cases/${caseId}`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/cases/${caseId}`, {
     method: "DELETE",
-    headers: { "X-User-Role": "pathologist" }
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
@@ -325,9 +322,8 @@ export async function deleteCase(caseId: string) {
 }
 
 export async function clearAllCases() {
-  const res = await fetch(`${API_BASE}/api/v1/cases`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/cases`, {
     method: "DELETE",
-    headers: { "X-User-Role": "pathologist" }
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
@@ -337,9 +333,7 @@ export async function clearAllCases() {
 }
 
 export async function fetchCaseDetail(caseId: string): Promise<CaseDetail> {
-  const res = await fetch(`${API_BASE}/api/v1/cases/${caseId}`, {
-    headers: { "X-User-Role": "pathologist" }
-  });
+  const res = await apiFetch(`${API_BASE}/api/v1/cases/${caseId}`);
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
     throw new Error(formatApiError(errData, "Failed to fetch case detail"));
@@ -394,9 +388,7 @@ export interface MitosisStageData {
 }
 
 export async function fetchMitosisStageData(caseId: string): Promise<MitosisStageData> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/mitosis/${caseId}`, {
-    headers: { "X-User-Role": "pathologist" }
-  });
+  const res = await apiFetch(`${API_BASE}/api/v1/stages/mitosis/${caseId}`);
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
     throw new Error(formatApiError(errData, `Failed to fetch mitosis stage data (Status: ${res.status})`));
@@ -410,13 +402,12 @@ export async function recomputeMitosis(payload: {
   hpfs?: Array<{ seq: number; center_um: [number, number]; radius_um?: number; source?: string }>;
   audit_toggle?: { id: string; from: string; to: string };
 }): Promise<{ case_id: string; hpfs: VirtualHpfSite[]; summary: MitoticScoreSummary }> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/mitosis/recompute`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/stages/mitosis/recompute`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
@@ -431,18 +422,17 @@ export async function addPathologistMitosis(
   label: string = "mitosis",
   reviewedBy: string = "pathologist_01"
 ): Promise<{ status: string; candidate: MitosisCandidate }> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/mitosis/add_candidate`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/stages/mitosis/add_candidate`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
     },
     body: JSON.stringify({
       case_id: caseId,
       centroid_um: centroidUm,
       label,
-      reviewed_by: reviewedBy
-    })
+      reviewed_by: reviewedBy,
+    }),
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
@@ -455,17 +445,16 @@ export async function bulkRejectUnreviewedMitosis(
   caseId: string,
   reviewedBy: string = "pathologist_01"
 ): Promise<MitosisStageData> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/mitosis/bulk_action`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/stages/mitosis/bulk_action`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
     },
     body: JSON.stringify({
       case_id: caseId,
       action: "reject_remaining_unreviewed",
-      reviewed_by: reviewedBy
-    })
+      reviewed_by: reviewedBy,
+    }),
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
@@ -475,16 +464,15 @@ export async function bulkRejectUnreviewedMitosis(
 }
 
 export async function replaceMitosisHpfs(caseId: string): Promise<MitosisStageData> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/mitosis/re_place_hpfs`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/stages/mitosis/re_place_hpfs`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
     },
     body: JSON.stringify({
       case_id: caseId,
-      action: "re_place_hpfs"
-    })
+      action: "re_place_hpfs",
+    }),
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
@@ -497,16 +485,15 @@ export async function confirmMitosisStage(
   caseId: string,
   reviewedBy: string = "pathologist_01"
 ): Promise<any> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/mitosis/confirm`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/stages/mitosis/confirm`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
     },
     body: JSON.stringify({
       case_id: caseId,
-      reviewed_by: reviewedBy
-    })
+      reviewed_by: reviewedBy,
+    }),
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
@@ -649,9 +636,7 @@ export interface HpfReviewPayload {
 }
 
 export async function fetchGradingStageData(caseId: string): Promise<GradingStageData> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/grading/${caseId}`, {
-    headers: { "X-User-Role": "pathologist" }
-  });
+  const res = await apiFetch(`${API_BASE}/api/v1/stages/grading/${caseId}`);
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
     throw new Error(formatApiError(errData, `Failed to fetch grading stage data (Status: ${res.status})`));
@@ -660,13 +645,12 @@ export async function fetchGradingStageData(caseId: string): Promise<GradingStag
 }
 
 export async function reviewGradingPatches(payload: PatchReviewPayload): Promise<GradingStageData> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/grading/patches/review`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/stages/grading/patches/review`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
@@ -676,13 +660,12 @@ export async function reviewGradingPatches(payload: PatchReviewPayload): Promise
 }
 
 export async function reviewGradingHpfs(payload: HpfReviewPayload): Promise<GradingStageData> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/grading/hpfs/review`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/stages/grading/hpfs/review`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
@@ -705,13 +688,12 @@ export async function recomputeGradingPreview(payload: {
   grade: number;
   is_overridden: boolean;
 }> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/grading/recompute`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/stages/grading/recompute`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
@@ -726,13 +708,12 @@ export async function confirmHistologicType(payload: {
   justification?: string;
   reviewed_by?: string;
 }): Promise<any> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/grading/type/confirm`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/stages/grading/type/confirm`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
@@ -754,13 +735,12 @@ export async function confirmGradingStage(payload: {
   nottingham_sum?: number | null;
   grade?: number | null;
 }): Promise<any> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/grading/confirm`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/stages/grading/confirm`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
@@ -769,21 +749,18 @@ export async function confirmGradingStage(payload: {
   return res.json();
 }
 
-
-
 export async function updateSlideMpp(
   caseId: string,
   slideId: string,
   mppX: number,
   mppY?: number
 ): Promise<any> {
-  const res = await fetch(`${API_BASE}/api/v1/cases/${caseId}/slides/${slideId}/mpp`, {
+  const res = await apiFetch(`${API_BASE}/api/v1/cases/${caseId}/slides/${slideId}/mpp`, {
     method: "PATCH",
     headers: {
       "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
     },
-    body: JSON.stringify({ mpp_x: mppX, mpp_y: mppY })
+    body: JSON.stringify({ mpp_x: mppX, mpp_y: mppY }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: "Failed to update MPP" }));
@@ -791,6 +768,3 @@ export async function updateSlideMpp(
   }
   return res.json();
 }
-
-
-
