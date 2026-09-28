@@ -1,0 +1,13 @@
+# Fallback policy (SPEC-01 §3.6). Validated into app.core.fallbacks.FallbackPolicy as part
+# of PipelineConfig, so every change here changes config_hash.
+#
+# Entries apply ONLY in run_mode=clinical; EVAL and SHADOW runs always fail loud. Without
+# an entry, a model failure fails the stage. An entry lets the stage continue with no
+# automated verdict for that entity: the entity is flagged needs_human, and the skip is
+# recorded as a DecisionRecord with producer_kind='fallback'. Example:
+#
+# fallbacks:
+#   - task: mitosis_referee
+#     on: [ModelUnavailableError, ModelTimeoutError]   # also allowed: SchemaInvalidError
+#     to: null                                         # no automated verdict
+fallbacks: []

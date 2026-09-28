@@ -6,6 +6,7 @@ from app.models.hotspot import Hotspot
 from app.models.detection import Detection
 from app.models.hpf_site import HpfSite
 from app.models.grading import Grading
+from app.models.decision_record import DecisionRecord
 
 __all__ = [
     "Case",
@@ -15,5 +16,6 @@ __all__ = [
     "Hotspot",
     "Detection",
     "HpfSite",
-    "Grading"
+    "Grading",
+    "DecisionRecord",
 ]

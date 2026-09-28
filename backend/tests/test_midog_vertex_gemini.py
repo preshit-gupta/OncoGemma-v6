@@ -166,7 +166,8 @@ def test_mitosis_confirmation_lenient_sanitization():
 
 def test_pipeline_referee_model_version_provenance():
     """Verify that referee and detector version strings truthfully reflect Vertex AI configuration."""
-    detector = YoloMitosisDetector(endpoint_id="6276949705008087040")
+    with patch("google.cloud.aiplatform.Endpoint"), patch("google.cloud.aiplatform.init"):
+        detector = YoloMitosisDetector(endpoint_id="6276949705008087040")
     assert detector.model_version == "vertex_ai_midog@6276949705008087040"
 
     ref_model = getattr(settings, "GEMINI_REFEREE_MODEL", "gemini-2.5-flash")

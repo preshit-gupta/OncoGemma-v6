@@ -8,6 +8,7 @@ from alembic import command
 from alembic.script import ScriptDirectory
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 
 import app.main as main
 from app.core.db import Base
@@ -115,6 +116,25 @@ def test_0002_drops_the_v5_reports_table(engine):
     assert "reports" not in inspect(engine).get_table_names()
     run(engine, command.downgrade, BASELINE_REVISION)
     assert "reports" in inspect(engine).get_table_names()
+
+
+def test_0003_0004_add_decision_records_and_mark_existing_executions_clinical(engine):
+    run(engine, command.upgrade, "0002_drop_v5_reports")
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO cases (id, created_by, status, created_at) VALUES ('c1', 'v5', 'open', '2026-09-01')"))
+        conn.execute(text(
+            "INSERT INTO stage_executions (id, case_id, stage, attempt, status) VALUES ('s1', 'c1', 'triage', 1, 'done')"
+        ))
+    upgrade_to_head(engine)
+    assert "decision_records" in inspect(engine).get_table_names()
+    with engine.begin() as conn:
+        assert conn.execute(text("SELECT run_mode FROM stage_executions WHERE id = 's1'")).scalar_one() == "clinical"
+    with pytest.raises(IntegrityError):
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE stage_executions SET run_mode = 'batch' WHERE id = 's1'"))
+    run(engine, command.downgrade, "0002_drop_v5_reports")
+    assert "decision_records" not in inspect(engine).get_table_names()
+    assert "run_mode" not in {c["name"] for c in inspect(engine).get_columns("stage_executions")}
 
 
 # --- API startup ------------------------------------------------------------------

@@ -80,6 +80,12 @@ def test_probe_sha256_matches_the_artifact():
         (lambda m: m.update(schema_version=2), "schema_version"),
         (lambda m: m["heuristics"].update(medgemma={"version": "x", "module": "pipeline.detect"}), "both a model and a heuristic"),
         (lambda m: m["heuristics"]["od_hyperchromatic_sweep"].update(module="pipeline/detect.py"), "module"),
+        (lambda m: m["models"]["medgemma"].pop("params"), "params is required for kind: vlm"),
+        (lambda m: m["models"]["path_foundation"].update(params={"temperature": 0.0}), "params is required for kind: vlm"),
+        (lambda m: m["models"]["path_foundation"].update(schema_retries=1), "schema_retries"),
+        (lambda m: m["call_policy"].update(backoff_base_s=60.0), "backoff_base_s must not exceed backoff_cap_s"),
+        (lambda m: m["call_policy"].update(default_max_attempts=0), "default_max_attempts"),
+        (lambda m: m["models"]["gemini_referee"].pop("region"), "region"),
     ],
 )
 def test_invalid_registry_is_rejected(tmp_path, edit, message):
@@ -87,3 +93,22 @@ def test_invalid_registry_is_rejected(tmp_path, edit, message):
     edit_yaml(configs / "models.yaml", edit)
     with pytest.raises(ConfigLoadError, match=message):
         load_pipeline_config(configs, VARIABLES)
+
+
+def test_call_limits_come_from_the_entry_or_the_call_policy():
+    reg = registry()
+    policy = reg.call_policy
+    assert reg.call_limits("gemini_referee") == (policy.default_max_attempts, policy.default_deadline_s)
+    assert reg.call_limits("medgemma") == (policy.default_max_attempts, policy.default_deadline_s)
+    with pytest.raises(KeyError):
+        reg.call_limits("od_hyperchromatic_sweep")
+
+
+def test_entry_limits_override_the_call_policy(tmp_path):
+    configs = copy_configs(tmp_path)
+    limits = {"max_batch": 6, "max_request_bytes": 1250000, "qps": 8.0, "deadline_s": 60.0, "max_attempts": 3}
+    edit_yaml(configs / "models.yaml", lambda m: m["models"]["path_foundation"].update(limits=limits))
+    edit_yaml(configs / "models.yaml", lambda m: m["models"]["gemini_referee"].update(max_attempts=2, deadline_s=30.0))
+    reg = load_pipeline_config(configs, VARIABLES).models
+    assert reg.call_limits("path_foundation") == (3, 60.0)
+    assert reg.call_limits("gemini_referee") == (2, 30.0)

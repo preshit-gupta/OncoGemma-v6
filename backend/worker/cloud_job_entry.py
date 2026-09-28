@@ -7,7 +7,6 @@ persists output to Cloud SQL & GCS, and terminates cleanly with zero idle cost.
 import os
 import sys
 import argparse
-import traceback
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -15,23 +14,11 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from sqlalchemy.orm import Session
 from app.core.db import SessionLocal
-from app.core.pipeline_config import get_config_hash, init_pipeline_config
+from app.core.pipeline_config import init_pipeline_config
 from app.models.stage_execution import StageExecution
-from worker.ingest import run_ingest
-from worker.preprocess import run_preprocess
-from worker.qc import run_qc
-from worker.triage import run_triage
-from worker.mitosis import run_mitosis
-from worker.grading import run_grading
+from worker.execution import STAGE_HANDLERS, StageFailedError, execute_stage, mark_running
 
-HANDLERS = {
-    "ingest": run_ingest,
-    "preprocess": run_preprocess,
-    "qc": run_qc,
-    "triage": run_triage,
-    "mitosis": run_mitosis,
-    "grading": run_grading,
-}
+HANDLERS = STAGE_HANDLERS
 
 
 def execute_cloud_job(case_id_str: str, stage_name: str, exec_id_str: str | None = None) -> int:
@@ -39,8 +26,6 @@ def execute_cloud_job(case_id_str: str, stage_name: str, exec_id_str: str | None
     if stage_name not in HANDLERS:
         print(f"[CloudJob Error] Unknown stage '{stage_name}'. Valid: {list(HANDLERS.keys())}", file=sys.stderr)
         return 1
-
-    config_hash = get_config_hash()
 
     print(f"================================================================================")
     print(f"[CloudJob] Starting OncoGemma Stage: {stage_name.upper()} | Case: {case_id_str}")
@@ -75,53 +60,24 @@ def execute_cloud_job(case_id_str: str, stage_name: str, exec_id_str: str | None
                 case_id=UUID(case_id_str) if isinstance(case_id_str, str) else case_id_str,
                 stage=stage_name,
                 attempt=1,
-                status="running",
-                started_at=datetime.now(timezone.utc),
-                config_hash=config_hash
             )
             db.add(stage_exec)
-            db.commit()
-            db.refresh(stage_exec)
-        else:
-            stage_exec.status = "running"
-            stage_exec.started_at = datetime.now(timezone.utc)
-            stage_exec.config_hash = config_hash
-            db.commit()
-
-        handler = HANDLERS[stage_name]
-        out_uri, model_versions = handler(stage_exec, db)
-
-        if stage_exec.status == "running":
-            stage_exec.status = "done"
-        stage_exec.output_ref = out_uri
-        stage_exec.model_versions = model_versions
-        stage_exec.completed_at = datetime.now(timezone.utc)
+        mark_running(stage_exec)
         db.commit()
+        db.refresh(stage_exec)
+
+        try:
+            execute_stage(db, stage_exec, handlers=HANDLERS)
+        except StageFailedError as exc:
+            print(f"[CloudJob FAILED] Stage '{stage_name}' failed: {exc}\n{exc.error['traceback']}", file=sys.stderr)
+            return 2
 
         print(f"================================================================================")
         print(f"[CloudJob] COMPLETED Stage: {stage_name.upper()} | Status: {stage_exec.status}")
-        print(f"[CloudJob] Output Ref: {out_uri}")
+        print(f"[CloudJob] Output Ref: {stage_exec.output_ref}")
         print(f"[CloudJob] Completed at: {datetime.now(timezone.utc).isoformat()}")
         print(f"================================================================================")
         return 0
-
-    except Exception as exc:
-        db.rollback()
-        err_trace = traceback.format_exc()
-        print(f"[CloudJob FAILED] Stage '{stage_name}' failed: {exc}\n{err_trace}", file=sys.stderr)
-
-        try:
-            if stage_exec:
-                curr = db.get(StageExecution, stage_exec.id)
-                if curr:
-                    curr.status = "failed"
-                    curr.error = str(exc)
-                    curr.completed_at = datetime.now(timezone.utc)
-                    db.commit()
-        except Exception as rollback_err:
-            print(f"[CloudJob State Error] {rollback_err}", file=sys.stderr)
-
-        return 2
 
     finally:
         db.close()

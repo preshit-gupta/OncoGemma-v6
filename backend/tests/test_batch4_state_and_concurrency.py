@@ -82,7 +82,7 @@ def test_poll_and_execute_single_task_sqlite_fallback(db_session):
     db_session.commit()
 
     with patch("worker.main.SessionLocal", TestingSessionLocal), \
-         patch("worker.main.HANDLERS", {"preprocess": lambda st, db: ("gs://out.json", {"v": "1.0"})}):
+         patch("worker.main.HANDLERS", {"preprocess": lambda st, db, rt: ("gs://out.json", {"v": "1.0"})}):
         handled = poll_and_execute_single_task()
 
     assert handled is True

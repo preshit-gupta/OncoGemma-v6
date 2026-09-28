@@ -10,6 +10,15 @@
 # model means updating its version here.
 schema_version: 1
 
+# How the gateway calls every model (SPEC-01 §3.4). Only transport errors are retried
+# (HTTP 429/500/502/503/504, DEADLINE_EXCEEDED, UNAVAILABLE), with exponential backoff and
+# full jitter. An entry's limits (or its max_attempts / deadline_s) override the defaults.
+call_policy:
+  default_max_attempts: 4
+  default_deadline_s: 120.0
+  backoff_base_s: 1.0
+  backoff_cap_s: 30.0
+
 models:
   path_foundation:
     kind: embedding
@@ -43,6 +52,7 @@ models:
     kind: vlm
     provider: vertex_genai
     model: ${GEMINI_REFEREE_MODEL}
+    region: ${GCP_REGION}
     requires_image: true
     params: {temperature: 0.0}
 
@@ -53,6 +63,7 @@ models:
     region: ${VERTEX_MEDGEMMA_LOCATION}
     version: "models/885564806952648704@1@2026-09-22"    # google_medgemma-1_5-4b-it-l4
     requires_image: true
+    params: {temperature: 0.0, max_output_tokens: 512}
 
 heuristics:
   od_hyperchromatic_sweep: {version: "v5-2b87ab7", module: pipeline.detect}   # ablation only

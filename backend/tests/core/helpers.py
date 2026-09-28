@@ -16,6 +16,7 @@ VARIABLES = {
     "VERTEX_MEDGEMMA_ENDPOINT_ID": "2222",
     "VERTEX_MEDGEMMA_LOCATION": "us-central1",
     "GEMINI_REFEREE_MODEL": "gemini-2.5-flash",
+    "GCP_REGION": "us-central1",
 }
 
 

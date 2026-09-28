@@ -1,7 +1,6 @@
 import os
 import sys
 import time
-import traceback
 from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -10,23 +9,11 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.core.db import SessionLocal, engine
-from app.core.pipeline_config import get_config_hash, init_pipeline_config
+from app.core.pipeline_config import init_pipeline_config
 from app.models.stage_execution import StageExecution
-from worker.ingest import run_ingest
-from worker.preprocess import run_preprocess
-from worker.qc import run_qc
-from worker.triage import run_triage
-from worker.mitosis import run_mitosis
-from worker.grading import run_grading
+from worker.execution import STAGE_HANDLERS, StageFailedError, execute_stage, mark_running
 
-HANDLERS = {
-    "ingest": run_ingest,
-    "preprocess": run_preprocess,
-    "qc": run_qc,
-    "triage": run_triage,
-    "mitosis": run_mitosis,
-    "grading": run_grading
-}
+HANDLERS = STAGE_HANDLERS
 
 def reset_stuck_running_stages(timeout_seconds: int = 1800):
     """
@@ -58,7 +45,6 @@ def poll_and_execute_single_task():
     Executes a single queued task using SQLAlchemy ORM queue fetch with row locking.
     Uses .with_for_update(skip_locked=True) on PostgreSQL and cleanly falls back on SQLite.
     """
-    config_hash = get_config_hash()
     db: Session = SessionLocal()
     try:
         stages_list = list(HANDLERS.keys())
@@ -103,39 +89,16 @@ def poll_and_execute_single_task():
         if not stage_exec:
             return False
 
-        # Mark as running
-        stage_exec.status = "running"
-        stage_exec.started_at = datetime.now(timezone.utc)
-        stage_exec.config_hash = config_hash
+        mark_running(stage_exec)
         db.commit()
 
-        print(f"[Worker] Processing stage '{stage_exec.stage}' for case {stage_exec.case_id} (attempt {stage_exec.attempt})...")
-
+        stage, case_id = stage_exec.stage, stage_exec.case_id
+        print(f"[Worker] Processing stage '{stage}' for case {case_id} (attempt {stage_exec.attempt})...")
         try:
-            handler = HANDLERS[stage_exec.stage]
-            out_uri, model_versions = handler(stage_exec, db)
-
-            if stage_exec.status == "running":
-                stage_exec.status = "done"
-            stage_exec.output_ref = out_uri
-            stage_exec.model_versions = model_versions
-            stage_exec.completed_at = datetime.now(timezone.utc)
-            db.commit()
-            print(f"[Worker] Successfully completed stage '{stage_exec.stage}' for case {stage_exec.case_id} (Status: {stage_exec.status}).")
-
-        except Exception as e:
-            db.rollback()
-            err_msg = traceback.format_exc()
-            print(f"[Worker ERROR] Stage '{stage_exec.stage}' failed for case {stage_exec.case_id}: {e}")
-            try:
-                stage_exec_curr = db.get(StageExecution, stage_exec.id)
-                if stage_exec_curr:
-                    stage_exec_curr.status = "failed"
-                    stage_exec_curr.error = err_msg
-                    stage_exec_curr.completed_at = datetime.now(timezone.utc)
-                    db.commit()
-            except Exception as e2:
-                print(f"[Worker Fail State Error] {e2}")
+            execute_stage(db, stage_exec, handlers=HANDLERS)
+            print(f"[Worker] Successfully completed stage '{stage}' for case {case_id} (Status: {stage_exec.status}).")
+        except StageFailedError as e:
+            print(f"[Worker ERROR] Stage '{stage}' failed for case {case_id}: {e}")
 
         return True
 

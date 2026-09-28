@@ -228,6 +228,8 @@ async def test_medgemma_endpoint_failure_raises_when_mock_disabled(monkeypatch):
     from app.core.config import settings
 
     monkeypatch.setattr(settings, "USE_MOCK_VERTEX_AI", False)
+    # The Gemini verifier would create a real client; this test covers the MedGemma endpoint only.
+    monkeypatch.setattr(settings, "USE_GEMINI_FLASH_REFEREE", False)
     client = MedGemmaClient()
 
     # Mock aiplatform to simulate live endpoint failure
