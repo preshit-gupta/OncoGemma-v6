@@ -72,6 +72,7 @@ export const L = {
     enable: "Enable",
     disable: "Disable",
     mockSignIn: "Mock sign in",
+    confirmZeroTumor: "Confirm no tumor",
   },
   heading: {
     cases: "Cases",
@@ -142,6 +143,8 @@ export const L = {
     stainNormHelp: "Normalized using Macenko stain decomposition.",
     domainHint: "Sign in with your authorized Google Workspace account.",
     noUsersFound: "No users found in the system.",
+    hotspotsLimited: "Hotspot coverage was limited by available tissue area.",
+    noInvasiveDetected: "No invasive tumor detected across evaluated slide regions.",
   },
   status: {
     running: "Running…",
@@ -183,6 +186,8 @@ export const L = {
     invalidEmail: "Please enter a valid email address.",
     forbidden: "You do not have permission to perform this action.",
     csrfFailed: "Security validation failed. Please refresh the page and try again.",
+    hotspotOverlap: "Hotspots overlap. Keep at least 100 micrometers between tumor regions.",
+    invalidPolygon: "Invalid polygon boundary. Please draw a closed shape without self-intersections.",
   },
   field: {
     caseId: "Case ID",
@@ -232,6 +237,13 @@ export const L = {
     name: "Name",
     role: "Role",
     lastLogin: "Last login",
+    scoreKind: "Score type",
+    tumorFraction: "Tumor fraction",
+    expectedMitoses: "Expected mitoses",
+    hotspotRank: "Rank",
+    prescanExpectedCount: "Expected count",
+    prescanThenTumor: "Prescan and tumor",
+    opacity: "Opacity",
   },
   unit: {
     um: "µm",

@@ -14,6 +14,7 @@ export interface ViewerHotspot {
   prob_max?: number;
   source?: string;
   excluded?: boolean;
+  conflicting?: boolean;
 }
 
 export interface ViewerDetectionMarker {
@@ -99,7 +100,7 @@ export function OpenSeadragonViewer({
   const [showDropdown, setShowDropdown] = useState<boolean>(false);
   const [activeLayer, setActiveLayer] = useState<"orig" | "norm">(layer || "orig");
   const [svgPolygons, setSvgPolygons] = useState<
-    Array<{ id: string; points: string; center: { x: number; y: number }; excluded?: boolean }>
+    Array<{ id: string; points: string; center: { x: number; y: number }; excluded?: boolean; conflicting?: boolean }>
   >([]);
   const [svgMarkers, setSvgMarkers] = useState<
     Array<{ id: string; x: number; y: number; label: string; conf?: number | null; in_hpf?: boolean }>
@@ -269,7 +270,8 @@ export function OpenSeadragonViewer({
         id: hs.id,
         points,
         center,
-        excluded: hs.excluded
+        excluded: hs.excluded,
+        conflicting: hs.conflicting
       };
     });
 
@@ -590,6 +592,9 @@ export function OpenSeadragonViewer({
               if (event.item && typeof event.item.setOpacity === "function") {
                 event.item.setOpacity(latestOpacity);
               }
+              if (viewer.canvas) {
+                viewer.canvas.style.imageRendering = "pixelated";
+              }
               if (typeof viewer.forceRedraw === "function") {
                 viewer.forceRedraw();
               }
@@ -837,11 +842,11 @@ export function OpenSeadragonViewer({
                 {/* Hotspot Boundary Box - pointer-events-none so slide pan/zoom is never blocked */}
                 <polygon
                   points={poly.points}
-                  fill={isFocused ? "rgba(14, 165, 233, 0.45)" : isSelected ? "rgba(14, 165, 233, 0.35)" : "rgba(245, 158, 11, 0.22)"}
-                  stroke={isFocused ? "#38bdf8" : isSelected ? "#38bdf8" : "#f59e0b"}
-                  strokeWidth={isFocused ? "4" : isSelected ? "3.5" : "2"}
+                  fill={poly.conflicting ? "rgba(239, 68, 68, 0.45)" : isFocused ? "rgba(14, 165, 233, 0.45)" : isSelected ? "rgba(14, 165, 233, 0.35)" : "rgba(245, 158, 11, 0.22)"}
+                  stroke={poly.conflicting ? "#ef4444" : isFocused ? "#38bdf8" : isSelected ? "#38bdf8" : "#f59e0b"}
+                  strokeWidth={poly.conflicting ? "4" : isFocused ? "4" : isSelected ? "3.5" : "2"}
                   strokeDasharray={poly.id.startsWith("user") ? "6,3" : undefined}
-                  className={`transition-all pointer-events-none ${isFocused ? "filter drop-shadow-[0_0_8px_rgba(56,189,248,0.8)]" : "hover:fill-amber-500/40"}`}
+                  className={`transition-all pointer-events-none ${poly.conflicting ? "filter drop-shadow-[0_0_8px_rgba(239,68,68,0.8)]" : isFocused ? "filter drop-shadow-[0_0_8px_rgba(56,189,248,0.8)]" : "hover:fill-amber-500/40"}`}
                 />
 
                 {/* Floating Numbered Pin / Badge - handles hotspot selection without intercepting clicks during pin mode */}
