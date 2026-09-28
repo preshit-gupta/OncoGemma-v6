@@ -1,47 +1,38 @@
 "use client";
 
-import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
+import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { 
   Microscope, 
   CheckCircle2, 
-  XCircle, 
   RotateCcw, 
   ArrowRight, 
   Activity, 
-  Crosshair, 
   Loader2, 
-  Sparkles,
-  Info,
-  Check,
-  X,
-  Eye,
-  EyeOff,
+  Info, 
   AlertTriangle,
-  ChevronRight,
-  ChevronLeft,
-  FileCheck2,
-  MapPin,
-  Compass
+  BookOpen,
+  X,
+  Crosshair,
+  Check,
+  ChevronDown,
+  ChevronUp
 } from "lucide-react";
 import { 
-  MitosisStageData, 
-  MitosisCandidate, 
-  VirtualHpfSite, 
-  MitoticScoreSummary, 
-  fetchMitosisStageData, 
-  recomputeMitosis, 
-  addPathologistMitosis, 
-  bulkRejectUnreviewedMitosis, 
-  replaceMitosisHpfs,
-  confirmMitosisStage,
-  API_BASE 
-} from "@/lib/api";
-import { OpenSeadragonViewer, ViewerDetectionMarker, ViewerHotspot } from "./OpenSeadragonViewer";
+  getMitosis, 
+  reviewCandidate, 
+  addCandidate, 
+  replaceHpfs, 
+  confirmMitosis, 
+  Candidate, 
+  MitosisStageV6, 
+  Hpf, 
+  MitosisSummary 
+} from "@/lib/api/mitosis";
+import { MITOTIC_FIGURE_DEFINITION } from "@/lib/definitions/mitotic_figure";
+import { OpenSeadragonViewer, ViewerDetectionMarker } from "./OpenSeadragonViewer";
 import { MitosisGallery } from "./MitosisGallery";
 import { L } from "@/lib/labels";
 import { Provenance } from "../Provenance";
-
-type WorkflowPhase = "overview" | "field_review" | "completion_summary";
 
 interface MitosisViewerProps {
   caseId: string;
@@ -51,6 +42,7 @@ interface MitosisViewerProps {
   imageHeightPx?: number;
   onRefreshCase?: () => void;
   tileUrlTemplate?: string | null;
+  onAdvanceToGrading?: () => void;
 }
 
 export function MitosisViewer({
@@ -60,1443 +52,618 @@ export function MitosisViewer({
   imageWidthPx = 20000,
   imageHeightPx = 20000,
   onRefreshCase,
-  tileUrlTemplate = null
+  tileUrlTemplate = null,
+  onAdvanceToGrading,
 }: MitosisViewerProps) {
-  const [data, setData] = useState<MitosisStageData | null>(null);
+  const [data, setData] = useState<MitosisStageV6 | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [candidates, setCandidates] = useState<MitosisCandidate[]>([]);
-  const [hpfs, setHpfs] = useState<VirtualHpfSite[]>([]);
-  const [summary, setSummary] = useState<MitoticScoreSummary>({
+  const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [hpfs, setHpfs] = useState<Hpf[]>([]);
+  const [summary, setSummary] = useState<MitosisSummary>({
     count_total: 0,
-    n_hpf: 10,
-    area_mm2: 2.157,
+    n_hpf: 1,
+    area_mm2: 0.216,
     per_mm2: 0.0,
-    classic_per_10hpf: 0.0,
-    mitotic_score: 1
+    mitotic_score: 1,
+    n_equivocal: 0,
+    flags: [],
   });
 
-  // 3-Phase Clinical Workflow State: (a) overview -> (b) field_review -> (c) completion_summary
-  const [workflowPhase, setWorkflowPhase] = useState<WorkflowPhase>("overview");
-  const [activeHpfSeq, setActiveHpfSeq] = useState<number>(1);
-  const [approvedFields, setApprovedFields] = useState<Record<number, boolean>>({});
-  const [showCalculationDetails, setShowCalculationDetails] = useState<boolean>(false);
-
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
-  const [stainMode, setStainMode] = useState<"norm" | "orig">("norm");
-  const [filterMode, setFilterMode] = useState<"all" | "unreviewed" | "mitosis" | "not_mitosis">("all");
-  const [isPinningMode, setIsPinningMode] = useState<boolean>(false);
-  const [showHpfCircles, setShowHpfCircles] = useState<boolean>(true);
-  const [showCandidateMarkers, setShowCandidateMarkers] = useState<boolean>(true);
+  const [filterMode, setFilterMode] = useState<"all" | "equivocal" | "mitosis" | "not_mitosis">("all");
+  const [imageViewMode, setImageViewMode] = useState<"crop" | "context">("crop");
+  const [showDefinitionPanel, setShowDefinitionPanel] = useState<boolean>(false);
+  const [isReplacingHpfs, setIsReplacingHpfs] = useState<boolean>(false);
 
-  // 40x Optical Magnification & Interactive Stage Zoom/Pan
-  const [magMode, setMagMode] = useState<"10x" | "20x" | "40x">("40x");
-  const [stageZoom, setStageZoom] = useState<number>(3.5); // Default 3.5x for authentic 40x cellular scale
-  const [panOffset, setPanOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
-  const [isDragging, setIsDragging] = useState<boolean>(false);
-  const dragStartRef = useRef<{ x: number; y: number; panX: number; panY: number }>({ x: 0, y: 0, panX: 0, panY: 0 });
-
-  // Debounce ref and loading state for live server score recomputation
-  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const [isRecomputing, setIsRecomputing] = useState<boolean>(false);
-
-  // Fetch initial data
-  const loadStageData = async () => {
+  // Load stage data
+  const loadStageData = useCallback(async (silent: boolean = false) => {
     try {
-      setLoading(true);
+      if (!silent && !data) setLoading(true);
       setError(null);
-      const stageData = await fetchMitosisStageData(caseId);
+      const stageData = await getMitosis(caseId);
       setData(stageData);
       setCandidates(stageData.candidates || []);
       setHpfs(stageData.hpfs || []);
-      setSummary(stageData.summary || {
-        count_total: 0,
-        n_hpf: 10,
-        area_mm2: 2.157,
-        per_mm2: 0.0,
-        classic_per_10hpf: 0.0,
-        mitotic_score: 1
-      });
-      if (stageData.candidates && stageData.candidates.length > 0) {
-        setSelectedCandidateId(stageData.candidates[0].id);
+      setSummary(stageData.summary);
+
+      if (stageData.candidates && stageData.candidates.length > 0 && !selectedCandidateId) {
+        // Priority: select first equivocal, else first candidate
+        const firstEquivocal = stageData.candidates.find(
+          (c) => c.final_decision === "equivocal" && c.review_label === null
+        );
+        setSelectedCandidateId(firstEquivocal ? firstEquivocal.id : stageData.candidates[0].id);
       }
     } catch (err: any) {
-      console.error(err);
-      setError(err.message || "Failed to load Mitosis Stage data.");
+      if (!silent) setError(err.message || L.error.genericError);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
+    }
+  }, [caseId, data, selectedCandidateId]);
+
+  useEffect(() => {
+    loadStageData();
+  }, [loadStageData]);
+
+  // Priority queue order per contract:
+  // Show equivocal first, then mitosis, then not_mitosis.
+  // Within each group, sort by p_b ?? p_a, descending.
+  const sortedCandidates = useMemo(() => {
+    const priority = (c: Candidate) => {
+      if (c.final_decision === "equivocal" && c.review_label === null) return 0;
+      if (c.final_decision === "equivocal") return 1;
+      const verdict = c.review_label ?? c.final_decision;
+      if (verdict === "mitosis") return 2;
+      return 3;
+    };
+
+    return [...candidates].sort((a, b) => {
+      const prioDiff = priority(a) - priority(b);
+      if (prioDiff !== 0) return prioDiff;
+      const scoreA = a.p_b ?? a.p_a ?? 0;
+      const scoreB = b.p_b ?? b.p_a ?? 0;
+      return scoreB - scoreA;
+    });
+  }, [candidates]);
+
+  const selectedCandidate = useMemo(() => {
+    return candidates.find((c) => c.id === selectedCandidateId) || null;
+  }, [candidates, selectedCandidateId]);
+
+  const handleReviewCandidate = async (
+    candidateId: string,
+    label: "mitosis" | "not_mitosis" | null
+  ) => {
+    try {
+      setError(null);
+      const updated = await reviewCandidate(caseId, candidateId, label);
+      setData(updated);
+      setCandidates(updated.candidates || []);
+      setSummary(updated.summary);
+      if (updated.hpfs) setHpfs(updated.hpfs);
+    } catch (err: any) {
+      setError(err.message || L.error.stageExecutionFailed);
     }
   };
 
-  const [isReplacingHpfs, setIsReplacingHpfs] = useState<boolean>(false);
-  const [galleryScope, setGalleryScope] = useState<"field" | "all">("field");
-
-  // Re-place HPFs based on confirmed mitoses (#468)
   const handleReplaceHpfs = async () => {
     try {
       setIsReplacingHpfs(true);
       setError(null);
-      const stageData = await replaceMitosisHpfs(caseId);
-      setData(stageData);
-      if (stageData.hpfs) {
-        setHpfs(stageData.hpfs);
-      }
-      if (stageData.summary) {
-        setSummary(stageData.summary);
-      }
-      if (stageData.candidates) {
-        setCandidates(stageData.candidates);
-      }
+      const updated = await replaceHpfs(caseId);
+      setData(updated);
+      setHpfs(updated.hpfs || []);
+      setSummary(updated.summary);
+      if (updated.candidates) setCandidates(updated.candidates);
     } catch (err: any) {
-      console.error(err);
-      setError(err.message || "Failed to re-place HPFs.");
+      setError(err.message || L.error.stageExecutionFailed);
     } finally {
       setIsReplacingHpfs(false);
     }
   };
 
-  useEffect(() => {
-    loadStageData();
-  }, [caseId]);
-
-  // Auto-poll while mitosis stage is queued or running
-  useEffect(() => {
-    if (!data || data.status === "running" || data.status === "queued") {
-      const timer = setInterval(() => {
-        fetchMitosisStageData(caseId).then((stageData) => {
-          if (stageData && stageData.status !== "queued") {
-            setData(stageData);
-            setCandidates(stageData.candidates || []);
-            setHpfs(stageData.hpfs || []);
-            if (stageData.summary) setSummary(stageData.summary);
-            if (stageData.candidates && stageData.candidates.length > 0 && !selectedCandidateId) {
-              setSelectedCandidateId(stageData.candidates[0].id);
-            }
-          }
-        }).catch(() => {});
-      }, 3000);
-      return () => clearInterval(timer);
-    }
-  }, [caseId, data?.status, selectedCandidateId]);
-
-  // Server debounced sync (<50ms execution on server; single authoritative scoring source)
-  const syncWithServer = useCallback((
-    updatedCandidates: MitosisCandidate[], 
-    updatedHpfs?: VirtualHpfSite[] | null, 
-    auditToggle?: { id: string; from: string; to: string }
-  ) => {
-    if (debounceTimerRef.current) {
-      clearTimeout(debounceTimerRef.current);
-    }
-
-    setIsRecomputing(true);
-    debounceTimerRef.current = setTimeout(async () => {
-      try {
-        const labelsMap: Record<string, string> = {};
-        updatedCandidates.forEach(c => { labelsMap[c.id] = c.label; });
-        const payload: any = {
-          case_id: caseId,
-          candidate_labels: labelsMap,
-          audit_toggle: auditToggle
-        };
-        if (updatedHpfs && updatedHpfs.length > 0) {
-          payload.hpfs = updatedHpfs;
-        }
-        const res = await recomputeMitosis(payload);
-        if (res && res.summary) {
-          setSummary(res.summary);
-          if (res.hpfs) {
-            setHpfs(res.hpfs);
-          }
-        }
-      } catch (err) {
-        console.error("Debounced recompute sync error:", err);
-      } finally {
-        setIsRecomputing(false);
-      }
-    }, 200);
-  }, [caseId]);
-
-  // Toggle candidate label
-  const handleToggleCandidate = (id: string, newLabel: "mitosis" | "not_mitosis" | "unreviewed") => {
-    const cand = candidates.find(c => c.id === id);
-    if (!cand) return;
-    const oldLabel = cand.label;
-
-    const updated = candidates.map(c => {
-      if (c.id === id) {
-        return { ...c, label: newLabel, label_source: "pathologist" as const };
-      }
-      return c;
-    });
-
-    setCandidates(updated);
-    // Sync debounced to server with audit event; authoritative score returned from server (omit hpfs so existing HPF rows are not deleted)
-    syncWithServer(updated, null, { id, from: oldLabel, to: newLabel });
-  };
-
-  const handleAddCandidateFromClick = async (x_um: number, y_um: number) => {
+  const handleConfirmStage = async () => {
     try {
-      const res = await addPathologistMitosis(caseId, [x_um, y_um], "mitosis");
-      if (res && res.candidate) {
-        const updated = [...candidates, res.candidate];
-        setCandidates(updated);
-        setIsPinningMode(false);
-        syncWithServer(updated, hpfs);
+      setSubmitting(true);
+      setError(null);
+      await confirmMitosis(caseId);
+      if (data) {
+        setData({ ...data, status: "confirmed" });
       }
-    } catch (err) {
-      console.error("Add candidate error:", err);
-    }
-  };
-
-  // Resolve Active HPF
-  const activeHpf = useMemo(() => {
-    return hpfs.find(h => h.seq === activeHpfSeq) || hpfs[0] || null;
-  }, [hpfs, activeHpfSeq]);
-
-  // Candidates filtered strictly to the active HPF circle (r <= 262 um)
-  const activeFieldCandidates = useMemo(() => {
-    if (!activeHpf || !activeHpf.center_um) return candidates;
-    const [cx, cy] = activeHpf.center_um;
-    const r = activeHpf.radius_um || 262.0;
-    const filtered = candidates.filter(cand => {
-      if (!cand.centroid_um) return false;
-      const dx = cand.centroid_um[0] - cx;
-      const dy = cand.centroid_um[1] - cy;
-      return (dx * dx + dy * dy) <= (r * r);
-    });
-
-    // Sort: confirmed mitoses first, then unreviewed, then not_mitosis; descending by confidence
-    return filtered.sort((a, b) => {
-      const rank = (c: MitosisCandidate) => (c.label === "mitosis" ? 2 : (c.label === "unreviewed" ? 1 : 0));
-      const diff = rank(b) - rank(a);
-      if (diff !== 0) return diff;
-      const confA = Math.max(a.ver_conf ?? 0, a.det_conf ?? 0);
-      const confB = Math.max(b.ver_conf ?? 0, b.det_conf ?? 0);
-      return confB - confA;
-    });
-  }, [candidates, activeHpf]);
-
-  // Selected candidate entity
-  const selectedCandidate = useMemo(() => {
-    return candidates.find(c => c.id === selectedCandidateId) || null;
-  }, [candidates, selectedCandidateId]);
-
-  // Auto-center stage on selected candidate at 40x
-  useEffect(() => {
-    if (!selectedCandidateId || !activeHpf || !activeHpf.center_um) return;
-    const cand = activeFieldCandidates.find(c => c.id === selectedCandidateId);
-    if (cand && cand.centroid_um) {
-      const [cx, cy] = activeHpf.center_um;
-      const dx_um = cand.centroid_um[0] - cx;
-      const dy_um = cand.centroid_um[1] - cy;
-      const reticleRadiusPx = 236.0;
-      const hpfRadiusUm = activeHpf.radius_um || 262.0;
-      const pxX = 260 + (dx_um / hpfRadiusUm) * reticleRadiusPx;
-      const pxY = 260 + (dy_um / hpfRadiusUm) * reticleRadiusPx;
-
-      if (magMode === "40x" || stageZoom > 1.2) {
-        setPanOffset({
-          x: (260 - pxX) * stageZoom,
-          y: (260 - pxY) * stageZoom
-        });
+      if (onAdvanceToGrading) {
+        onAdvanceToGrading();
+      } else if (onRefreshCase) {
+        onRefreshCase();
       }
-    }
-  }, [selectedCandidateId, activeHpf, magMode, stageZoom, activeFieldCandidates]);
-
-  // Interactive Stage Drag & Wheel Zoom Handlers
-  const handleStageMouseDown = (e: React.MouseEvent) => {
-    if (isPinningMode) return;
-    setIsDragging(true);
-    dragStartRef.current = {
-      x: e.clientX,
-      y: e.clientY,
-      panX: panOffset.x,
-      panY: panOffset.y
-    };
-  };
-
-  const handleStageMouseMove = (e: React.MouseEvent) => {
-    if (!isDragging) return;
-    const dx = e.clientX - dragStartRef.current.x;
-    const dy = e.clientY - dragStartRef.current.y;
-    setPanOffset({
-      x: dragStartRef.current.panX + dx,
-      y: dragStartRef.current.panY + dy
-    });
-  };
-
-  const handleStageMouseUp = () => {
-    setIsDragging(false);
-  };
-
-  const handleStageWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    const factor = e.deltaY < 0 ? 1.2 : 0.8;
-    const nextZ = Math.min(6.0, Math.max(1.0, Number((stageZoom * factor).toFixed(2))));
-    setStageZoom(nextZ);
-    if (nextZ <= 1.1) {
-      setPanOffset({ x: 0, y: 0 });
-      setMagMode("10x");
-    } else if (nextZ >= 3.0) {
-      setMagMode("40x");
-    } else {
-      setMagMode("20x");
-    }
-  };
-
-  // Magnification Zoom In / Zoom Out
-  const handleToggleZoom = () => {
-    if (stageZoom > 1.5) {
-      setStageZoom(1.0);
-      setPanOffset({ x: 0, y: 0 });
-      setMagMode("10x");
-    } else {
-      setStageZoom(3.5);
-      setMagMode("40x");
-    }
-  };
-
-  // Step to Next Field or Finish with Smart Auto-Reject for unreviewed candidates in active field
-  const handleApproveFieldAndNext = () => {
-    // Auto-reject any unreviewed candidates remaining in the current active field
-    const unreviewedInField = activeFieldCandidates.filter(c => c.label === "unreviewed");
-    let currentCandidates = candidates;
-    if (unreviewedInField.length > 0) {
-      const unreviewedIds = new Set(unreviewedInField.map(c => c.id));
-      currentCandidates = candidates.map(c => {
-        if (unreviewedIds.has(c.id)) {
-          return { ...c, label: "not_mitosis" as const, label_source: "pathologist" as const };
+    } catch (err: any) {
+      if (err.data?.error === "equivocal_unreviewed") {
+        const unreviewedIds: string[] = err.data.ids || [];
+        if (unreviewedIds.length > 0) {
+          setSelectedCandidateId(unreviewedIds[0]);
         }
-        return c;
-      });
-      setCandidates(currentCandidates);
-      syncWithServer(currentCandidates);
-    }
-
-    setApprovedFields(prev => ({ ...prev, [activeHpfSeq]: true }));
-    if (activeHpfSeq < (hpfs.length || 10)) {
-      setActiveHpfSeq(activeHpfSeq + 1);
-    } else {
-      // All 10 fields approved -> transition to Phase (c)
-      setWorkflowPhase("completion_summary");
-    }
-  };
-
-  // Start Guided Review
-  const handleStartGuidedReview = (startSeq: number = 1) => {
-    setActiveHpfSeq(startSeq);
-    setWorkflowPhase("field_review");
-  };
-
-  // Convert HPFs to ViewerHotspots for Whole-Slide OpenSeadragon
-  const hpfHotspots: ViewerHotspot[] = useMemo(() => {
-    if (!showHpfCircles) return [];
-    return hpfs.filter(hpf => hpf && hpf.center_um).map((hpf) => {
-      const [cx, cy] = hpf.center_um;
-      const r = hpf.radius_um || 262.0;
-      const poly: number[][] = [];
-      const numPts = 32;
-      for (let i = 0; i <= numPts; i++) {
-        const theta = (i * 2 * Math.PI) / numPts;
-        poly.push([cx + r * Math.cos(theta), cy + r * Math.sin(theta)]);
+        setError(L.error.equivocalUnreviewed);
+      } else {
+        setError(err.message || L.error.stageExecutionFailed);
       }
-      return {
-        id: `hpf_${hpf.seq}`,
-        polygon_um: poly,
-        label: `HPF #${hpf.seq} (${hpf.count} mit)`,
-        color: approvedFields[hpf.seq] ? "rgba(16, 185, 129, 0.85)" : (hpf.seq === activeHpfSeq && workflowPhase === "field_review" ? "rgba(14, 165, 233, 0.9)" : "rgba(245, 158, 11, 0.8)"),
-        fill_color: approvedFields[hpf.seq] ? "rgba(16, 185, 129, 0.15)" : (hpf.seq === activeHpfSeq && workflowPhase === "field_review" ? "rgba(14, 165, 233, 0.2)" : "rgba(245, 158, 11, 0.12)")
-      };
-    });
-  }, [hpfs, approvedFields, activeHpfSeq, workflowPhase, showHpfCircles]);
-
-  // Convert Candidates to ViewerDetectionMarkers for Whole-Slide OpenSeadragon
-  const candidateMarkers: ViewerDetectionMarker[] = useMemo(() => {
-    if (!showCandidateMarkers) return [];
-    return candidates.map((cand) => {
-      const [x_um, y_um] = cand.centroid_um || [0, 0];
-      const isInsideHpf = activeHpf && activeHpf.center_um ? (() => {
-        const [cx, cy] = activeHpf.center_um;
-        const r = activeHpf.radius_um || 262.0;
-        const dx = x_um - cx;
-        const dy = y_um - cy;
-        return (dx * dx + dy * dy) <= (r * r);
-      })() : true;
-
-      return {
-        id: cand.id,
-        x_um,
-        y_um,
-        centroid_um: cand.centroid_um,
-        label: cand.label,
-        conf: Math.max(cand.ver_conf ?? 0, cand.det_conf ?? 0),
-        in_hpf: isInsideHpf
-      };
-    });
-  }, [candidates, showCandidateMarkers, activeHpf]);
-
-  // Pan and center candidate on microscope stage in 40x viewer
-  const handleJumpToCandidate = (candidate: MitosisCandidate) => {
-    setSelectedCandidateId(candidate.id);
-    if (candidate.centroid_um && activeHpf && activeHpf.center_um) {
-      const [cx, cy] = activeHpf.center_um;
-      const dx_um = candidate.centroid_um[0] - cx;
-      const dy_um = candidate.centroid_um[1] - cy;
-      const reticleRadiusPx = 236.0;
-      const hpfRadiusUm = activeHpf.radius_um || 262.0;
-      const pxX = 260 + (dx_um / hpfRadiusUm) * reticleRadiusPx;
-      const pxY = 260 + (dy_um / hpfRadiusUm) * reticleRadiusPx;
-      setStageZoom(3.5);
-      setMagMode("40x");
-      setPanOffset({
-        x: (260 - pxX) * 3.5,
-        y: (260 - pxY) * 3.5
-      });
+    } finally {
+      setSubmitting(false);
     }
   };
 
-  // Keyboard Navigation: j, k (cards), m (mitosis), x (reject), Enter (approve field)
+  // Keyboard shortcut listener
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement;
+      // Ignore if user is inside an input or textarea
       if (
-        ["INPUT", "TEXTAREA", "SELECT"].includes(target?.tagName) ||
-        target?.isContentEditable
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        e.target instanceof HTMLSelectElement
       ) {
         return;
       }
-      if (e.ctrlKey || e.metaKey || e.altKey) {
+
+      if (e.key === " " || e.code === "Space") {
+        e.preventDefault();
+        setImageViewMode((prev) => (prev === "crop" ? "context" : "crop"));
         return;
       }
 
-      if (workflowPhase === "field_review") {
-        const filtered = activeFieldCandidates.filter(c => {
-          if (filterMode === "all") return true;
-          return c.label === filterMode;
-        });
+      if (!selectedCandidateId) return;
 
-        const currentIndex = filtered.findIndex(c => c.id === selectedCandidateId);
+      const currentIndex = sortedCandidates.findIndex((c) => c.id === selectedCandidateId);
 
-        if (e.key === "j" || e.key === "ArrowDown") {
-          e.preventDefault();
-          if (filtered.length > 0) {
-            const nextIdx = (currentIndex + 1) % filtered.length;
-            setSelectedCandidateId(filtered[nextIdx].id);
-          }
-        } else if (e.key === "k" || e.key === "ArrowUp") {
-          e.preventDefault();
-          if (filtered.length > 0) {
-            const prevIdx = (currentIndex - 1 + filtered.length) % filtered.length;
-            setSelectedCandidateId(filtered[prevIdx].id);
-          }
-        } else if (e.key === "m") {
-          e.preventDefault();
-          if (selectedCandidateId) {
-            const target = activeFieldCandidates.find(c => c.id === selectedCandidateId);
-            if (target) {
-              handleToggleCandidate(target.id, target.label === "mitosis" ? "unreviewed" : "mitosis");
-            }
-          }
-        } else if (e.key === "x") {
-          e.preventDefault();
-          if (selectedCandidateId) {
-            const target = activeFieldCandidates.find(c => c.id === selectedCandidateId);
-            if (target) {
-              handleToggleCandidate(target.id, target.label === "not_mitosis" ? "unreviewed" : "not_mitosis");
-            }
-          }
-        } else if (e.code === "Space" || e.key === " ") {
-          e.preventDefault();
-          if (stageZoom > 1.5) {
-            // Toggle out to 10x overview
-            setStageZoom(1.0);
-            setPanOffset({ x: 0, y: 0 });
-            setMagMode("10x");
-          } else {
-            // Toggle in to 40x focus
-            setStageZoom(3.5);
-            setMagMode("40x");
-            if (selectedCandidateId && activeHpf && activeHpf.center_um) {
-              const cand = activeFieldCandidates.find(c => c.id === selectedCandidateId);
-              if (cand && cand.centroid_um) {
-                const [cx, cy] = activeHpf.center_um;
-                const dx_um = cand.centroid_um[0] - cx;
-                const dy_um = cand.centroid_um[1] - cy;
-                const pxX = 260 + (dx_um / (activeHpf.radius_um || 262.0)) * 236.0;
-                const pxY = 260 + (dy_um / (activeHpf.radius_um || 262.0)) * 236.0;
-                setPanOffset({
-                  x: (260 - pxX) * 3.5,
-                  y: (260 - pxY) * 3.5
-                });
-              }
-            }
-          }
-        } else if (e.key === "a" || e.key === "A") {
-          e.preventDefault();
-          setShowCandidateMarkers(prev => !prev);
-        } else if (e.key === "Enter") {
-          e.preventDefault();
-          handleApproveFieldAndNext();
+      if (e.key === "m" || e.key === "M") {
+        e.preventDefault();
+        handleReviewCandidate(selectedCandidateId, "mitosis");
+        if (currentIndex < sortedCandidates.length - 1) {
+          setSelectedCandidateId(sortedCandidates[currentIndex + 1].id);
         }
-      } else {
-        if (e.key === "a" || e.key === "A") {
-          e.preventDefault();
-          setShowCandidateMarkers(prev => !prev);
+      } else if (e.key === "x" || e.key === "X") {
+        e.preventDefault();
+        handleReviewCandidate(selectedCandidateId, "not_mitosis");
+        if (currentIndex < sortedCandidates.length - 1) {
+          setSelectedCandidateId(sortedCandidates[currentIndex + 1].id);
+        }
+      } else if (e.key === "u" || e.key === "U") {
+        e.preventDefault();
+        handleReviewCandidate(selectedCandidateId, null);
+      } else if (e.key === "ArrowDown" || e.key === "j" || e.key === "J") {
+        e.preventDefault();
+        if (currentIndex < sortedCandidates.length - 1) {
+          setSelectedCandidateId(sortedCandidates[currentIndex + 1].id);
+        }
+      } else if (e.key === "ArrowUp" || e.key === "k" || e.key === "K") {
+        e.preventDefault();
+        if (currentIndex > 0) {
+          setSelectedCandidateId(sortedCandidates[currentIndex - 1].id);
         }
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [workflowPhase, activeFieldCandidates, selectedCandidateId, filterMode, candidates, activeHpfSeq, hpfs.length, stageZoom, activeHpf]);
+  }, [selectedCandidateId, sortedCandidates]);
 
-  // Bulk reject remaining unreviewed candidates
-  const handleBulkReject = async () => {
-    try {
-      setLoading(true);
-      const res = await bulkRejectUnreviewedMitosis(caseId);
-      setData(res);
-      setCandidates(res.candidates || []);
-      setHpfs(res.hpfs || []);
-      setSummary(res.summary || summary);
-    } catch (err: any) {
-      console.error(err);
-      setError(err.message || "Failed to bulk reject unreviewed candidates.");
-    } finally {
-      setLoading(false);
-    }
-  };
+  // Marker mapping for OpenSeadragonViewer
+  const detectionMarkers: ViewerDetectionMarker[] = useMemo(() => {
+    return candidates.map((c) => ({
+      id: c.id,
+      centroid_um: c.centroid_um,
+      label: (c.review_label ?? c.final_decision) === "mitosis" ? "mitosis" : "not_mitosis",
+      confidence: c.p_b ?? c.p_a ?? 0.5,
+      in_hpf: c.counted,
+    }));
+  }, [candidates]);
 
-  // Confirm Stage 4 Safety Gate & Advance
-  const handleConfirmStage = async () => {
-    try {
-      setSubmitting(true);
-      setError(null);
-      await confirmMitosisStage(caseId);
-      if (onRefreshCase) onRefreshCase();
-    } catch (err: any) {
-      console.error(err);
-      setError(err.message || "Failed to confirm Mitosis Stage. Ensure high-confidence candidates are reviewed.");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  // Calculate unreviewed count for candidates >= 0.50 conf
-  const unreviewedHighConf = candidates.filter(
-    c => c.label === "unreviewed" && (Math.max(c.ver_conf ?? 0, c.det_conf ?? 0) >= 0.50)
-  ).length;
-
-  if (loading && !data) {
+  if (loading) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center bg-slate-950 text-slate-200">
-        <Loader2 className="w-8 h-8 animate-spin text-emerald-400 mb-3" />
-        <span className="text-sm font-medium">{L.status.countingMitoses}</span>
+      <div className="w-full h-full bg-slate-950 flex flex-col items-center justify-center text-slate-400">
+        <Loader2 className="w-8 h-8 animate-spin text-sky-500 mb-2" />
+        <p className="text-sm font-medium">{L.status.countingMitoses}</p>
       </div>
     );
   }
-
-  if (error && !data) {
-    return (
-      <div className="flex-1 flex flex-col items-center justify-center bg-slate-950 text-slate-200 p-6">
-        <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 max-w-md text-center flex flex-col items-center gap-3">
-          <AlertTriangle className="w-8 h-8 text-rose-400" />
-          <h3 className="font-semibold text-slate-100">{L.error.stageExecutionFailed}</h3>
-          <p className="text-xs text-rose-300/90">{error}</p>
-          <button
-            onClick={loadStageData}
-            className="mt-2 px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold flex items-center gap-1.5"
-          >
-            <RotateCcw className="w-3.5 h-3.5" /> {L.action.retry}
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  const opticalPatchUrl = `${API_BASE}/api/v1/stages/mitosis/${caseId}/hpfs/${activeHpf?.seq || 1}/thumbnail?mag=${magMode}&stain=${stainMode}&v=${data?.stage_execution_id || 'v4'}`;
-  const wholeSlideThumbnailUrl = `${API_BASE}/api/v1/cases/${caseId}/thumbnail`;
 
   return (
-    <div className="flex-1 flex flex-col h-full bg-slate-950 text-slate-100 overflow-hidden font-sans">
-      {/* Top Error Alert Banner (#653) */}
-      {error && (
-        <div className="px-4 py-2 bg-rose-950/90 border-b border-rose-800 text-rose-200 text-xs flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
-            <span>{error}</span>
+    <div className="w-full h-full flex flex-col bg-slate-950 text-slate-100 select-none overflow-hidden">
+      {/* Top Clinical Summary Header */}
+      <header className="px-6 py-3.5 bg-slate-900 border-b border-slate-800 flex items-center justify-between shadow-md shrink-0">
+        <div className="flex items-center space-x-4">
+          <div className="flex items-center space-x-2 text-sky-400 font-bold text-sm">
+            <Microscope className="w-5 h-5" />
+            <span>{L.heading.mitosisScoring}</span>
           </div>
-          <button
-            onClick={() => setError(null)}
-            className="text-rose-400 hover:text-rose-200 p-1"
-            title={L.action.close}
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      )}
 
-      {/* Honest Model Fallback Warning Banner */}
-      {data?.model_versions?.detector === "od_heuristic@dev" && (
-        <div className="px-4 py-2 bg-amber-950/90 border-b border-amber-800/80 text-amber-200 text-xs flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
-            <span>
-              <strong>{L.status.needsHuman}:</strong> {L.help.reviewAllCandidates}
+          <div className="h-5 w-px bg-slate-800" />
+
+          {/* Server-computed summary: count, area, mitotic score */}
+          <div className="flex items-center space-x-3 text-xs">
+            <span className="font-mono font-semibold text-white">
+              {L.fmt.summaryMitosis(summary.count_total, summary.area_mm2, summary.mitotic_score)}
             </span>
-          </div>
-        </div>
-      )}
-
-      {/* TOP HEADER: Clean Navigation & Mitotic Score Summary */}
-      <header className="px-4 py-2 bg-slate-900/95 border-b border-slate-800 shrink-0 flex flex-col gap-2 shadow-md">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="p-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400">
-              <Microscope className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="font-bold text-sm text-slate-100 tracking-tight">
-                  {L.heading.mitosisScoring}
-                </h1>
-                {workflowPhase === "overview" && (
-                  <span className="text-[11px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-semibold">
-                    {L.heading.slideOverview}
-                  </span>
-                )}
-                {workflowPhase === "field_review" && (
-                  <span className="text-[11px] px-2 py-0.5 rounded bg-sky-950 text-sky-300 border border-sky-800/60 font-semibold">
-                    {L.field.fieldNumber} #{activeHpfSeq} / {hpfs.length || 10}
-                  </span>
-                )}
-                {workflowPhase === "completion_summary" && (
-                  <span className="text-[11px] px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800/60 font-semibold flex items-center gap-1">
-                    <CheckCircle2 className="w-3 h-3" /> {L.status.done}
-                  </span>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Clean Clinical Score Summary */}
-          <div className="flex items-center gap-3">
-            {/* Total Mitoses Pill */}
-            <div className="bg-slate-950 px-3 py-1 rounded-lg border border-slate-800 text-xs flex items-center gap-2">
-              <span className="text-slate-400">{L.heading.summary}:</span>
-              <span className="font-bold text-emerald-400 font-mono text-sm">
-                {summary.count_total}
-              </span>
-              <span className="text-slate-500 text-[11px]">{L.fmt.hpfScore(10)}</span>
-            </div>
-
-            {/* Mitotic Score Badge */}
-            <div
-              className={`px-3 py-1 rounded-lg font-bold text-xs shadow flex items-center gap-1.5 ${
+            <span
+              className={`px-2 py-0.5 rounded-full font-bold uppercase text-[10px] ${
                 summary.mitotic_score === 3
-                  ? "bg-rose-950/80 text-rose-300 border border-rose-600/70"
+                  ? "bg-rose-950 text-rose-300 border border-rose-800"
                   : summary.mitotic_score === 2
-                  ? "bg-amber-950/80 text-amber-300 border border-amber-600/70"
-                  : "bg-emerald-950/80 text-emerald-300 border border-emerald-600/70"
+                  ? "bg-amber-950 text-amber-300 border border-amber-800"
+                  : "bg-emerald-950 text-emerald-300 border border-emerald-800"
               }`}
             >
-              {isRecomputing ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-sky-400" />
-              ) : (
-                <Activity className="w-3.5 h-3.5" />
-              )}
-              <span>{L.field.mitosisScore}: {summary.mitotic_score}</span>
-            </div>
-
-            {/* Refresh Data Button */}
-            <button
-              onClick={loadStageData}
-              disabled={loading}
-              className="p-1 rounded-lg bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-700 transition"
-              title={L.action.refresh}
-            >
-              <RotateCcw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
-            </button>
-
-            {/* Provenance Popover */}
-            <Provenance model_versions={data?.model_versions} />
+              {L.field.grade} {summary.mitotic_score}
+            </span>
           </div>
+
+          {summary.n_equivocal > 0 && (
+            <span className="text-xs px-2.5 py-0.5 bg-amber-950 text-amber-300 border border-amber-700/60 rounded-full font-medium flex items-center gap-1">
+              <AlertTriangle className="w-3 h-3 text-amber-400" />
+              <span>
+                {summary.n_equivocal} {L.field.equivocal}
+              </span>
+            </span>
+          )}
         </div>
 
-        {/* STEPPER BAR: 10 Field Navigation Pills & Toolbar */}
-        <div className="flex items-center justify-between pt-1 border-t border-slate-800/80">
-          <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
-            <button
-              onClick={() => setWorkflowPhase("overview")}
-              className={`px-3 py-1 rounded-lg text-xs font-semibold flex items-center gap-1 transition-all border ${
-                workflowPhase === "overview"
-                  ? "bg-emerald-600 text-white border-emerald-400 shadow"
-                  : "bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700 hover:text-white"
-              }`}
-            >
-              <Compass className="w-3.5 h-3.5" />
-              <span>{L.heading.slideOverview}</span>
-            </button>
+        <div className="flex items-center space-x-3">
+          {data?.provenance && <Provenance provenance={data.provenance} />}
 
-            <div className="h-4 w-px bg-slate-800 mx-1" />
+          <button
+            type="button"
+            onClick={() => setShowDefinitionPanel(!showDefinitionPanel)}
+            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition shadow-sm"
+          >
+            <BookOpen className="w-3.5 h-3.5 text-sky-400" />
+            <span>{L.heading.mitosisDefinition}</span>
+          </button>
 
-            <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mr-1 shrink-0">
-              {L.field.fieldNumber}:
-            </span>
-            {hpfs.map((hpf) => {
-              const isActive = workflowPhase === "field_review" && hpf.seq === activeHpfSeq;
-              const isApproved = approvedFields[hpf.seq];
+          <button
+            type="button"
+            onClick={handleReplaceHpfs}
+            disabled={isReplacingHpfs}
+            className="px-3 py-1.5 bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/40 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition shadow-sm"
+          >
+            <RotateCcw className={`w-3.5 h-3.5 ${isReplacingHpfs ? "animate-spin" : ""}`} />
+            <span>{L.action.replaceHpfs}</span>
+          </button>
 
-              return (
-                <button
-                  key={`hpf-step-${hpf.seq}`}
-                  onClick={() => handleStartGuidedReview(hpf.seq)}
-                  className={`px-3 py-1 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all shrink-0 border ${
-                    isActive
-                      ? "bg-sky-600 text-white border-sky-400 shadow-md font-bold ring-2 ring-sky-400/30"
-                      : isApproved
-                      ? "bg-emerald-950/40 text-emerald-300 border-emerald-700/50 hover:bg-emerald-900/40"
-                      : "bg-slate-800 text-slate-300 border-slate-700/70 hover:bg-slate-700 hover:text-white"
-                  }`}
-                >
-                  <span>{L.field.fieldNumber} {hpf.seq}</span>
-                  {isApproved ? (
-                    <Check className="w-3 h-3 text-emerald-400" />
-                  ) : (
-                    <span className={`text-[10px] px-1 rounded ${isActive ? "bg-sky-800 text-sky-100" : "bg-slate-900 text-slate-400 font-mono"}`}>
-                      {hpf.count}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Stepper Controls & Toolbar */}
-          <div className="flex items-center gap-2 shrink-0">
-            {workflowPhase === "field_review" && (
-              <div className="flex items-center bg-slate-800 rounded-lg p-0.5 border border-slate-700">
-                <button
-                  onClick={() => setActiveHpfSeq(Math.max(1, activeHpfSeq - 1))}
-                  disabled={activeHpfSeq === 1}
-                  className="p-1 rounded text-slate-300 hover:text-white hover:bg-slate-700 disabled:opacity-40 disabled:hover:bg-transparent"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                </button>
-                <span className="px-2 text-xs font-mono font-semibold text-slate-200">
-                  {activeHpfSeq} / {hpfs.length || 10}
-                </span>
-                <button
-                  onClick={() => setActiveHpfSeq(Math.min(hpfs.length || 10, activeHpfSeq + 1))}
-                  disabled={activeHpfSeq === (hpfs.length || 10)}
-                  className="p-1 rounded text-slate-300 hover:text-white hover:bg-slate-700 disabled:opacity-40 disabled:hover:bg-transparent"
-                >
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
+          <button
+            type="button"
+            onClick={handleConfirmStage}
+            disabled={submitting || data?.status === "confirmed"}
+            className={`px-4 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1.5 transition shadow ${
+              data?.status === "confirmed"
+                ? "bg-emerald-950 text-emerald-300 border border-emerald-800 cursor-not-allowed"
+                : "bg-sky-600 hover:bg-sky-500 text-white shadow-sky-600/20"
+            }`}
+          >
+            {submitting ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : data?.status === "confirmed" ? (
+              <>
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                <span>{L.status.confirmed}</span>
+              </>
+            ) : (
+              <>
+                <span>{L.action.confirmMitoses}</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </>
             )}
-
-            {/* Annotation Mask Toggle Button */}
-            <button
-              onClick={() => setShowCandidateMarkers(!showCandidateMarkers)}
-              className={`px-2.5 py-1 rounded text-[11px] font-semibold flex items-center gap-1.5 transition-all border ${
-                showCandidateMarkers
-                  ? "bg-emerald-950/90 text-emerald-300 border-emerald-600/80 hover:bg-emerald-900/60 shadow-sm"
-                  : "bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700 hover:text-slate-200"
-              }`}
-              title={L.action.showMarks}
-            >
-              {showCandidateMarkers ? (
-                <Eye className="w-3.5 h-3.5 text-emerald-400" />
-              ) : (
-                <EyeOff className="w-3.5 h-3.5 text-slate-500" />
-              )}
-              <span>{showCandidateMarkers ? `${L.action.showMarks}: ON` : `${L.action.showMarks}: OFF`}</span>
-              <kbd className="text-[9px] font-mono px-1 py-0.2 bg-slate-900/80 rounded border border-slate-700 text-slate-400">
-                {"A"}
-              </kbd>
-            </button>
-
-            {/* Magnification Switcher (10x Overview, 20x Field, 40x High-Power) */}
-            <div className="flex items-center bg-slate-800 p-0.5 rounded border border-slate-700">
-              <button
-                onClick={() => {
-                  setMagMode("10x");
-                  setStageZoom(1.0);
-                  setPanOffset({ x: 0, y: 0 });
-                }}
-                className={`px-2 py-0.5 rounded text-[11px] font-medium transition-all ${
-                  magMode === "10x" ? "bg-slate-700 text-white font-semibold shadow-sm" : "text-slate-400 hover:text-slate-200"
-                }`}
-                title={L.unit.mag10x}
-              >
-                {L.unit.mag10x}
-              </button>
-              <button
-                onClick={() => {
-                  setMagMode("20x");
-                  setStageZoom(2.0);
-                }}
-                className={`px-2 py-0.5 rounded text-[11px] font-medium transition-all ${
-                  magMode === "20x" ? "bg-slate-700 text-white font-semibold shadow-sm" : "text-slate-400 hover:text-slate-200"
-                }`}
-                title={L.unit.mag20x}
-              >
-                {L.unit.mag20x}
-              </button>
-              <button
-                onClick={() => {
-                  setMagMode("40x");
-                  setStageZoom(3.5);
-                }}
-                className={`px-2 py-0.5 rounded text-[11px] font-medium flex items-center gap-1 transition-all ${
-                  magMode === "40x" ? "bg-emerald-700 text-white font-semibold shadow-sm" : "text-slate-400 hover:text-slate-200"
-                }`}
-                title={L.unit.mag40x}
-              >
-                <Microscope className="w-3 h-3 text-emerald-300" /> {L.unit.mag40x}
-              </button>
-            </div>
-
-            {/* Stain Switcher */}
-            <div className="flex items-center bg-slate-800 p-0.5 rounded border border-slate-700">
-              <button
-                onClick={() => setStainMode("norm")}
-                className={`px-2 py-0.5 rounded text-[11px] font-medium flex items-center gap-1 transition-all ${
-                  stainMode === "norm" ? "bg-emerald-700 text-white font-semibold" : "text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                <Sparkles className="w-3 h-3 text-amber-300" /> {L.action.normColor}
-              </button>
-              <button
-                onClick={() => setStainMode("orig")}
-                className={`px-2 py-0.5 rounded text-[11px] font-medium transition-all ${
-                  stainMode === "orig" ? "bg-slate-700 text-white font-semibold" : "text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                {L.action.origColor}
-              </button>
-            </div>
-
-            {/* Pin Mitosis Mode Button */}
-            <button
-              onClick={() => setIsPinningMode(!isPinningMode)}
-              className={`px-2.5 py-1 rounded text-[11px] font-semibold flex items-center gap-1 transition-all border ${
-                isPinningMode
-                  ? "bg-amber-600 text-white border-amber-400 shadow-md animate-pulse"
-                  : "bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700 hover:text-white"
-              }`}
-            >
-              <Crosshair className="w-3.5 h-3.5" />
-              {isPinningMode ? L.help.clickToPlaceHotspot : `+ ${L.action.markMitosis}`}
-            </button>
-
-            {/* Re-place HPFs Button (#468) */}
-            <button
-              onClick={handleReplaceHpfs}
-              disabled={isReplacingHpfs}
-              className="px-2.5 py-1 rounded text-[11px] font-semibold flex items-center gap-1.5 transition-all border bg-slate-800 text-sky-300 border-sky-700/60 hover:bg-sky-950/70 disabled:opacity-50"
-              title={L.action.replaceHpfs}
-            >
-              {isReplacingHpfs ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-sky-400" />
-              ) : (
-                <Compass className="w-3.5 h-3.5 text-sky-400" />
-              )}
-              <span>{L.action.replaceHpfs}</span>
-            </button>
-          </div>
+          </button>
         </div>
       </header>
 
-      {/* WORKSPACE VIEWS */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* ============================================================ */}
-        {/* PHASE (a): WHOLE-SLIDE MACRO OVERVIEW & AUTOMATED ANALYSIS */}
-        {/* ============================================================ */}
-        {workflowPhase === "overview" && (
-          <div className="flex-1 flex overflow-hidden">
-            {/* Left/Center: Macro Whole Slide Viewer with 10 HPFs */}
-            <div className="flex-1 relative bg-black flex flex-col overflow-hidden">
-              <OpenSeadragonViewer
-                caseId={caseId}
-                tileUrlTemplate={tileUrlTemplate}
-                imageWidthPx={imageWidthPx}
-                imageHeightPx={imageHeightPx}
-                mppX={mppX}
-                mppY={mppY}
-                layer={stainMode}
-                hotspots={hpfHotspots}
-                showHotspotMask={showHpfCircles}
-                onSelectHotspot={(id) => {
-                  const seq = parseInt(id.replace("hpf_", ""), 10);
-                  if (!isNaN(seq)) handleStartGuidedReview(seq);
-                }}
-                detectionMarkers={candidateMarkers}
-                showCandidateMarkers={showCandidateMarkers}
-                selectedCandidateId={selectedCandidateId}
-                onSelectCandidate={(id) => {
-                  setSelectedCandidateId(id);
-                  const cand = candidates.find(c => c.id === id);
-                  if (cand) {
-                    handleJumpToCandidate(cand);
-                  }
-                }}
-                isAddingRoiMode={isPinningMode}
-                onAddRoiClick={handleAddCandidateFromClick}
-                className="w-full h-full"
-              />
-            </div>
-
-            {/* Right Drawer: Automated Analysis Findings & Start Review Action */}
-            <div className="w-96 shrink-0 h-full bg-slate-900 border-l border-slate-800 p-4 flex flex-col justify-between overflow-y-auto">
-              <div className="space-y-4">
-                <div className="flex items-center gap-2 border-b border-slate-800 pb-3">
-                  <FileCheck2 className="w-5 h-5 text-emerald-400" />
-                  <div>
-                    <h2 className="font-bold text-sm text-slate-100">{L.heading.topHpfs}</h2>
-                    <span className="text-xs text-slate-400">{L.fmt.hpfScore(10)}</span>
-                  </div>
-                </div>
-
-                {/* Score Summary Box */}
-                <div className="bg-slate-950 rounded-xl p-3.5 border border-slate-800 space-y-2">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="text-slate-400">{L.field.mitosisCount}:</span>
-                    <span className="font-mono font-bold text-emerald-400 text-sm">{summary.count_total}</span>
-                  </div>
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="text-slate-400">{L.field.tumorArea}:</span>
-                    <span className="font-mono font-bold text-slate-200">{L.fmt.areaMm2(summary.area_mm2)} ({summary.n_hpf})</span>
-                  </div>
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="text-slate-400">{L.field.density}:</span>
-                    <span className="font-mono font-bold text-sky-400">{summary.per_mm2.toFixed(1)} /{L.unit.mm2}</span>
-                  </div>
-                  <div className="border-t border-slate-800 pt-2 flex items-center justify-between">
-                    <span className="text-xs font-semibold text-slate-300">{L.field.mitosisScore}:</span>
-                    <span className={`px-2 py-0.5 rounded font-bold text-xs ${
-                      summary.mitotic_score === 3 ? "bg-rose-950 text-rose-300 border border-rose-700" : "bg-emerald-950 text-emerald-300 border border-emerald-700"
-                    }`}>
-                      {L.field.grade} {summary.mitotic_score}
-                    </span>
-                  </div>
-                </div>
-
-                {/* 10-HPF List */}
-                <div className="space-y-1.5">
-                  <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider block">
-                    {L.heading.topHpfs}:
-                  </span>
-                  <div className="space-y-1 max-h-56 overflow-y-auto pr-1">
-                    {hpfs.map((h) => (
-                      <div
-                        key={h.seq}
-                        onClick={() => handleStartGuidedReview(h.seq)}
-                        className="flex items-center justify-between p-2 rounded-lg bg-slate-950/60 hover:bg-slate-800 border border-slate-800/80 cursor-pointer transition text-xs"
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className="w-5 h-5 rounded-full bg-slate-800 flex items-center justify-center font-mono font-bold text-[11px] text-slate-300">
-                            {h.seq}
-                          </span>
-                          <span className="text-slate-300 font-medium">{L.field.fieldNumber} #{h.seq}</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-emerald-400 font-mono font-bold">{h.count}</span>
-                          <ChevronRight className="w-3.5 h-3.5 text-slate-500" />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              {/* Start Guided Review CTA */}
-              <div className="pt-4 border-t border-slate-800">
-                <button
-                  onClick={() => handleStartGuidedReview(1)}
-                  className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-lg flex items-center justify-center gap-2 transition active:scale-[0.98]"
-                >
-                  <Microscope className="w-4 h-4" />
-                  <span>{L.action.confirm} ({L.field.fieldNumber} 1)</span>
-                  <ArrowRight className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
+      {/* Flag / Error Notice Banners */}
+      <div className="shrink-0 flex flex-col space-y-1">
+        {summary.flags?.includes("hpf_count_lt_10") && (
+          <div className="px-6 py-2 bg-amber-950/80 border-b border-amber-800 text-amber-200 text-xs flex items-center space-x-2">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+            <span>{L.help.hpfCountWarning}</span>
           </div>
         )}
 
-        {/* ============================================================ */}
-        {/* PHASE (b): DEDICATED HIGH-RESOLUTION 40X HPF FIELD INSPECTION */}
-        {/* ============================================================ */}
-        {workflowPhase === "field_review" && (
-          <div className="flex-1 flex overflow-hidden">
-            {/* Left / Center: High-Resolution 40x Optical Patch + Picture-in-Picture Minimap */}
-            <div className="flex-1 relative bg-slate-950 flex flex-col items-center justify-center overflow-hidden select-none">
-              {/* Field Microscope Stage Canvas */}
-              <div className="relative w-full h-full flex items-center justify-center p-6">
-                {/* 40x High-Res Optical Patch Container */}
-                <div 
-                  className={`relative w-[520px] h-[520px] rounded-2xl overflow-hidden shadow-2xl border-2 border-slate-700 bg-slate-900 flex items-center justify-center select-none ${
-                    isPinningMode ? "cursor-crosshair" : (isDragging ? "cursor-grabbing" : "cursor-grab")
-                  }`}
-                  onMouseDown={handleStageMouseDown}
-                  onMouseMove={handleStageMouseMove}
-                  onMouseUp={handleStageMouseUp}
-                  onMouseLeave={handleStageMouseUp}
-                  onWheel={handleStageWheel}
-                >
-                  {/* Zoomable & Pannable Stage Layer */}
-                  <div
-                    className="relative w-[520px] h-[520px] shrink-0 transition-transform duration-75 ease-out origin-center pointer-events-auto"
-                    style={{
-                      transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${stageZoom})`
-                    }}
-                  >
-                    <img
-                      key={`${caseId}-${activeHpf?.seq || 1}-${magMode}-${stainMode}`}
-                      src={opticalPatchUrl}
-                      alt={`HPF ${activeHpfSeq} ${magMode} View`}
-                      className="w-full h-full object-cover select-none pointer-events-none"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).src = `data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512"><rect width="100%" height="100%" fill="%231e1b4b"/><text x="50%" y="50%" fill="%23a855f7" text-anchor="middle" font-size="16">Field ${activeHpfSeq} ${magMode} Optical Patch</text></svg>`;
-                      }}
-                    />
+        {error && (
+          <div className="px-6 py-2 bg-rose-950/90 border-b border-rose-800 text-rose-200 text-xs flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+              <span>{error}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setError(null)}
+              className="text-rose-400 hover:text-rose-200"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+      </div>
 
-                    {/* SVG Microscopic Reticle Circle & Candidate Mitosis Markers Overlay */}
-                    <svg className="absolute inset-0 w-full h-full pointer-events-none">
-                      {/* Standardized HPF Boundary (524 µm / 0.2157 mm2) with comfortable margin */}
-                      <circle
-                        cx="260"
-                        cy="260"
-                        r="236"
-                        fill="none"
-                        stroke="#10b981"
-                        strokeWidth={2 / stageZoom}
-                        strokeDasharray={`${8 / stageZoom} ${4 / stageZoom}`}
-                        className="drop-shadow-md"
-                      />
-                      
-                      {/* Crosshairs inside reticle */}
-                      <line x1="260" y1="24" x2="260" y2="496" stroke="rgba(16, 185, 129, 0.25)" strokeWidth={1 / stageZoom} />
-                      <line x1="24" y1="260" x2="496" y2="260" stroke="rgba(16, 185, 129, 0.25)" strokeWidth={1 / stageZoom} />
+      {/* Main Workspace Layout */}
+      <div className="flex-1 flex overflow-hidden relative">
+        {/* Left: OpenSeadragon Whole Slide Viewer */}
+        <div className="flex-1 relative">
+          <OpenSeadragonViewer
+            caseId={caseId}
+            mppX={mppX}
+            mppY={mppY || mppX}
+            imageWidthPx={imageWidthPx}
+            imageHeightPx={imageHeightPx}
+            detectionMarkers={detectionMarkers}
+            showCandidateMarkers={true}
+            selectedCandidateId={selectedCandidateId}
+            onSelectCandidate={(id) => setSelectedCandidateId(id)}
+            tileUrlTemplate={tileUrlTemplate}
+          />
+        </div>
 
-                      {/* Reticle Central Dot */}
-                      <circle cx="260" cy="260" r={2.5 / stageZoom} fill="#10b981" />
-
-                      {/* Candidate Mitosis Pins on 40x Optical Patch (Toggleable) */}
-                      {showCandidateMarkers && activeFieldCandidates.map((cand) => {
-                        if (!activeHpf) return null;
-                        const [cx, cy] = activeHpf.center_um;
-                        const dx_um = cand.centroid_um[0] - cx;
-                        const dy_um = cand.centroid_um[1] - cy;
-                        
-                        // Precise physical radius to pixel reticle mapping (262 µm -> 236 px)
-                        const reticleRadiusPx = 236.0;
-                        const hpfRadiusUm = activeHpf.radius_um || 262.0;
-                        const pxX = 260 + (dx_um / hpfRadiusUm) * reticleRadiusPx;
-                        const pxY = 260 + (dy_um / hpfRadiusUm) * reticleRadiusPx;
-
-                        const isSelected = cand.id === selectedCandidateId;
-                        const color = cand.label === "mitosis" ? "#10b981" : (cand.label === "not_mitosis" ? "#64748b" : "#f59e0b");
-                        const markerR = (isSelected ? 7.0 : 4.5) / Math.sqrt(stageZoom);
-
-                        return (
-                          <g
-                            key={`cand-patch-${cand.id}`}
-                            className="pointer-events-auto cursor-pointer"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedCandidateId(cand.id);
-                            }}
-                          >
-                            <circle
-                              cx={pxX}
-                              cy={pxY}
-                              r={markerR}
-                              fill={color}
-                              stroke={isSelected ? "#38bdf8" : "#0f172a"}
-                              strokeWidth={isSelected ? 2.5 / Math.sqrt(stageZoom) : 1.5 / Math.sqrt(stageZoom)}
-                              className={isSelected ? "filter drop-shadow-[0_0_6px_rgba(56,189,248,0.9)]" : "hover:stroke-sky-300 hover:stroke-[2] transition-colors"}
-                            />
-                            {isSelected && (
-                              <circle
-                                cx={pxX}
-                                cy={pxY}
-                                r={12 / Math.sqrt(stageZoom)}
-                                fill="none"
-                                stroke="#38bdf8"
-                                strokeWidth={1.5 / Math.sqrt(stageZoom)}
-                                strokeDasharray={`${3 / Math.sqrt(stageZoom)} ${3 / Math.sqrt(stageZoom)}`}
-                              />
-                            )}
-                          </g>
-                        );
-                      })}
-                    </svg>
-                  </div>
-
-                  {/* On-Stage Floating Controls */}
-                  <div className="absolute top-3 left-3 bg-slate-900/90 backdrop-blur px-2.5 py-1 rounded-lg border border-slate-700 text-[11px] font-mono text-slate-200 shadow flex items-center gap-2 z-10 pointer-events-none">
-                    <span className="font-bold text-emerald-400">{L.field.fieldNumber} #{activeHpfSeq}</span>
-                    <span className="text-slate-400">•</span>
-                    <span>{magMode === "40x" ? L.unit.mag40x : magMode === "20x" ? L.unit.mag20x : L.unit.mag10x}</span>
-                    <span className="text-slate-400">•</span>
-                    <span className="text-sky-300 font-semibold">{stageZoom.toFixed(1)}{"×"}</span>
-                  </div>
-
-                  {/* Top-Right Quick Zoom Buttons & Mitosis Count */}
-                  <div className="absolute top-3 right-3 flex items-center gap-1.5 z-10">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setStageZoom(Math.min(6.0, stageZoom * 1.25));
-                        setMagMode("40x");
-                      }}
-                      className="w-6 h-6 flex items-center justify-center bg-slate-900/90 hover:bg-slate-800 text-slate-200 hover:text-white rounded border border-slate-700 shadow text-xs font-bold transition"
-                      title={L.action.zoomIn}
-                    >
-                      +
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const nextZ = Math.max(1.0, stageZoom / 1.25);
-                        setStageZoom(nextZ);
-                        if (nextZ <= 1.1) {
-                          setPanOffset({ x: 0, y: 0 });
-                          setMagMode("10x");
-                        }
-                      }}
-                      className="w-6 h-6 flex items-center justify-center bg-slate-900/90 hover:bg-slate-800 text-slate-200 hover:text-white rounded border border-slate-700 shadow text-xs font-bold transition"
-                      title={L.action.zoomOut}
-                    >
-                      -
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setStageZoom(1.0);
-                        setPanOffset({ x: 0, y: 0 });
-                        setMagMode("10x");
-                      }}
-                      className="px-2 py-0.5 bg-slate-900/90 hover:bg-slate-800 text-slate-300 hover:text-white rounded border border-slate-700 shadow text-[10px] font-mono transition"
-                      title={L.action.resetView}
-                    >
-                      {L.action.resetView}
-                    </button>
-                    <div className="bg-slate-900/90 backdrop-blur px-2.5 py-1 rounded-lg border border-slate-700 text-[11px] font-mono text-emerald-400 font-bold shadow flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                      {activeHpf?.count || 0} {L.heading.mitoticCandidates}
-                    </div>
-                  </div>
-
-                  {/* Active Candidate 40x Loupe / Inspector Card */}
-                  {selectedCandidate && (
-                    <div className="absolute top-12 left-3 bg-slate-900/95 backdrop-blur-md rounded-xl p-2 border border-slate-700 shadow-2xl flex items-center gap-2.5 z-10 select-none max-w-xs animate-in fade-in duration-150">
-                      <div className="relative w-14 h-14 rounded-lg overflow-hidden bg-black shrink-0 border border-slate-600">
-                        <img
-                          src={`${API_BASE}/api/v1/stages/mitosis/${caseId}/candidates/${selectedCandidate.id}/crop?stain=${stainMode}&v=v4`}
-                          alt={selectedCandidate.id}
-                          className="w-full h-full object-cover"
-                        />
-                        <div className="absolute bottom-0 inset-x-0 bg-black/80 text-[7px] font-mono text-center text-sky-300 py-0.2">
-                          {L.unit.mag40x}
-                        </div>
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between gap-1">
-                          <span className="font-mono text-[11px] font-bold text-slate-100">{selectedCandidate.id}</span>
-                          <span className={`text-[9px] px-1.5 py-0.2 rounded font-semibold ${
-                            selectedCandidate.label === "mitosis" 
-                              ? "bg-emerald-950 text-emerald-300 border border-emerald-700"
-                              : (selectedCandidate.label === "not_mitosis" ? "bg-slate-800 text-slate-400 border border-slate-700" : "bg-amber-950 text-amber-300 border border-amber-700")
-                          }`}>
-                            {selectedCandidate.label === "mitosis" ? L.action.markMitosis : (selectedCandidate.label === "not_mitosis" ? L.status.rejected : L.status.needsHuman)}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2 mt-0.5 text-[9px] text-slate-400 font-mono">
-                          <span>{L.field.detector}: {((selectedCandidate.det_conf || 0) * 100).toFixed(0)}%</span>
-                          {selectedCandidate.ver_conf !== null && <span>{L.field.verifier}: {((selectedCandidate.ver_conf || 0) * 100).toFixed(0)}%</span>}
-                        </div>
-                        <div className="flex items-center gap-1 mt-1">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleToggleCandidate(selectedCandidate.id, "mitosis");
-                            }}
-                            className={`px-1.5 py-0.5 rounded text-[9px] font-semibold flex items-center gap-0.5 transition ${
-                              selectedCandidate.label === "mitosis" ? "bg-emerald-700 text-white" : "bg-slate-800 hover:bg-emerald-900 text-emerald-300 border border-emerald-800/60"
-                            }`}
-                          >
-                            <Check className="w-2.5 h-2.5" /> {L.action.markMitosis}
-                          </button>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleToggleCandidate(selectedCandidate.id, "not_mitosis");
-                            }}
-                            className={`px-1.5 py-0.5 rounded text-[9px] font-semibold flex items-center gap-0.5 transition ${
-                              selectedCandidate.label === "not_mitosis" ? "bg-rose-800 text-white" : "bg-slate-800 hover:bg-rose-900 text-rose-300 border border-rose-800/60"
-                            }`}
-                          >
-                            <X className="w-2.5 h-2.5" /> {L.action.markNotMitosis}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Stage Bottom Controls: Hotkey Hint + Annotation Toggle */}
-                  <div className="absolute bottom-3 right-3 flex items-center gap-2 z-10">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowCandidateMarkers(!showCandidateMarkers);
-                      }}
-                      className="bg-slate-900/90 hover:bg-slate-800 backdrop-blur px-2 py-1 rounded-lg border border-slate-700 text-[10px] font-medium text-slate-300 hover:text-white shadow flex items-center gap-1 transition-all"
-                      title={L.action.showMarks}
-                    >
-                      {showCandidateMarkers ? <Eye className="w-3 h-3 text-emerald-400" /> : <EyeOff className="w-3 h-3 text-slate-500" />}
-                      <span>{L.action.showMarks}</span>
-                    </button>
-                    <span className="bg-slate-900/90 backdrop-blur px-2 py-1 rounded-lg border border-slate-700 text-[10px] text-slate-400">
-                      <kbd className="text-slate-200 font-mono font-bold">{"Space"}</kbd> {L.unit.mag40x}
-                    </span>
-                  </div>
-                </div>
-
-                {/* Picture-in-Picture Macro Biopsy Minimap (Never lose position sense) */}
-                <div className="absolute bottom-6 left-6 bg-slate-900/95 backdrop-blur-md rounded-xl p-2.5 border border-slate-800 shadow-2xl flex flex-col gap-1.5 w-44 select-none z-10">
-                  <div className="flex items-center justify-between text-[10px] font-bold text-slate-300 uppercase tracking-wider">
-                    <span className="flex items-center gap-1.5 text-sky-400">
-                      <MapPin className="w-3.5 h-3.5" /> {L.heading.specimenProperties}
-                    </span>
-                    <span className="text-slate-500 font-mono text-[9px]">{L.field.fieldNumber} #{activeHpfSeq}</span>
-                  </div>
-                  <div className="relative w-full h-44 bg-slate-950 rounded-lg overflow-hidden border border-slate-800 flex items-center justify-center p-1">
-                    {(() => {
-                      const slideW = data?.slide?.width_px || imageWidthPx || 20000;
-                      const slideH = data?.slide?.height_px || imageHeightPx || 20000;
-                      const mppXVal = data?.slide?.mpp_x || mppX || 0.25;
-                      const mppYVal = data?.slide?.mpp_y || mppY || 0.25;
-                      const totalSlideW_um = slideW * mppXVal;
-                      const totalSlideH_um = slideH * mppYVal;
-                      const slideAspect = slideW / slideH;
-
-                      const beaconLeftPct = activeHpf
-                        ? Math.min(96, Math.max(4, (activeHpf.center_um[0] / totalSlideW_um) * 100))
-                        : 50;
-                      const beaconTopPct = activeHpf
-                        ? Math.min(96, Math.max(4, (activeHpf.center_um[1] / totalSlideH_um) * 100))
-                        : 50;
-
-                      return (
-                        <div
-                          className="relative h-full max-w-full flex items-center justify-center"
-                          style={{ aspectRatio: `${slideAspect}` }}
-                        >
-                          <img
-                            src={wholeSlideThumbnailUrl}
-                            alt={L.heading.slideOverview}
-                            className="w-full h-full object-fill rounded pointer-events-none"
-                            onError={(e) => {
-                              (e.target as HTMLImageElement).src = `data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160"><rect width="100%" height="100%" fill="%230f172a"/><text x="50%" y="50%" fill="%2394a3b8" text-anchor="middle" font-size="10">Biopsy Core</text></svg>`;
-                            }}
-                          />
-                          {/* Active HPF Beacon on Minimap */}
-                          {activeHpf && (
-                            <div
-                              className="absolute transform -translate-x-1/2 -translate-y-1/2 pointer-events-none z-10"
-                              style={{
-                                left: `${beaconLeftPct}%`,
-                                top: `${beaconTopPct}%`
-                              }}
-                            >
-                              <div className="w-4 h-4 rounded-full bg-emerald-400 border-2 border-white shadow-[0_0_12px_#10b981] animate-pulse flex items-center justify-center">
-                                <div className="w-1.5 h-1.5 rounded-full bg-slate-950" />
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })()}
-                  </div>
-                </div>
+        {/* Center: Selected Candidate Decision-Chain Inspector Panel */}
+        {selectedCandidate && (
+          <div className="w-80 bg-slate-900 border-l border-slate-800 flex flex-col h-full shadow-xl overflow-y-auto">
+            {/* Header */}
+            <div className="p-3.5 border-b border-slate-800 bg-slate-950/60 flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <Activity className="w-4 h-4 text-sky-400" />
+                <h3 className="font-bold text-xs uppercase tracking-wider text-slate-200">
+                  {L.heading.decisionChain}
+                </h3>
               </div>
+              <span className="font-mono text-xs font-bold text-sky-400">
+                {selectedCandidate.id}
+              </span>
             </div>
 
-            {/* Right: Candidate Gallery Scoped to Active HPF or All Candidates (#126) */}
-            <div className="w-96 shrink-0 h-full flex flex-col bg-slate-900 border-l border-slate-800">
-              {/* Scope Selector: Active Field vs All Candidates */}
-              <div className="px-3 py-1.5 bg-slate-900 border-b border-slate-800 flex items-center justify-between shrink-0">
-                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">{L.heading.mitoticCandidates}</span>
-                <div className="flex items-center bg-slate-950 p-0.5 rounded border border-slate-800">
-                  <button
-                    onClick={() => setGalleryScope("field")}
-                    className={`px-2 py-0.5 rounded text-[10px] font-medium transition ${
-                      galleryScope === "field" ? "bg-sky-600 text-white font-semibold shadow-sm" : "text-slate-400 hover:text-slate-200"
-                    }`}
-                  >
-                    {L.field.fieldNumber} #{activeHpfSeq} ({activeFieldCandidates.length})
-                  </button>
-                  <button
-                    onClick={() => setGalleryScope("all")}
-                    className={`px-2 py-0.5 rounded text-[10px] font-medium transition ${
-                      galleryScope === "all" ? "bg-sky-600 text-white font-semibold shadow-sm" : "text-slate-400 hover:text-slate-200"
-                    }`}
-                  >
-                    {L.action.filterAll} ({candidates.length})
-                  </button>
-                </div>
-              </div>
-              <div className="flex-1 overflow-hidden">
-                <MitosisGallery
-                  caseId={caseId}
-                  candidates={galleryScope === "all" ? candidates : activeFieldCandidates}
-                  selectedCandidateId={selectedCandidateId}
-                  onSelectCandidate={(cand) => {
-                    setSelectedCandidateId(cand.id);
-                  }}
-                  onToggleCandidate={handleToggleCandidate}
-                  onJumpToCandidate={handleJumpToCandidate}
-                  stainMode={stainMode}
-                  filterMode={filterMode}
-                  onSetFilterMode={setFilterMode}
-                  fieldSeq={activeHpfSeq}
-                  totalFields={hpfs.length || 10}
-                  onApproveFieldAndNext={handleApproveFieldAndNext}
+            {/* Candidate Image (Crop or Context) */}
+            <div className="p-4 flex flex-col items-center bg-slate-950 border-b border-slate-800">
+              <div className="relative w-48 h-48 rounded-lg overflow-hidden bg-black border border-slate-700 shadow-inner">
+                <img
+                  src={
+                    imageViewMode === "context"
+                      ? selectedCandidate.context_url
+                      : selectedCandidate.crop_url
+                  }
+                  alt={selectedCandidate.id}
+                  className="w-full h-full object-cover"
                 />
               </div>
+
+              {/* Crop / Context Toggle */}
+              <div className="mt-2.5 flex items-center bg-slate-900 border border-slate-700 rounded-lg p-0.5 text-xs font-semibold">
+                <button
+                  type="button"
+                  onClick={() => setImageViewMode("crop")}
+                  className={`px-3 py-1 rounded transition ${
+                    imageViewMode === "crop"
+                      ? "bg-sky-600 text-white shadow-sm"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  {"64 " + L.unit.um}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setImageViewMode("context")}
+                  className={`px-3 py-1 rounded transition ${
+                    imageViewMode === "context"
+                      ? "bg-sky-600 text-white shadow-sm"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  {"256 " + L.unit.um}
+                </button>
+              </div>
+            </div>
+
+            {/* Probabilities & Status Badges */}
+            <div className="p-4 border-b border-slate-800 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-slate-400">{L.field.status}:</span>
+                <div className="flex items-center space-x-1.5">
+                  {selectedCandidate.counted && (
+                    <span className="px-2 py-0.5 rounded bg-emerald-950 border border-emerald-700 text-emerald-300 font-bold text-[10px] uppercase font-mono">
+                      {L.field.counted}
+                    </span>
+                  )}
+                  <span
+                    className={`px-2 py-0.5 rounded text-xs font-bold uppercase font-mono ${
+                      selectedCandidate.final_decision === "mitosis"
+                        ? "bg-emerald-950 text-emerald-400 border border-emerald-800"
+                        : selectedCandidate.final_decision === "equivocal"
+                        ? "bg-amber-950 text-amber-400 border border-amber-800"
+                        : "bg-slate-800 text-slate-400 border border-slate-700"
+                    }`}
+                  >
+                    {selectedCandidate.final_decision}
+                  </span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                <div className="bg-slate-950 p-2 rounded border border-slate-800">
+                  <div className="text-[10px] text-slate-400">{L.field.detectorProb}</div>
+                  <div className="text-sm font-bold text-slate-200">
+                    {selectedCandidate.p_a !== null ? selectedCandidate.p_a.toFixed(2) : "—"}
+                  </div>
+                </div>
+                <div className="bg-slate-950 p-2 rounded border border-slate-800">
+                  <div className="text-[10px] text-slate-400">{L.field.classifierProb}</div>
+                  <div className="text-sm font-bold text-slate-200">
+                    {selectedCandidate.p_b !== null ? selectedCandidate.p_b.toFixed(2) : "—"}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between text-xs text-slate-400">
+                <span>{L.field.decisionPath}:</span>
+                <span className="font-mono text-slate-200 font-bold">
+                  {selectedCandidate.decision_path}
+                </span>
+              </div>
+            </div>
+
+            {/* VLM Verdict & Criteria Checklist */}
+            {selectedCandidate.vlm && (
+              <div className="p-4 border-b border-slate-800 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-sky-300 uppercase tracking-wider">
+                    {L.field.vlmVerdict}
+                  </span>
+                  {selectedCandidate.vlm.rule_override && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-950 text-rose-300 border border-rose-800 font-bold">
+                      {L.field.ruleOverride}
+                    </span>
+                  )}
+                </div>
+
+                <div className="text-xs font-bold text-slate-200 font-mono">
+                  {selectedCandidate.vlm.verdict}
+                </div>
+
+                <div className="bg-slate-950 p-2.5 rounded border border-slate-800 space-y-1.5 text-xs">
+                  <div className="flex items-center justify-between text-slate-300">
+                    <span>{L.field.membraneAbsent}</span>
+                    <span
+                      className={
+                        selectedCandidate.vlm.criteria.membrane_absent
+                          ? "text-emerald-400 font-bold"
+                          : "text-rose-400 font-bold"
+                      }
+                    >
+                      {selectedCandidate.vlm.criteria.membrane_absent ? "✓" : "✗"}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between text-slate-300">
+                    <span>{L.field.condensedProjections}</span>
+                    <span
+                      className={
+                        selectedCandidate.vlm.criteria.condensed_chromosome_projections
+                          ? "text-emerald-400 font-bold"
+                          : "text-rose-400 font-bold"
+                      }
+                    >
+                      {selectedCandidate.vlm.criteria.condensed_chromosome_projections ? "✓" : "✗"}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between text-slate-300">
+                    <span>{L.field.neoplasticCell}</span>
+                    <span
+                      className={
+                        selectedCandidate.vlm.criteria.neoplastic_cell
+                          ? "text-emerald-400 font-bold"
+                          : "text-rose-400 font-bold"
+                      }
+                    >
+                      {selectedCandidate.vlm.criteria.neoplastic_cell ? "✓" : "✗"}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between text-slate-300 pt-1 border-t border-slate-800">
+                    <span>{L.field.phase}:</span>
+                    <span className="font-mono text-sky-400 capitalize">
+                      {selectedCandidate.vlm.criteria.phase}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between text-slate-300">
+                    <span>{L.field.mimic}:</span>
+                    <span className="font-mono text-amber-400 capitalize">
+                      {selectedCandidate.vlm.mimic !== "none"
+                        ? selectedCandidate.vlm.mimic
+                        : "—"}
+                    </span>
+                  </div>
+                </div>
+
+                {selectedCandidate.vlm.rationale && (
+                  <p className="text-[11px] text-slate-400 italic bg-slate-950/60 p-2 rounded border border-slate-800">
+                    {selectedCandidate.vlm.rationale}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Pathologist Review Actions */}
+            <div className="p-4 space-y-2 mt-auto">
+              <span className="text-xs font-semibold text-slate-400">
+                {L.field.overrideReason}:
+              </span>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleReviewCandidate(selectedCandidate.id, "mitosis")}
+                  className={`py-2 px-3 rounded-lg text-xs font-bold flex items-center justify-center space-x-1.5 transition ${
+                    selectedCandidate.review_label === "mitosis"
+                      ? "bg-emerald-600 text-white shadow-md shadow-emerald-600/30"
+                      : "bg-slate-800 hover:bg-emerald-900/60 text-slate-200 hover:text-emerald-300 border border-slate-700"
+                  }`}
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  <span>{L.action.markMitosis}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleReviewCandidate(selectedCandidate.id, "not_mitosis")}
+                  className={`py-2 px-3 rounded-lg text-xs font-bold flex items-center justify-center space-x-1.5 transition ${
+                    selectedCandidate.review_label === "not_mitosis"
+                      ? "bg-rose-600 text-white shadow-md shadow-rose-600/30"
+                      : "bg-slate-800 hover:bg-rose-900/60 text-slate-200 hover:text-rose-300 border border-slate-700"
+                  }`}
+                >
+                  <X className="w-3.5 h-3.5" />
+                  <span>{L.action.markNotMitosis}</span>
+                </button>
+              </div>
+
+              {selectedCandidate.review_label !== null && (
+                <button
+                  type="button"
+                  onClick={() => handleReviewCandidate(selectedCandidate.id, null)}
+                  className="w-full py-1.5 text-xs text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded transition"
+                >
+                  {L.action.resetView}
+                </button>
+              )}
             </div>
           </div>
         )}
 
-        {/* ============================================================ */}
-        {/* PHASE (c): REVIEW COMPLETION & VERIFIED SCORE SUMMARY */}
-        {/* ============================================================ */}
-        {workflowPhase === "completion_summary" && (
-          <div className="flex-1 flex flex-col items-center justify-center p-8 bg-slate-950 overflow-y-auto">
-            <div className="max-w-2xl w-full bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl space-y-6">
-              {/* Header */}
-              <div className="flex items-center gap-3 border-b border-slate-800 pb-4">
-                <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400">
-                  <CheckCircle2 className="w-7 h-7" />
-                </div>
-                <div>
-                  <h2 className="font-bold text-lg text-slate-100">{L.heading.summary}</h2>
-                  <span className="text-xs text-slate-400">{L.help.allCandidatesReviewed}</span>
-                </div>
+        {/* Right: Mitosis Candidates Gallery / Queue */}
+        <div className="w-96 flex flex-col h-full shrink-0">
+          <MitosisGallery
+            caseId={caseId}
+            candidates={sortedCandidates}
+            selectedCandidateId={selectedCandidateId}
+            onSelectCandidate={(cand) => setSelectedCandidateId(cand.id)}
+            onToggleCandidate={handleReviewCandidate}
+            filterMode={filterMode}
+            onSetFilterMode={setFilterMode}
+            viewMode={imageViewMode}
+          />
+        </div>
+
+        {/* Collapsible Definition Side Drawer / Panel */}
+        {showDefinitionPanel && (
+          <div className="fixed inset-y-0 right-0 z-50 w-[440px] bg-slate-900 border-l border-slate-700 shadow-2xl flex flex-col animate-in slide-in-from-right duration-200">
+            <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-950">
+              <div className="flex items-center space-x-2 text-sky-400 font-bold text-sm">
+                <BookOpen className="w-4 h-4" />
+                <span>{L.heading.mitosisDefinition}</span>
               </div>
-
-              {/* Final Score Card */}
-              <div className="grid grid-cols-3 gap-3">
-                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 flex flex-col items-center justify-center">
-                  <span className="text-xs text-slate-400 uppercase font-semibold">{L.field.mitosisCount}</span>
-                  <span className="font-bold font-mono text-2xl text-emerald-400 mt-1">
-                    {summary.count_total}
-                  </span>
-                  <span className="text-[11px] text-slate-500 mt-0.5">{L.fmt.hpfScore(10)}</span>
-                </div>
-
-                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 flex flex-col items-center justify-center">
-                  <span className="text-xs text-slate-400 uppercase font-semibold">{L.field.density}</span>
-                  <span className="font-bold font-mono text-2xl text-sky-400 mt-1">
-                    {summary.per_mm2.toFixed(1)}
-                  </span>
-                  <span className="text-[11px] text-slate-500 mt-0.5">{L.unit.mm2}</span>
-                </div>
-
-                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 flex flex-col items-center justify-center">
-                  <span className="text-xs text-slate-400 uppercase font-semibold">{L.field.mitosisScore}</span>
-                  <span className={`font-bold text-2xl mt-1 ${
-                    summary.mitotic_score === 3 ? "text-rose-400" : summary.mitotic_score === 2 ? "text-amber-400" : "text-emerald-400"
-                  }`}>
-                    {L.field.grade} {summary.mitotic_score}
-                  </span>
-                  <span className="text-[11px] text-slate-400 mt-0.5">
-                    {summary.mitotic_score === 3 ? "(≥20)" : summary.mitotic_score === 2 ? "(10-19)" : "(0-9)"}
-                  </span>
-                </div>
-              </div>
-
-              {/* 10-Field Mitotic Distribution Grid */}
-              <div className="space-y-2">
-                <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider block">
-                  {L.heading.topHpfs}
-                </span>
-                <div className="grid grid-cols-5 gap-2">
-                  {hpfs.map((h) => (
-                    <div key={h.seq} className="bg-slate-950 p-2 rounded-lg border border-slate-800 flex items-center justify-between text-xs">
-                      <span className="text-slate-400">{L.field.fieldNumber} #{h.seq}</span>
-                      <span className="font-mono font-bold text-emerald-400">{h.count}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Unreviewed High-Confidence Candidates Warning & Bulk Action */}
-              {unreviewedHighConf > 0 ? (
-                <div className="bg-amber-950/40 border border-amber-500/40 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-amber-200">
-                  <div className="flex items-start gap-3">
-                    <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
-                    <div>
-                      <h4 className="text-sm font-semibold text-amber-300">
-                        {unreviewedHighConf} {L.heading.mitoticCandidates}
-                      </h4>
-                      <p className="text-xs text-amber-400/80 mt-0.5">
-                        {L.help.reviewAllCandidates}
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleBulkReject}
-                    disabled={loading}
-                    className="px-3.5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg text-xs transition flex items-center justify-center gap-1.5 shrink-0 shadow-sm"
-                  >
-                    {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <XCircle className="w-3.5 h-3.5" />}
-                    <span>{L.action.markNotMitosis}</span>
-                  </button>
-                </div>
-              ) : (
-                <div className="bg-emerald-950/30 border border-emerald-500/30 rounded-xl px-4 py-3 flex items-center gap-2.5 text-xs text-emerald-300">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span>{L.help.allCandidatesReviewed}</span>
-                </div>
-              )}
-
-              {/* Action Buttons */}
-              <div className="flex items-center justify-between pt-4 border-t border-slate-800">
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setWorkflowPhase("field_review")}
-                    className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition flex items-center gap-1.5"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5" /> {L.action.retry}
-                  </button>
-                  <button
-                    onClick={() => setWorkflowPhase("overview")}
-                    className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition flex items-center gap-1.5"
-                  >
-                    <Compass className="w-3.5 h-3.5" /> {L.heading.slideOverview}
-                  </button>
-                </div>
-
-                <button
-                  onClick={handleConfirmStage}
-                  disabled={submitting || unreviewedHighConf > 0}
-                  title={unreviewedHighConf > 0 ? L.help.reviewAllCandidates : L.action.confirmMitoses}
-                  className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded-xl shadow-lg text-sm flex items-center gap-2 transition active:scale-[0.98]"
-                >
-                  {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-                  <span>{L.action.confirmMitoses}</span>
-                  <ArrowRight className="w-4 h-4" />
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => setShowDefinitionPanel(false)}
+                className="text-slate-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="flex-1 p-5 overflow-y-auto font-mono text-xs text-slate-300 whitespace-pre-wrap leading-relaxed">
+              {MITOTIC_FIGURE_DEFINITION}
             </div>
           </div>
         )}

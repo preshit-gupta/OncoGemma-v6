@@ -1,23 +1,47 @@
 # ==============================================================================
-# OncoGemma v5 - Asynchronous High-Power Pipeline Worker (Cloud Run Jobs / Batch)
-# Multi-threaded SIMD image processing, Macenko stain engine, and ONNX Runtime
+# OncoGemma v6 - Asynchronous Pipeline Worker (Cloud Run Jobs / Batch)
+# Multi-stage, non-root, high-power pipeline worker image (SPEC-11 §3)
 # ==============================================================================
-FROM python:3.12-slim AS base
+
+# --- Stage 1: Builder ---
+FROM python:3.12-slim AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    DEBIAN_FRONTEND=noninteractive
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libvips-dev \
+    libopenslide-dev \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY requirements/worker.lock.txt /app/requirements/worker.lock.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r /app/requirements/worker.lock.txt
+
+# --- Stage 2: Runtime Runner ---
+FROM python:3.12-slim AS runner
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
-    VIPS_WARNING=0
+    VIPS_WARNING=0 \
+    PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /app
 
-# Install native OpenSlide, PyVips, and OpenCV libraries
+# Install native runtime shared libraries
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
     libvips-tools \
-    libvips-dev \
     libvips42 \
-    libopenslide-dev \
     libopenslide0 \
     libgl1 \
     libglib2.0-0 \
@@ -25,20 +49,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python requirements
-COPY backend/requirements.txt /app/requirements.txt
-COPY backend/requirements-worker.txt /app/requirements-worker.txt
+COPY --from=builder /opt/venv /opt/venv
 
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements-worker.txt
+# Create non-root runtime user
+RUN useradd -u 10001 -m -s /bin/bash appuser
 
-# Copy source and configurations
+# Copy application source, configs, and model weights
 COPY backend /app/backend
 COPY configs /app/configs
 COPY models /app/models
-RUN rm -f /app/backend/.env*
+RUN rm -f /app/backend/.env* && \
+    chown -R appuser:appuser /app
 
+USER appuser
 WORKDIR /app/backend
 
-# Default entrypoint for Cloud Run Jobs or Cloud Tasks webhooks
 ENTRYPOINT ["python", "worker/cloud_job_entry.py"]

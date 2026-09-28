@@ -5,62 +5,66 @@ import {
   CheckCircle2, 
   XCircle, 
   HelpCircle, 
-  Sparkles, 
   Layers, 
-  ExternalLink,
   Filter,
-  Eye
+  Check,
+  X,
+  RotateCcw
 } from "lucide-react";
-import { MitosisCandidate, API_BASE } from "@/lib/api";
+import { Candidate } from "@/lib/api/mitosis";
 import { L } from "@/lib/labels";
 
 interface MitosisGalleryProps {
   caseId: string;
-  candidates: MitosisCandidate[];
+  candidates: Candidate[];
   selectedCandidateId: string | null;
-  onSelectCandidate: (candidate: MitosisCandidate) => void;
-  onToggleCandidate: (id: string, newLabel: "mitosis" | "not_mitosis" | "unreviewed") => void;
-  onJumpToCandidate: (candidate: MitosisCandidate) => void;
-  stainMode: "norm" | "orig";
-  filterMode: "all" | "unreviewed" | "mitosis" | "not_mitosis";
-  onSetFilterMode: (mode: "all" | "unreviewed" | "mitosis" | "not_mitosis") => void;
+  onSelectCandidate: (candidate: Candidate) => void;
+  onToggleCandidate: (id: string, newLabel: "mitosis" | "not_mitosis" | null) => void;
+  filterMode: "all" | "equivocal" | "mitosis" | "not_mitosis";
+  onSetFilterMode: (mode: "all" | "equivocal" | "mitosis" | "not_mitosis") => void;
   fieldSeq?: number;
   totalFields?: number;
   onApproveFieldAndNext?: () => void;
+  viewMode?: "crop" | "context";
 }
 
 export function MitosisGallery({
-  caseId,
   candidates,
   selectedCandidateId,
   onSelectCandidate,
   onToggleCandidate,
-  onJumpToCandidate,
-  stainMode,
   filterMode,
   onSetFilterMode,
   fieldSeq = 1,
-  totalFields = 10,
-  onApproveFieldAndNext
+  viewMode = "crop",
 }: MitosisGalleryProps) {
   const cardRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
-  // Filter candidates
   const filteredCandidates = candidates.filter((c) => {
     if (filterMode === "all") return true;
-    return c.label === filterMode;
+    if (filterMode === "equivocal") {
+      return c.final_decision === "equivocal" && c.review_label === null;
+    }
+    const effective = c.review_label ?? c.final_decision;
+    return effective === filterMode;
   });
 
-  const unreviewedCount = candidates.filter((c) => c.label === "unreviewed").length;
-  const mitosisCount = candidates.filter((c) => c.label === "mitosis").length;
-  const rejectedCount = candidates.filter((c) => c.label === "not_mitosis").length;
+  const equivocalCount = candidates.filter(
+    (c) => c.final_decision === "equivocal" && c.review_label === null
+  ).length;
+  const mitosisCount = candidates.filter(
+    (c) => (c.review_label ?? c.final_decision) === "mitosis"
+  ).length;
+  const rejectedCount = candidates.filter(
+    (c) => (c.review_label ?? c.final_decision) === "not_mitosis"
+  ).length;
 
   // Auto-scroll selected card into view
   useEffect(() => {
     if (selectedCandidateId && cardRefs.current[selectedCandidateId]) {
       cardRefs.current[selectedCandidateId]?.scrollIntoView({
         behavior: "smooth",
-        block: "nearest"
+        block: "nearest",
       });
     }
   }, [selectedCandidateId]);
@@ -84,6 +88,7 @@ export function MitosisGallery({
         {/* Filter Pills */}
         <div className="grid grid-cols-4 gap-1 p-1 bg-slate-900/90 rounded-lg text-[11px] font-medium">
           <button
+            type="button"
             onClick={() => onSetFilterMode("all")}
             className={`py-1 rounded px-1.5 transition-all text-center ${
               filterMode === "all"
@@ -94,16 +99,18 @@ export function MitosisGallery({
             {L.action.filterAll} ({candidates.length})
           </button>
           <button
-            onClick={() => onSetFilterMode("unreviewed")}
+            type="button"
+            onClick={() => onSetFilterMode("equivocal")}
             className={`py-1 rounded px-1.5 transition-all text-center ${
-              filterMode === "unreviewed"
+              filterMode === "equivocal"
                 ? "bg-amber-600/40 text-amber-300 font-semibold border border-amber-500/30"
                 : "text-slate-400 hover:text-amber-300"
             }`}
           >
-            {L.action.filterUnreviewed} ({unreviewedCount})
+            {L.field.equivocal} ({equivocalCount})
           </button>
           <button
+            type="button"
             onClick={() => onSetFilterMode("mitosis")}
             className={`py-1 rounded px-1.5 transition-all text-center ${
               filterMode === "mitosis"
@@ -114,6 +121,7 @@ export function MitosisGallery({
             {L.action.markMitosis} ({mitosisCount})
           </button>
           <button
+            type="button"
             onClick={() => onSetFilterMode("not_mitosis")}
             className={`py-1 rounded px-1.5 transition-all text-center ${
               filterMode === "not_mitosis"
@@ -127,10 +135,30 @@ export function MitosisGallery({
 
         {/* Keyboard Shortcut Tips */}
         <div className="mt-2 flex items-center justify-between text-[10px] text-slate-400 bg-slate-900/50 px-2 py-1 rounded border border-slate-800/80">
-          <span><kbd className="px-1 py-0.5 bg-slate-800 rounded text-slate-200 font-mono">{"j"}</kbd>/<kbd className="px-1 py-0.5 bg-slate-800 rounded text-slate-200 font-mono">{"k"}</kbd></span>
-          <span><kbd className="px-1 py-0.5 bg-emerald-950 text-emerald-300 border border-emerald-700/50 rounded font-mono">{"m"}</kbd> {L.action.markMitosis}</span>
-          <span><kbd className="px-1 py-0.5 bg-rose-950 text-rose-300 border border-rose-700/50 rounded font-mono">{"x"}</kbd> {L.action.markNotMitosis}</span>
-          <span><kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200 font-mono">{"Space"}</kbd> {L.unit.mag40x}</span>
+          <span>
+            <kbd className="px-1 py-0.5 bg-emerald-950 text-emerald-300 border border-emerald-700/50 rounded font-mono">
+              {"M"}
+            </kbd>{" "}
+            {L.action.markMitosis}
+          </span>
+          <span>
+            <kbd className="px-1 py-0.5 bg-rose-950 text-rose-300 border border-rose-700/50 rounded font-mono">
+              {"X"}
+            </kbd>{" "}
+            {L.action.markNotMitosis}
+          </span>
+          <span>
+            <kbd className="px-1 py-0.5 bg-slate-800 text-slate-300 rounded font-mono">
+              {"U"}
+            </kbd>{" "}
+            {L.action.resetView}
+          </span>
+          <span>
+            <kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200 font-mono">
+              {"Space"}
+            </kbd>{" "}
+            {L.field.zoom}
+          </span>
         </div>
       </div>
 
@@ -142,147 +170,147 @@ export function MitosisGallery({
             {L.help.noMitoses}
           </div>
         ) : (
-          filteredCandidates.map((cand, idx) => {
+          filteredCandidates.map((cand) => {
             const isSelected = cand.id === selectedCandidateId;
-            const isMitosis = cand.label === "mitosis";
-            const isRejected = cand.label === "not_mitosis";
-            const isUnreviewed = cand.label === "unreviewed";
+            const effectiveVerdict = cand.review_label ?? cand.final_decision;
+            const isMitosis = effectiveVerdict === "mitosis";
+            const isEquivocal = effectiveVerdict === "equivocal";
+            const isRejected = effectiveVerdict === "not_mitosis";
 
-            const cropUrl = `${API_BASE}/api/v1/stages/mitosis/${caseId}/candidates/${cand.id}/crop?stain=${stainMode}&v=v3`;
+            const imgSrc = viewMode === "context" ? cand.context_url : cand.crop_url;
 
             return (
               <div
                 key={cand.id}
                 ref={(el) => { cardRefs.current[cand.id] = el; }}
                 onClick={() => onSelectCandidate(cand)}
-                className={`relative rounded-lg p-2 transition-all cursor-pointer border ${
+                className={`relative rounded-lg p-2.5 transition-all cursor-pointer border ${
                   isSelected
                     ? "bg-slate-800 border-sky-500 shadow-md ring-1 ring-sky-500/50"
+                    : isEquivocal
+                    ? "bg-amber-950/20 border-amber-700/40 hover:bg-amber-950/30"
                     : isMitosis
                     ? "bg-emerald-950/20 border-emerald-800/40 hover:bg-emerald-950/30"
-                    : isRejected
-                    ? "bg-slate-900/50 border-slate-800/50 opacity-60 hover:opacity-90"
-                    : "bg-slate-800/40 border-amber-700/30 hover:bg-slate-800/70"
+                    : "bg-slate-900/50 border-slate-800/50 opacity-70 hover:opacity-100"
                 }`}
               >
                 <div className="flex items-center gap-3">
-                  {/* 128x128 Crop Thumbnail */}
-                  <div className="relative w-16 h-16 rounded overflow-hidden bg-black shrink-0 border border-slate-700/80 group">
+                  {/* Crop / Context Thumbnail */}
+                  <div className="relative w-16 h-16 rounded overflow-hidden bg-black shrink-0 border border-slate-700/80">
                     <img
-                      src={cropUrl}
+                      src={imgSrc}
                       alt={cand.id}
                       className="w-full h-full object-cover"
                       loading="lazy"
                     />
-                    {/* Reticle Overlay on Hover */}
-                    <div className="absolute inset-0 bg-sky-500/10 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                      <Eye className="w-4 h-4 text-sky-300 drop-shadow" />
-                    </div>
                   </div>
 
-                  {/* Metadata & Confidence */}
+                  {/* Candidate Details */}
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between mb-1">
                       <span className="font-mono text-xs font-semibold text-slate-200">
                         {cand.id}
                       </span>
-                      {/* State Badge */}
-                      {isMitosis && (
-                        <span className="flex items-center gap-1 text-[10px] text-emerald-400 bg-emerald-950/80 px-1.5 py-0.5 rounded border border-emerald-700/40">
-                          <CheckCircle2 className="w-3 h-3" /> {L.action.markMitosis}
-                        </span>
-                      )}
-                      {isRejected && (
-                        <span className="flex items-center gap-1 text-[10px] text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700/40">
-                          <XCircle className="w-3 h-3 text-slate-500" /> {L.status.rejected}
-                        </span>
-                      )}
-                      {isUnreviewed && (
-                        <span className="flex items-center gap-1 text-[10px] text-amber-400 bg-amber-950/80 px-1.5 py-0.5 rounded border border-amber-700/40">
-                          <HelpCircle className="w-3 h-3" /> {L.status.needsHuman}
-                        </span>
-                      )}
+                      <div className="flex items-center space-x-1">
+                        {cand.counted && (
+                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-700/50 font-bold uppercase font-mono">
+                            {L.field.counted}
+                          </span>
+                        )}
+                        {cand.review_label ? (
+                          <span
+                            className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                              cand.review_label === "mitosis"
+                                ? "bg-emerald-900/80 text-emerald-200 border border-emerald-700"
+                                : "bg-rose-900/80 text-rose-200 border border-rose-700"
+                            }`}
+                          >
+                            {cand.review_label === "mitosis"
+                              ? L.action.markMitosis
+                              : L.action.markNotMitosis}
+                          </span>
+                        ) : isEquivocal ? (
+                          <span className="flex items-center gap-1 text-[10px] text-amber-300 bg-amber-950/80 px-1.5 py-0.5 rounded border border-amber-700/50 font-medium">
+                            <HelpCircle className="w-3 h-3 text-amber-400" />
+                            {L.field.equivocal}
+                          </span>
+                        ) : isMitosis ? (
+                          <span className="flex items-center gap-1 text-[10px] text-emerald-300 bg-emerald-950/80 px-1.5 py-0.5 rounded border border-emerald-700/40 font-medium">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                            {L.action.markMitosis}
+                          </span>
+                        ) : (
+                          <span className="flex items-center gap-1 text-[10px] text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700/40">
+                            <XCircle className="w-3 h-3 text-slate-500" />
+                            {L.action.markNotMitosis}
+                          </span>
+                        )}
+                      </div>
                     </div>
 
-                    <div className="mt-1 flex items-center gap-2 text-[11px] text-slate-400 font-mono">
-                      <span>{L.field.detector}: <strong className="text-slate-300">{((cand.det_conf || 0) * 100).toFixed(0)}%</strong></span>
-                      {cand.ver_conf !== null && cand.ver_conf !== undefined && (
-                        <span>{L.field.verifier}: <strong className="text-slate-300">{((cand.ver_conf || 0) * 100).toFixed(0)}%</strong></span>
-                      )}
-                      {cand.medgemma_verdict && (
-                        <span 
-                          title={cand.medgemma_rationale || cand.medgemma_verdict}
-                          className={`text-[9px] px-1 py-0.5 rounded flex items-center gap-0.5 font-sans font-medium ${
-                            cand.medgemma_verdict === "CONFIRMED"
-                              ? "bg-indigo-950 text-indigo-300 border border-indigo-700/50"
-                              : cand.medgemma_verdict.startsWith("REJECTED")
-                              ? "bg-rose-950 text-rose-300 border border-rose-800/40"
-                              : "bg-amber-950 text-amber-300 border border-amber-800/40"
-                          }`}
-                        >
-                          <Sparkles className="w-2.5 h-2.5 text-indigo-400" />
-                          {cand.medgemma_verdict === "CONFIRMED"
-                            ? "Referee"
-                            : cand.medgemma_verdict === "REJECTED_APOPTOSIS"
-                            ? "Apoptosis"
-                            : cand.medgemma_verdict === "REJECTED_LYMPHOCYTE"
-                            ? "Lymphocyte"
-                            : "Referee"}
-                        </span>
-                      )}
-                      {cand.label_source && cand.label_source !== "model" && !cand.label_source.startsWith("medgemma") && (
-                        <span className="text-[9px] px-1 bg-sky-950 text-sky-300 rounded border border-sky-800/40">
-                          {L.field.manual}
-                        </span>
-                      )}
+                    <div className="flex items-center gap-2 text-[10px] text-slate-400 font-mono">
+                      <span>
+                        {L.field.detectorProb}:{" "}
+                        <strong className="text-slate-300">
+                          {cand.p_a !== null ? cand.p_a.toFixed(2) : "—"}
+                        </strong>
+                      </span>
+                      <span>
+                        {L.field.classifierProb}:{" "}
+                        <strong className="text-slate-300">
+                          {cand.p_b !== null ? cand.p_b.toFixed(2) : "—"}
+                        </strong>
+                      </span>
+                      <span className="text-slate-500">[{cand.decision_path}]</span>
                     </div>
 
-                    {cand.medgemma_rationale && (
-                      <p className="mt-1 text-[10px] text-indigo-200/80 line-clamp-1 italic font-sans" title={cand.medgemma_rationale}>
-                        {"\""}{cand.medgemma_rationale}{"\""}
-                      </p>
-                    )}
-
-                    {/* Quick Action Toggle Buttons */}
+                    {/* Quick review action buttons */}
                     <div className="mt-2 flex items-center gap-1.5">
                       <button
+                        type="button"
                         onClick={(e) => {
                           e.stopPropagation();
-                          onToggleCandidate(cand.id, isMitosis ? "unreviewed" : "mitosis");
+                          onToggleCandidate(cand.id, "mitosis");
                         }}
-                        className={`flex-1 py-1 px-2 rounded text-[11px] font-semibold flex items-center justify-center gap-1 transition-all ${
-                          isMitosis
-                            ? "bg-emerald-600 text-white shadow-sm"
-                            : "bg-slate-800 text-slate-300 hover:bg-emerald-950 hover:text-emerald-300 border border-slate-700/60"
+                        className={`px-2 py-0.5 rounded text-[10px] font-semibold flex items-center gap-1 transition ${
+                          cand.review_label === "mitosis"
+                            ? "bg-emerald-600 text-white"
+                            : "bg-slate-800 text-slate-300 hover:bg-emerald-900 hover:text-emerald-200"
                         }`}
                       >
-                        <CheckCircle2 className="w-3 h-3" /> {L.action.markMitosis}
+                        <Check className="w-3 h-3" />
+                        <span>{L.action.markMitosis}</span>
                       </button>
 
                       <button
+                        type="button"
                         onClick={(e) => {
                           e.stopPropagation();
-                          onToggleCandidate(cand.id, isRejected ? "unreviewed" : "not_mitosis");
+                          onToggleCandidate(cand.id, "not_mitosis");
                         }}
-                        className={`flex-1 py-1 px-2 rounded text-[11px] font-semibold flex items-center justify-center gap-1 transition-all ${
-                          isRejected
-                            ? "bg-rose-900/80 text-rose-200 border border-rose-700"
-                            : "bg-slate-800 text-slate-400 hover:bg-rose-950/40 hover:text-rose-300 border border-slate-700/60"
+                        className={`px-2 py-0.5 rounded text-[10px] font-semibold flex items-center gap-1 transition ${
+                          cand.review_label === "not_mitosis"
+                            ? "bg-rose-600 text-white"
+                            : "bg-slate-800 text-slate-300 hover:bg-rose-900 hover:text-rose-200"
                         }`}
                       >
-                        <XCircle className="w-3 h-3" /> {L.action.markNotMitosis}
+                        <X className="w-3 h-3" />
+                        <span>{L.action.markNotMitosis}</span>
                       </button>
 
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onJumpToCandidate(cand);
-                        }}
-                        title={L.action.locate}
-                        className="p-1 rounded bg-slate-800 text-slate-400 hover:text-sky-300 hover:bg-slate-700 border border-slate-700/60 transition-colors"
-                      >
-                        <ExternalLink className="w-3.5 h-3.5" />
-                      </button>
+                      {cand.review_label !== null && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onToggleCandidate(cand.id, null);
+                          }}
+                          className="px-1.5 py-0.5 rounded text-[10px] bg-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-700 transition"
+                          title={L.action.resetView}
+                        >
+                          <RotateCcw className="w-3 h-3" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -291,22 +319,6 @@ export function MitosisGallery({
           })
         )}
       </div>
-
-      {/* Sticky Bottom Fast-Forward Action */}
-      {onApproveFieldAndNext && (
-        <div className="p-3 border-t border-slate-800 bg-slate-950/80 shrink-0">
-          <button
-            onClick={onApproveFieldAndNext}
-            className="w-full py-2 px-3 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-lg shadow-lg text-xs flex items-center justify-center gap-1.5 transition-all active:scale-[0.98]"
-          >
-            <CheckCircle2 className="w-4 h-4" />
-            <span>
-              {fieldSeq < totalFields ? `${L.action.confirm} #${fieldSeq} (${fieldSeq + 1}/${totalFields})` : `${L.action.confirm} (10/10)`}
-            </span>
-            <kbd className="ml-1 px-1 py-0.5 bg-emerald-700/80 rounded text-[10px] font-mono">↵</kbd>
-          </button>
-        </div>
-      )}
     </div>
   );
 }
