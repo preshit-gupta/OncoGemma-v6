@@ -51,7 +51,8 @@ Lanes are in `docs/tasks/README.md`.
 
 ## Findings to fix
 
-- `backend/requirements.txt` has `sqlalchemy>=2.0.28` with only `psycopg2-binary`. SQLAlchemy 2.1 (what a fresh build resolves) maps plain `postgresql://` to psycopg 3, so such URLs fail with `No module named 'psycopg'`. The Cloud SQL socket path names `+psycopg2` and is unaffected. Fix it in WP-1.3.
+- `backend/tests` and `tools/tests` are both packages named `tests`, so one `pytest` run cannot collect both. Run them separately.
+- **Since #9 (WP-1.3) an API image built from `main` cannot start**: it installs `requirements/api.lock.txt` (no SciPy/OpenSlide/…), but the routers need them and the API runs stages in-process. Hotfix PR #11 (worker lockfile + `models/` in the API image, plus an import check in `tools/tests`). Do not deploy the API from `main` before #11.
 - Cloud Run's front end reserves `/healthz` and answers it with a Google 404 before the request reaches the app, so the PR #2 runbook's `/healthz` check is wrong: use `/health`. The health endpoints also return the raw DB exception text to unauthenticated callers (WP-4.3).
 - Production Cloud SQL is Postgres 16; the migrations CI job uses 15 (SPEC-01). Consider moving CI to 16. Also, `backend/tests` and `tools/tests` are both packages named `tests`: run them in separate `pytest` runs.
 

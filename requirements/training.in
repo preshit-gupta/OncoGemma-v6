@@ -1,0 +1,6 @@
+# OncoGemma v6 - Training Dependencies (SPEC-11 §3)
+# Worker requirements plus PyTorch, TIMM, and TIAToolbox (offline training images only).
+-r worker.in
+torch>=2.2.0
+timm>=0.9.16
+tiatoolbox>=1.5.0

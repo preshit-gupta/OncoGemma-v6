@@ -1,5 +1,5 @@
 # ==============================================================================
-# OncoGemma v5 - Next.js 14 Web UI Container (Cloud Run)
+# OncoGemma v6 - Next.js 14 Web UI Container (Cloud Run)
 # ==============================================================================
 FROM node:20-alpine AS deps
 WORKDIR /app

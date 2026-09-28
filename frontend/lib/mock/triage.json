@@ -1,0 +1,111 @@
+{
+  "case_id": "c_demo",
+  "stage_execution_id": "se_3",
+  "status": "awaiting_review",
+  "slide": {
+    "width_px": 80000,
+    "height_px": 60000,
+    "mpp_x": 0.25,
+    "mpp_y": 0.25
+  },
+  "heatmap": {
+    "png_url": "/mock/heatmap_demo.png",
+    "tile_um": 224,
+    "origin_um": [0, 0],
+    "nx": 89,
+    "ny": 67,
+    "value": "p_tumor_cal",
+    "head_version": "tumor_head@1.0.0"
+  },
+  "tumor_threshold": 0.42,
+  "hotspots": [
+    {
+      "id": "hs_01",
+      "polygon_um": [
+        [4000, 5000],
+        [4600, 5000],
+        [4600, 5600],
+        [4000, 5600],
+        [4000, 5000]
+      ],
+      "window_um": 600,
+      "rank": 1,
+      "rank_score": 6.4,
+      "score_kind": "prescan_then_tumor",
+      "tumor_fraction": 0.91,
+      "prescan_expected": 6.4,
+      "source": "model",
+      "excluded": false,
+      "exclude_reason": null
+    },
+    {
+      "id": "hs_02",
+      "polygon_um": [
+        [4800, 5000],
+        [5400, 5000],
+        [5400, 5600],
+        [4800, 5600],
+        [4800, 5000]
+      ],
+      "window_um": 600,
+      "rank": 2,
+      "rank_score": 3.1,
+      "score_kind": "prescan_then_tumor",
+      "tumor_fraction": 0.77,
+      "prescan_expected": 3.1,
+      "source": "model",
+      "excluded": false,
+      "exclude_reason": null
+    }
+  ],
+  "machine_hotspots": [
+    {
+      "id": "hs_01",
+      "polygon_um": [
+        [4000, 5000],
+        [4600, 5000],
+        [4600, 5600],
+        [4000, 5600],
+        [4000, 5000]
+      ],
+      "window_um": 600,
+      "rank": 1,
+      "rank_score": 6.4,
+      "score_kind": "prescan_then_tumor",
+      "tumor_fraction": 0.91,
+      "prescan_expected": 6.4,
+      "source": "model",
+      "excluded": false,
+      "exclude_reason": null
+    },
+    {
+      "id": "hs_02",
+      "polygon_um": [
+        [4800, 5000],
+        [5400, 5000],
+        [5400, 5600],
+        [4800, 5600],
+        [4800, 5000]
+      ],
+      "window_um": 600,
+      "rank": 2,
+      "rank_score": 3.1,
+      "score_kind": "prescan_then_tumor",
+      "tumor_fraction": 0.77,
+      "prescan_expected": 3.1,
+      "source": "model",
+      "excluded": false,
+      "exclude_reason": null
+    }
+  ],
+  "flags": ["hotspots_limited_by_tissue"],
+  "provenance": {
+    "stage": "triage",
+    "model_versions": {
+      "path_foundation": "pf@2026-08",
+      "tumor_head": "1.0.0"
+    },
+    "config_hash": "3f2a49b1",
+    "run_mode": "clinical"
+  }
+}
