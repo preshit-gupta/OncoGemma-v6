@@ -72,7 +72,8 @@ async def _async_init_and_worker():
         await loop.run_in_executor(None, ensure_buckets_exist)
     except Exception as e:
         logger.warning(f"[GCS Bucket Check Note] {e}")
-    await background_pipeline_worker()
+    if settings.RUN_IN_PROCESS_WORKER:
+        await background_pipeline_worker()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
