@@ -27,6 +27,7 @@ from app.inference.gateway import (
     ModelInputs,
     render_prompt,
 )
+from app.inference.outputs import ClassProbabilities, EmbeddingBatch
 from app.inference.records import DecisionLog
 from tests.fakes.gateway import (
     FakeAdapter,
@@ -58,16 +59,6 @@ class DetectionList(schemas.StrictModel):
     """Stand-in with the registry's output_schema name for the detector."""
 
     detections: list[list[float]]
-
-
-class EmbeddingBatch(schemas.StrictModel):
-    """Stand-in with the registry's output_schema name for Path Foundation."""
-
-    embeddings: list[list[float]]
-
-
-class ProbeScores(schemas.StrictModel):
-    p: list[float]
 
 
 def with_entry(config, key, **changes):
@@ -265,7 +256,7 @@ def test_output_model_must_match_the_registry():
     with pytest.raises(InputContractError, match="output_schema is DetectionList"):
         gateway.invoke(
             Task.MITOSIS_DETECT, "kongnet_det_midog_1", ModelInputs(images=(png_image((512, 512), 0.25),)),
-            decision_context(), EntityRef(EntityType.TILE, "t_1"), ProbeScores,
+            decision_context(), EntityRef(EntityType.TILE, "t_1"), ClassProbabilities,
         )
 
 
@@ -289,7 +280,7 @@ def test_batch_limits_are_enforced():
 def test_feature_models_take_features_from_their_declared_producer():
     import numpy as np
 
-    adapter = FakeAdapter(RawResponse(data={"p": [0.1, 0.9]}))
+    adapter = FakeAdapter(RawResponse(data={"classes": [0, 1], "probabilities": [[0.9, 0.1], [0.1, 0.9]]}))
     gateway = make_gateway(get_pipeline_config(), {"local_sklearn": adapter})
     batch = EntityRef(EntityType.TILE_BATCH, "tb_1", ids=("t_1", "t_2"))
     features = np.zeros((2, 384), dtype=np.float32)
@@ -299,12 +290,12 @@ def test_feature_models_take_features_from_their_declared_producer():
         (ModelInputs(features=np.zeros((0, 384)), features_producer="path_foundation"), "non-empty"),
     ]:
         with pytest.raises(InputContractError, match=message):
-            gateway.invoke(Task.TUMOR_HEAD, "triage_probe", inputs, decision_context(), batch, ProbeScores)
+            gateway.invoke(Task.TUMOR_HEAD, "triage_probe", inputs, decision_context(), batch, ClassProbabilities)
     result = gateway.invoke(
         Task.TUMOR_HEAD, "triage_probe", ModelInputs(features=features, features_producer="path_foundation"),
-        decision_context(), batch, ProbeScores,
+        decision_context(), batch, ClassProbabilities,
     )
-    assert result.output.p == [0.1, 0.9]
+    assert result.output.column(1).tolist() == pytest.approx([0.1, 0.9])
     assert adapter.calls[0][1].features is features
 
 
@@ -549,7 +540,7 @@ def test_failures_are_never_cached():
 
 
 def test_batch_records_list_their_entities_in_a_sidecar():
-    adapter = FakeAdapter(RawResponse(data={"p": [0.2, 0.8]}))
+    adapter = FakeAdapter(RawResponse(data={"classes": [0, 1], "probabilities": [[0.8, 0.2], [0.2, 0.8]]}))
     blobs = InMemoryBlobStore()
     log = DecisionLog()
     gateway = make_gateway(get_pipeline_config(), {"local_sklearn": adapter}, blobs=blobs, log=log)
@@ -559,7 +550,7 @@ def test_batch_records_list_their_entities_in_a_sidecar():
     gateway.invoke(
         Task.TUMOR_HEAD, "triage_probe",
         ModelInputs(features=np.ones((2, 384), dtype=np.float32), features_producer="path_foundation"),
-        decision_context(stage="triage"), batch, ProbeScores,
+        decision_context(stage="triage"), batch, ClassProbabilities,
     )
     (row,) = log.pending()
     assert row["entity_type"] == "tile_batch" and row["entity_id"] == "tb_0001"

@@ -294,3 +294,33 @@ def test_thumbnail_validation_and_404(db_session):
         with pytest.raises(HTTPException) as exc3:
             get_hotspot_thumbnail(case_id=case_id, hotspot_id="hs_unknown", mag="10x", stain="norm", db=db_session)
         assert exc3.value.status_code == 404
+
+
+def test_unreadable_hotspot_patch_is_404_never_synthesised(db_session):
+    """SPEC-01 §3.9: no drawn "histology" when neither the pyramid nor the slide yields the patch."""
+    import json
+
+    case_id, slide_id = "case_thumb_unreadable", "slide_thumb_unreadable"
+    db_session.add(Case(id=case_id, created_by="test", status="processing"))
+    db_session.add(Slide(id=slide_id, case_id=case_id, gcs_uri_original="gs://raw/missing.svs",
+                         mpp_x=0.25, mpp_y=0.25, width_px=1000, height_px=1000))
+    db_session.add(StageExecution(case_id=case_id, stage="triage", attempt=1, status="awaiting_review"))
+    db_session.commit()
+    machine = json.dumps({"hotspots": [{"id": "hs_01", "polygon_um": [[0, 0], [100, 0], [100, 100], [0, 100]]}]})
+
+    def download(bucket, blob):
+        if blob.endswith("triage/output.json"):
+            return machine.encode()
+        raise FileNotFoundError(blob)
+
+    with patch("app.routers.triage.download_blob_as_bytes", side_effect=download), \
+         patch("pipeline.tiles.extract_patch_from_pyramid", return_value=None), \
+         patch("app.routers.triage.download_blob_to_filename", side_effect=FileNotFoundError("gs://raw/missing.svs")), \
+         patch("app.routers.triage.upload_blob_from_bytes") as upload:
+        with pytest.raises(HTTPException) as exc:
+            get_hotspot_thumbnail(case_id=case_id, hotspot_id="hs_01", mag="40x", stain="orig", db=db_session)
+    assert exc.value.status_code == 404
+    assert "could not be read from the slide" in exc.value.detail
+    upload.assert_not_called()
+    import app.routers.triage as triage_router
+    assert not hasattr(triage_router, "generate_synthetic_microscopic_patch")

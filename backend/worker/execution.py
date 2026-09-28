@@ -12,7 +12,6 @@ through ``execute_stage``, so every execution:
 """
 import json
 import traceback
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable
 
@@ -32,17 +31,8 @@ from worker.ingest import run_ingest
 from worker.mitosis import run_mitosis
 from worker.preprocess import run_preprocess
 from worker.qc import run_qc
+from worker.runtime import StageRuntime
 from worker.triage import run_triage
-
-
-@dataclass(frozen=True)
-class StageRuntime:
-    """What a handler receives besides its stage execution and session."""
-
-    config: PipelineConfig
-    ctx: DecisionContext
-    gateway: ModelGateway
-
 
 GatewayFactory = Callable[[PipelineConfig, DecisionLog], ModelGateway]
 StageHandler = Callable[[StageExecution, Session, StageRuntime], tuple[str, dict]]
@@ -66,7 +56,7 @@ STAGE_HANDLERS: dict[str, StageHandler] = {
     "ingest": _without_runtime(run_ingest),
     "preprocess": _without_runtime(run_preprocess),
     "qc": _without_runtime(run_qc),
-    "triage": _without_runtime(run_triage),
+    "triage": run_triage,
     "mitosis": _without_runtime(run_mitosis),
     "grading": _without_runtime(run_grading),
 }

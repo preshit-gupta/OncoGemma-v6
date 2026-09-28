@@ -31,6 +31,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy backend application source
 COPY backend /app/backend
 COPY configs /app/configs
+# Local model artifacts (configs/models.yaml local_sklearn entries). The API's in-process
+# worker and the Cloud Tasks webhook run stages too, and a missing artifact fails them.
+COPY models /app/models
 RUN rm -f /app/backend/.env*
 
 WORKDIR /app/backend

@@ -17,7 +17,6 @@ import json
 import hashlib
 import tempfile
 import uuid
-import yaml
 import numpy as np
 import pytest
 from unittest.mock import MagicMock, patch
@@ -186,52 +185,14 @@ def test_issue_74_thumbnail_shape_mismatch_resizing():
     assert arr.shape == (ny, nx, 3)
 
 
-# --- #452: Parquet embedding cache read and write ---
-def test_issue_452_parquet_cache_roundtrip(tmp_path):
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
-    parquet_file = str(tmp_path / "test_embeddings.parquet")
-    n_patches = 16
-    sampled_cells = [(i, i * 2) for i in range(n_patches)]
-    embeddings = np.random.randn(n_patches, 384).astype(np.float32)
-
-    # Save to parquet with columns ix, iy, emb
-    records = []
-    for idx, emb in enumerate(embeddings):
-        c_ix, c_iy = sampled_cells[idx]
-        records.append({"ix": c_ix, "iy": c_iy, "emb": emb.tolist()})
-
-    import pandas as pd
-    df = pd.DataFrame(records)
-    table = pa.Table.from_pandas(df)
-    pq.write_table(table, parquet_file)
-
-    # Read back
-    read_table = pq.read_table(parquet_file)
-    read_df = read_table.to_pandas()
-    assert "ix" in read_df.columns
-    assert "iy" in read_df.columns
-    assert "emb" in read_df.columns
-    assert len(read_df) == n_patches
-
-    recovered_cells = list(zip(read_df["ix"].astype(int), read_df["iy"].astype(int)))
-    recovered_embs = np.stack(read_df["emb"].values).astype(np.float32)
-
-    assert recovered_cells == sampled_cells
-    np.testing.assert_allclose(recovered_embs, embeddings, rtol=1e-5)
-
-
 # --- #73: Probe metadata honest provenance & real SHA256 ---
 def test_issue_73_probe_provenance_and_sha256():
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
     probe_joblib_path = os.path.join(repo_root, "models/probe/probe_v1.joblib")
     probe_json_path = os.path.join(repo_root, "models/probe/probe_v1.json")
-    triage_yaml_path = os.path.join(repo_root, "configs/triage.yaml")
 
     assert os.path.exists(probe_joblib_path)
     assert os.path.exists(probe_json_path)
-    assert os.path.exists(triage_yaml_path)
 
     # Compute real SHA256 of probe weights
     with open(probe_joblib_path, "rb") as f:
@@ -245,12 +206,12 @@ def test_issue_73_probe_provenance_and_sha256():
     assert "train_auc" not in meta, "Fabricated train_auc must be removed"
     assert meta["weights_sha256"] == real_sha256
 
-    # Verify configs/triage.yaml
-    with open(triage_yaml_path, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    # The registry pins the same bytes; LocalSklearnAdapter refuses any other file.
+    from app.core.pipeline_config import get_pipeline_config
 
-    probe_version = cfg["probe"]["version"]
-    assert real_sha256 in probe_version, f"triage.yaml version must contain real sha256 {real_sha256}"
+    probe_entry = get_pipeline_config().models.models[get_pipeline_config().triage.tumor_model]
+    assert probe_entry.artifact_uri == "models/probe/probe_v1.joblib"
+    assert probe_entry.artifact_sha256 == real_sha256
 
 
 # --- #448: apply_edit_ops processes delete operation ---

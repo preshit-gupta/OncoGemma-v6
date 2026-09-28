@@ -16,28 +16,22 @@ Update this file at the end of every session (SPEC plan §3 rule 8). Keep it und
   - `backend/alembic/` (`0001_v5_baseline`, `0002_drop_v5_reports`; the owner approved deleting `reports` on 2026-09-28), CI `.github/workflows/migrations.yml`. API startup (`ENV != test`) runs `upgrade_to_head` under a Postgres advisory lock and refuses unversioned databases. `create_all` and the v5 startup DDL are gone.
   - `PipelineConfig` (every `configs/*.yaml` and prompt, strict, hashed; load failure aborts startup) and `ModelRegistry` (`configs/models.yaml`; Vertex versions are verified deployments `models/<id>@<ver>@<deploy date>`; `${NAME}` from an allowlist of Settings fields).
 - **Suite fixes** (PR #3): the fake GCS store uses extended-length paths on Windows; `RUN_IN_PROCESS_WORKER` (off in conftest) stops the lifespan worker racing `TestClient`. Suite on `main` (`6611ceb`): 439 passed, 1 skipped.
-- **WP-2.3a** (branch `wp/2.3-decision-gateway`, PR open): gateway foundations; no stage calls the gateway yet.
+- **WP-2.3a** (PR #6, open): gateway foundations.
   - `0003_decision_records`, `0004_stage_run_mode` (existing rows become `clinical`), verified on Postgres 15. `app/core/{run_context,tasks,fallbacks}.py`, empty `configs/fallbacks.yaml`, registry `call_policy`, VLM `params`/`schema_retries`, Gemini `region`.
   - `app/inference/gateway.py`: contract checks (incl. decoded image size), transport-only retries with full jitter, strict parsing, cache, one record per attempt, EVAL refuses Gemini aliases, `invoke_or_fallback`. `adapters/vertex_genai.py` uses `response_json_schema`.
   - `worker/execution.py`: one `execute_stage` for poll loop, Cloud Run job and webhook (which now stamps `config_hash`); handlers get a `StageRuntime`; records survive a failed stage; `error` is JSON. conftest `forbid_real_google_credentials` fails any test asking for ADC. Suite: 587 passed, 1 skipped.
+- **WP-2.3b** (PR open, stacked on #6): triage on the gateway. PF (`path_foundation_v1`, raw predict, batches within registry `limits`), probe (`local_sklearn`, sha256-pinned artifact) and the tumour referee (MedGemma `medgemma_chat_v1`, `tumor_verification@v2.md`, strict `TumorVerdict`). MedGemma's request format was verified with one owner-approved test call (2026-09-28). Deleted: random/mock embeddings, parquet cache (now the gateway cache), runtime probe training, synthetic crops and thumbnails, the colour-threshold tumour fallback. `Dockerfile.api` copies `models/`. Suite: 645 passed, 1 skipped; literal baseline 319 → 295.
 
 ## Ready for delegates now
 
-Lanes are in `docs/tasks/README.md`.
-
-| Lane | Ready |
-|---|---|
-| E | WP-7.1 |
-| B | WP-4.2 (in progress), then 6.4, 7.7, 8.5, 9.2 |
+Lanes are in `docs/tasks/README.md`. Lane B (frontend) merged WP-4.2, 6.4, 7.7, 8.5 and 9.2. Lane E: WP-7.1.
 
 ## Claude — next
 
-1. **WP-2.3b/c/d**, stacked on 2.3a: move triage, then mitosis, then grading onto the gateway (`runtime.gateway`), deleting each stage's SPEC-01 §3.9 fallbacks and its `_without_runtime` wrapper in the same PR; 2.3d deletes `pipeline/medgemma.py`. Carry-overs:
-   - Handlers read `runtime.config`; remove `yaml.safe_load` in `worker/{mitosis,triage}.py`, `pipeline/{scoring,grading,qc_checks}.py`, `routers/grading.py` and the `medgemma.py` prompt loader.
-   - `model_versions` from `registry.version_of()`; then remove the Settings endpoint/model fields and `USE_MOCK_VERTEX_AI`.
-   - `worker/triage.py` swallows Path Foundation cache errors (`except Exception`); raise instead.
-   - Registry `wire_format` per Vertex endpoint model (PF raw predict, KongNet predict, MedGemma chat); verify MedGemma's request format before 2.3b ships.
-   - `configs/models.yaml` `gemini_referee` uses the alias `gemini-2.5-flash`, so EVAL refuses it until the owner pins a version.
+1. **WP-2.3c** (mitosis: KongNet `kongnet_midog_v1`, Gemini referee with strict `MitosisVerdict`) then **2.3d** (grading, delete `pipeline/medgemma.py`, `Grading.histologic_type` nullable, remove `USE_MOCK_VERTEX_AI` and Settings model fields). Carry-overs:
+   - Handlers read `runtime.config`; remove `yaml.safe_load` in `worker/mitosis.py`, `pipeline/{scoring,grading,qc_checks}.py`, `routers/grading.py` and the `medgemma.py` prompt loader.
+   - Left for M3 (WP-3.3/3.4) in triage: the swallowed tissue-mask and stain-normaliser loads, per-patch normalisation falling back to the original, and the centre-region tissue fallback.
+   - `gemini_referee` uses the alias `gemini-2.5-flash`, so EVAL refuses it until the owner pins a version.
 2. **M3** (3.1 → 3.4), then **4.1**.
 
 ## Open items (program owner)

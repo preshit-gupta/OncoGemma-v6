@@ -1,182 +1,249 @@
-import os
-import shutil
-import tempfile
+"""Triage stage on the model gateway (SPEC-01 §3.4, §3.9; WP-2.3b).
+
+Path Foundation and the referee are fakes; the tumour classifier is the real local
+artifact (models/probe/probe_v1.joblib) through LocalSklearnAdapter.
+"""
+import hashlib
+import json
+import uuid
+
+import numpy as np
 import pytest
-from unittest.mock import MagicMock
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.models import Case, Slide, StageExecution, AuditEvent, Hotspot
+from app.core.config import settings
 from app.core.db import Base
+from app.core.gcs import download_blob_as_bytes
+from app.core.pipeline_config import get_pipeline_config
+from app.inference.adapters.base import RawResponse, TransientCallError
+from app.inference.adapters.local_sklearn import LocalSklearnAdapter
+from app.inference.errors import ModelUnavailableError, SchemaInvalidError
+from app.inference.records import DecisionLog
+from app.models import Case, Slide, StageExecution
+from pipeline.errors import SlideReadError
+from tests.fakes.gateway import FakeAdapter, InMemoryBlobStore, json_text
+from tests.fakes.runtime import make_runtime
+from tests.fakes.slide import FakeOpenSlide, install_fake_slide
 from worker.triage import run_triage
+
+WIDTH_PX, HEIGHT_PX, MPP = 2400, 1800, 0.5
+EMBEDDING_DIM = 384
 
 
 @pytest.fixture
 def db_session():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(bind=engine)
-    Session = sessionmaker(bind=engine)
-    session = Session()
+    session = sessionmaker(bind=engine)()
     yield session
     session.close()
 
 
-@pytest.fixture
-def synthetic_triage_env(monkeypatch):
-    """
-    Ensure run_triage uses mock GCS and mock Vertex AI by default,
-    guaranteeing completely offline execution.
-    """
-    from app.core.config import settings
-    monkeypatch.setattr(settings, "USE_REAL_GCS", False)
-    monkeypatch.setattr(settings, "USE_MOCK_VERTEX_AI", True)
-    return settings
-
-
-def test_run_triage_stage_e2e(db_session, tmp_path, synthetic_triage_env, monkeypatch):
-    case_id = "test_case_triage_123"
-    slide_id = "test_slide_triage_456"
-
-    # Seed Case & Slide with created_by
-    case = Case(id=case_id, created_by="test_user", status="processing")
-    slide = Slide(
-        id=slide_id,
-        case_id=case_id,
-        gcs_uri_original="gs://raw/test.svs",
-        mpp_x=0.25,
-        mpp_y=0.25,
-        width_px=10000,
-        height_px=10000
+def seed(db_session, **slide_overrides):
+    case_id, slide_id = uuid.uuid4(), uuid.uuid4()
+    raw_uri = f"gs://{settings.GCS_RAW_BUCKET}/cases/{case_id}/{slide_id}.svs"
+    slide_values = {
+        "id": slide_id, "case_id": case_id, "gcs_uri_original": raw_uri,
+        "mpp_x": MPP, "mpp_y": MPP, "width_px": WIDTH_PX, "height_px": HEIGHT_PX,
+    }
+    slide_values.update(slide_overrides)
+    stage = StageExecution(
+        id=uuid.uuid4(), case_id=case_id, stage="triage", attempt=1, status="running",
+        input_ref={"slide_id": str(slide_id)},
     )
-    stage_exec = StageExecution(
-        case_id=case_id,
-        stage="triage",
-        attempt=1,
-        status="running",
-        input_ref={"slide_id": slide_id}
-    )
-    db_session.add(case)
-    db_session.add(slide)
-    db_session.add(stage_exec)
+    db_session.add_all([Case(id=case_id, created_by="triage_test"), Slide(**slide_values), stage])
     db_session.commit()
-
-    # Run triage worker handler
-    output_ref, model_versions = run_triage(stage_exec, db_session)
-
-    assert "triage/output.json" in output_ref
-    assert model_versions["path_foundation"] == "v1"
-    assert stage_exec.status == "awaiting_review"
-
-    # Verify second run uses cached parquet embeddings (0 new endpoint calls) (#459)
-    def fail_if_endpoint_called(*args, **kwargs):
-        raise AssertionError("Vertex AI endpoint should NOT be invoked when embeddings are cached in parquet!")
-
-    monkeypatch.setattr("worker.triage.mock_vertex_ai_endpoint", fail_if_endpoint_called)
-
-    stage_exec.status = "running"
-    db_session.commit()
-
-    output_ref_2, _ = run_triage(stage_exec, db_session)
-    assert output_ref_2 == output_ref
+    return stage, raw_uri
 
 
-def test_triage_worker_raises_cleanly_when_mock_disabled(db_session, monkeypatch):
-    """
-    Issue #71 & #72:
-    On Vertex AI failure, only use mock fallback if settings.USE_MOCK_VERTEX_AI is true;
-    otherwise raise/fail the stage cleanly instead of substituting random noise.
-    """
-    from app.core.config import settings
+def embed(request):
+    """Deterministic 384-d vectors derived from each tile's bytes."""
+    rows = []
+    for image in request.images:
+        seed_value = int(hashlib.sha256(image.data).hexdigest()[:8], 16)
+        rows.append(np.random.default_rng(seed_value).standard_normal(EMBEDDING_DIM).tolist())
+    return RawResponse(data={"embeddings": rows})
 
-    monkeypatch.setattr(settings, "USE_MOCK_VERTEX_AI", False)
-    monkeypatch.setattr(settings, "VERTEX_PATH_FOUNDATION_ENDPOINT_ID", "")
 
-    case_id = "test_case_triage_fail"
-    slide_id = "test_slide_triage_fail"
-    case = Case(id=case_id, created_by="test_user", status="processing")
-    slide = Slide(
-        id=slide_id,
-        case_id=case_id,
-        gcs_uri_original="gs://raw/test.svs",
-        mpp_x=0.25,
-        mpp_y=0.25,
-        width_px=1000,
-        height_px=1000
+def alternating_referee():
+    calls = {"n": 0}
+
+    def answer(request):
+        calls["n"] += 1
+        tumour = calls["n"] % 2 == 1
+        return json_text({
+            "tumor_present": tumour,
+            "lesion_type": "invasive_carcinoma" if tumour else "benign_stroma",
+            "rationale": "fake referee",
+        })
+
+    return answer
+
+
+def adapters(pf=None, referee=None, sklearn=None):
+    return {
+        "vertex_endpoint_raw_predict": pf or FakeAdapter(then=embed),
+        "vertex_endpoint_predict": referee or FakeAdapter(then=alternating_referee()),
+        "local_sklearn": sklearn or LocalSklearnAdapter(),
+    }
+
+
+def output_json(stage_execution) -> dict:
+    return json.loads(download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{stage_execution.case_id}/triage/output.json"))
+
+
+def test_triage_runs_on_the_gateway_and_records_every_decision(db_session, monkeypatch):
+    stage, raw_uri = seed(db_session)
+    slide = install_fake_slide(monkeypatch, FakeOpenSlide(WIDTH_PX, HEIGHT_PX), raw_uri)
+    pf = FakeAdapter(then=embed)
+    log = DecisionLog()
+    runtime = make_runtime(stage, adapters(pf=pf), log=log)
+
+    output_ref, model_versions = run_triage(stage, db_session, runtime)
+
+    config = get_pipeline_config()
+    registry = config.models
+    assert output_ref.endswith(f"cases/{stage.case_id}/triage/output.json")
+    assert stage.status == "awaiting_review"
+    assert model_versions == {
+        "path_foundation": registry.version_of("path_foundation"),
+        "triage_probe": registry.version_of("triage_probe"),
+        "medgemma": registry.version_of("medgemma"),
+    }
+    assert slide.closed
+
+    rows = log.pending()
+    by_task = {task: [r for r in rows if r["task"] == task] for task in ("pf_embed", "tumor_head", "tumor_referee")}
+    assert {r["status"] for r in rows} == {"ok"} and len(rows) == sum(len(v) for v in by_task.values())
+
+    # Tiles: batches within the registry limits, each tile sent at the contract resolution.
+    limits = registry.models["path_foundation"].limits
+    sent = [len(request.images) for _, request, _ in pf.calls]
+    assert sent and max(sent) <= limits.max_batch
+    assert len(by_task["pf_embed"]) == len(pf.calls)
+    assert all(r["entity_type"] == "tile_batch" and r["entity_ids_uri"] for r in by_task["pf_embed"])
+    tile_specs = [spec for r in by_task["pf_embed"] for spec in r["input_spec"]["images"]]
+    assert all(abs(s["mpp"] - 1.0) <= 0.02 and s["size_px"] == [224, 224] for s in tile_specs)
+
+    # One classifier record over every tile.
+    (head,) = by_task["tumor_head"]
+    assert head["producer_id"] == "triage_probe" and head["input_spec"]["features"]["shape"] == [sum(sent), 384]
+
+    # Every candidate was refereed, and each hotspot links to its referee record.
+    output = output_json(stage)
+    referees = by_task["tumor_referee"]
+    assert referees and all(r["prompt_id"] == "tumor_verification@v2.md" for r in referees)
+    record_ids = {str(r["id"]) for r in referees}
+    assert output["hotspots"]
+    for hotspot in output["hotspots"]:
+        assert hotspot["referee"]["record_id"] in record_ids
+        assert hotspot["referee"]["producer_id"] == "medgemma"
+        assert isinstance(hotspot["referee"]["tumor_present"], bool)
+    # Confirmed tumour first.
+    flags = [h["referee"]["tumor_present"] for h in output["hotspots"]]
+    assert flags == sorted(flags, reverse=True)
+    assert output["model_versions"] == model_versions
+    assert output["audit"]["endpoint_calls_made"] == sum(sent)
+
+
+def test_second_run_is_served_from_the_gateway_cache(db_session, monkeypatch):
+    stage, raw_uri = seed(db_session)
+    install_fake_slide(monkeypatch, FakeOpenSlide(WIDTH_PX, HEIGHT_PX), raw_uri)
+    pf, blobs = FakeAdapter(then=embed), InMemoryBlobStore()
+    run_triage(stage, db_session, make_runtime(stage, adapters(pf=pf), blobs=blobs))
+    calls_after_first = len(pf.calls)
+
+    stage.status = "running"
+    log = DecisionLog()
+    run_triage(stage, db_session, make_runtime(stage, adapters(pf=pf), blobs=blobs, log=log))
+
+    assert len(pf.calls) == calls_after_first
+    embeds = [r for r in log.pending() if r["task"] == "pf_embed"]
+    assert embeds and all(r["cache_hit"] for r in embeds)
+    assert output_json(stage)["audit"]["endpoint_calls_made"] == 0
+
+
+def test_unreadable_slide_fails_instead_of_synthesising_tissue(db_session, monkeypatch):
+    import openslide
+
+    stage, raw_uri = seed(db_session)
+    install_fake_slide(monkeypatch, FakeOpenSlide(WIDTH_PX, HEIGHT_PX), raw_uri)
+
+    def unreadable(path):
+        raise openslide.OpenSlideUnsupportedFormatError("Unsupported or missing image file")
+
+    monkeypatch.setattr(openslide, "OpenSlide", unreadable)
+    pf = FakeAdapter(then=embed)
+    with pytest.raises(SlideReadError, match="could not open slide"):
+        run_triage(stage, db_session, make_runtime(stage, adapters(pf=pf)))
+    assert pf.calls == []
+
+
+def test_region_read_errors_fail_the_stage(db_session, monkeypatch):
+    import openslide
+
+    stage, raw_uri = seed(db_session)
+    slide = install_fake_slide(monkeypatch, FakeOpenSlide(WIDTH_PX, HEIGHT_PX), raw_uri)
+
+    def broken(location, level, size):
+        raise openslide.OpenSlideError("TIFFRGBAImageGet failed")
+
+    slide.read_region = broken
+    with pytest.raises(SlideReadError, match="TIFFRGBAImageGet failed"):
+        run_triage(stage, db_session, make_runtime(stage, adapters()))
+
+
+def test_missing_slide_dimensions_are_refused(db_session, monkeypatch):
+    stage, _ = seed(db_session, width_px=None)
+    with pytest.raises(ValueError, match="no pixel dimensions"):
+        run_triage(stage, db_session, make_runtime(stage, adapters()))
+
+
+def test_embedding_outage_fails_the_stage(db_session, monkeypatch):
+    stage, raw_uri = seed(db_session)
+    install_fake_slide(monkeypatch, FakeOpenSlide(WIDTH_PX, HEIGHT_PX), raw_uri)
+    log = DecisionLog()
+    runtime = make_runtime(stage, adapters(pf=FakeAdapter(then=TransientCallError("503"))), log=log)
+    with pytest.raises(ModelUnavailableError) as raised:
+        run_triage(stage, db_session, runtime)
+    assert raised.value.task == "pf_embed" and raised.value.producer_id == "path_foundation"
+    assert {r["status"] for r in log.pending()} == {"unavailable"}
+
+
+def test_missing_classifier_artifact_is_unavailable(db_session, monkeypatch, tmp_path):
+    stage, raw_uri = seed(db_session)
+    install_fake_slide(monkeypatch, FakeOpenSlide(WIDTH_PX, HEIGHT_PX), raw_uri)
+    runtime = make_runtime(stage, adapters(sklearn=LocalSklearnAdapter(root=tmp_path)))
+    with pytest.raises(ModelUnavailableError, match="does not exist"):
+        run_triage(stage, db_session, runtime)
+    # Nothing is trained in its place.
+    assert not (tmp_path / "models").exists()
+
+
+def test_invalid_referee_answer_fails_the_stage(db_session, monkeypatch):
+    stage, raw_uri = seed(db_session)
+    install_fake_slide(monkeypatch, FakeOpenSlide(WIDTH_PX, HEIGHT_PX), raw_uri)
+    referee = FakeAdapter(then=json_text({"tumor_present": True, "lesion_type": "invasive_carcinoma",
+                                          "cellularity": "high", "confidence": "high", "rationale": "v1 shape"}))
+    with pytest.raises(SchemaInvalidError):
+        run_triage(stage, db_session, make_runtime(stage, adapters(referee=referee)))
+
+
+def test_allowed_referee_outage_leaves_candidates_unverified(db_session, monkeypatch):
+    config = get_pipeline_config()
+    policy = config.fallbacks.model_validate(
+        {"fallbacks": [{"task": "tumor_referee", "on": ["ModelUnavailableError"], "to": None}]}
     )
-    stage_exec = StageExecution(
-        case_id=case_id,
-        stage="triage",
-        attempt=1,
-        status="running",
-        input_ref={"slide_id": slide_id}
-    )
-    db_session.add(case)
-    db_session.add(slide)
-    db_session.add(stage_exec)
-    db_session.commit()
+    config = config.model_copy(update={"fallbacks": policy})
+    stage, raw_uri = seed(db_session)
+    install_fake_slide(monkeypatch, FakeOpenSlide(WIDTH_PX, HEIGHT_PX), raw_uri)
+    log = DecisionLog()
+    runtime = make_runtime(stage, adapters(referee=FakeAdapter(then=TransientCallError("503"))), config=config, log=log)
 
-    with pytest.raises(RuntimeError, match="(Could not extract real|Endpoint ID is required)"):
-        run_triage(stage_exec, db_session)
+    run_triage(stage, db_session, runtime)
 
-
-def test_vertex_path_foundation_client_ignores_dedicated_prediction_dns_in_init(monkeypatch):
-    """
-    Ensure dedicated prediction endpoints (*.prediction.vertexai.goog) are never
-    passed to aiplatform.init() as control plane api_endpoint (which causes 501 UNIMPLEMENTED).
-    """
-    from worker.triage import VertexPathFoundationClient
-    from app.core.config import settings
-    from PIL import Image
-
-    monkeypatch.setattr(settings, "USE_MOCK_VERTEX_AI", False)
-
-    captured_init_kwargs = {}
-
-    class MockEndpoint:
-        def __init__(self, endpoint_name, project, location):
-            self.endpoint_name = endpoint_name
-            self.project = project
-            self.location = location
-
-        def raw_predict(self, body, headers):
-            class MockResponse:
-                def json(self):
-                    return {
-                        "predictions": [
-                            {"result": {"patch_embeddings": [{"embedding_vector": [0.1] * 384}]}}
-                        ]
-                    }
-            return MockResponse()
-
-    def mock_aiplatform_init(**kwargs):
-        nonlocal captured_init_kwargs
-        captured_init_kwargs = kwargs
-
-    import google.cloud.aiplatform as mock_aiplatform
-    monkeypatch.setattr(mock_aiplatform, "init", mock_aiplatform_init)
-    monkeypatch.setattr(mock_aiplatform, "Endpoint", MockEndpoint)
-
-    # 1. Test with dedicated prediction endpoint DNS -> must NOT be in init kwargs
-    client = VertexPathFoundationClient(
-        endpoint_id="mg-endpoint-test",
-        location="asia-south1",
-        project_id="oncogemma",
-        api_endpoint="mg-endpoint-test.asia-south1-962838713357.prediction.vertexai.goog"
-    )
-    patches = [Image.new("RGB", (224, 224), (200, 200, 200))]
-    embs = client.predict_embeddings(patches=patches)
-    assert embs.shape == (1, 384)
-    assert "api_endpoint" not in captured_init_kwargs
-    assert captured_init_kwargs["project"] == "oncogemma"
-    assert captured_init_kwargs["location"] == "asia-south1"
-
-    # 2. Test with control plane endpoint -> allowed in init kwargs
-    client2 = VertexPathFoundationClient(
-        endpoint_id="mg-endpoint-test",
-        location="asia-south1",
-        project_id="oncogemma",
-        api_endpoint="asia-south1-aiplatform.googleapis.com"
-    )
-    client2.predict_embeddings(patches=patches)
-    assert captured_init_kwargs.get("api_endpoint") == "asia-south1-aiplatform.googleapis.com"
-
+    hotspots = output_json(stage)["hotspots"]
+    assert hotspots and all(h["referee"]["tumor_present"] is None and h["referee"]["needs_human"] for h in hotspots)
+    fallbacks = [r for r in log.pending() if r["producer_kind"] == "fallback"]
+    assert fallbacks and {r["task"] for r in fallbacks} == {"tumor_referee"}

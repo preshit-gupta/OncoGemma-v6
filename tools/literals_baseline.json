@@ -177,16 +177,6 @@
   {
     "path": "backend/app/routers/triage.py",
     "rule": "L1",
-    "line_hash": "32770ec2b1d2ee1499a65d251810720f517e34a6"
-  },
-  {
-    "path": "backend/app/routers/triage.py",
-    "rule": "L1",
-    "line_hash": "594ad856a319273c0c08b58ec0397ea298040a33"
-  },
-  {
-    "path": "backend/app/routers/triage.py",
-    "rule": "L1",
     "line_hash": "dbafbaca2a712f414d897d02f5be2383c29cfc2f"
   },
   {
@@ -506,11 +496,6 @@
   },
   {
     "path": "backend/pipeline/medgemma.py",
-    "rule": "L1",
-    "line_hash": "de29d0632ee23cd93802dc3dc50b1c4f200360b5"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
     "rule": "L2",
     "line_hash": "0dc3c7e17dd2ffa54427bfca4c20406f7ed273c8"
   },
@@ -642,52 +627,17 @@
   {
     "path": "backend/pipeline/medgemma.py",
     "rule": "L4",
-    "line_hash": "3a6764f5b4cb3d0e351ae66ddad2d29ccb81a6b0"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "3a6764f5b4cb3d0e351ae66ddad2d29ccb81a6b0"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "3a6764f5b4cb3d0e351ae66ddad2d29ccb81a6b0"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
     "line_hash": "42d2f56022143101e57017e8d4294b18e592aa6f"
   },
   {
     "path": "backend/pipeline/medgemma.py",
     "rule": "L4",
-    "line_hash": "48ebd91a41152b55800efb482882bda166624a5a"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
     "line_hash": "56124aa1155f022c6674860423207d601fc8dce1"
   },
   {
     "path": "backend/pipeline/medgemma.py",
     "rule": "L4",
     "line_hash": "56124aa1155f022c6674860423207d601fc8dce1"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "5ea3855ddf5e199a1ed6fac864161637cfd40a96"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "5ea3855ddf5e199a1ed6fac864161637cfd40a96"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "5ea3855ddf5e199a1ed6fac864161637cfd40a96"
   },
   {
     "path": "backend/pipeline/medgemma.py",
@@ -743,11 +693,6 @@
     "path": "backend/pipeline/medgemma.py",
     "rule": "L4",
     "line_hash": "92ae11581aa92642d091ab2da6e6a62966abda76"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "950feec49a31571bb4e8f499343d7feb2dc46936"
   },
   {
     "path": "backend/pipeline/medgemma.py",
@@ -837,17 +782,7 @@
   {
     "path": "backend/pipeline/medgemma.py",
     "rule": "L4",
-    "line_hash": "dcb263cd1ac02100723484ac264288bc3107059e"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
     "line_hash": "df8a72e47019ef7fb75f2ec05d150e9238346a1e"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "e1bc35870cc3e1a0e57c23e834b9b0be937250a5"
   },
   {
     "path": "backend/pipeline/medgemma.py",
@@ -857,17 +792,7 @@
   {
     "path": "backend/pipeline/medgemma.py",
     "rule": "L4",
-    "line_hash": "f48ebba00769ad6210fd719e252d2e18c053a9db"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
     "line_hash": "f5d5e317e27aff6ac829fe0a828008bac42df0ce"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "f91e2b54118533dc74930926932fd26cfa56cf91"
   },
   {
     "path": "backend/pipeline/qc_checks.py",
@@ -1547,51 +1472,6 @@
   {
     "path": "backend/worker/triage.py",
     "rule": "L1",
-    "line_hash": "32770ec2b1d2ee1499a65d251810720f517e34a6"
-  },
-  {
-    "path": "backend/worker/triage.py",
-    "rule": "L1",
-    "line_hash": "594ad856a319273c0c08b58ec0397ea298040a33"
-  },
-  {
-    "path": "backend/worker/triage.py",
-    "rule": "L1",
     "line_hash": "e8a955ec9a8c1f7aaf58604c2f7da65992c84ed5"
-  },
-  {
-    "path": "backend/worker/triage.py",
-    "rule": "L1",
-    "line_hash": "ead6e704c4e1a1cff54bae94dc36005c72bf4532"
-  },
-  {
-    "path": "backend/worker/triage.py",
-    "rule": "L2",
-    "line_hash": "0a0475ad5df1ddf861cc933eaa07c4acdc685391"
-  },
-  {
-    "path": "backend/worker/triage.py",
-    "rule": "L2",
-    "line_hash": "1454ba13427e675f79f1fe64a62d00110e254a0e"
-  },
-  {
-    "path": "backend/worker/triage.py",
-    "rule": "L2",
-    "line_hash": "3bf114154dae2ea870773a21f9e0e975cb5bcf2c"
-  },
-  {
-    "path": "backend/worker/triage.py",
-    "rule": "L2",
-    "line_hash": "9b602677b46f4e6a1795b3eba1ab9a5d328b79c5"
-  },
-  {
-    "path": "backend/worker/triage.py",
-    "rule": "L2",
-    "line_hash": "9df1af2fc66a59d5e24cdd98032e6a33bd5a403c"
-  },
-  {
-    "path": "backend/worker/triage.py",
-    "rule": "L2",
-    "line_hash": "cfd327d9b3c407c9c3f27793cd58fb81f5192809"
   }
 ]

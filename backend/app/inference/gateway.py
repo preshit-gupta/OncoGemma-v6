@@ -41,6 +41,7 @@ from app.inference.adapters.base import (
     CallTimeout,
     RawResponse,
     TransientCallError,
+    Unavailable,
 )
 from app.inference.blobs import BlobStore
 from app.inference.errors import (
@@ -526,6 +527,8 @@ class ModelGateway:
                 continue
             except CallRejected as exc:
                 self._fail(call, ModelCallError, str(exc), self._ms_since(started))
+            except Unavailable as exc:
+                self._fail(call, ModelUnavailableError, str(exc), self._ms_since(started))
             latency_ms = self._ms_since(started)
 
             raw_uri = None

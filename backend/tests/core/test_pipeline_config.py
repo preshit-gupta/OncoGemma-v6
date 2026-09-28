@@ -151,6 +151,25 @@ def test_files_that_disagree_are_rejected(tmp_path):
         load(configs)
 
 
+@pytest.mark.parametrize(
+    "edit, message",
+    [
+        (lambda d: d.update(embedding_model="medgemma"), "embedding_model 'medgemma' must be an embedding model"),
+        (lambda d: d.update(embedding_model="missing"), "embedding_model 'missing'"),
+        (lambda d: d.update(tumor_model="path_foundation"), "tumor_model 'path_foundation' must be a classifier"),
+        (lambda d: d["tumor_referee"].update(producer="triage_probe"), "must be a VLM"),
+        (lambda d: d["tumor_referee"].update(prompt="tumor_verification@v9.md"), "is not in configs/prompts"),
+        (lambda d: d["tumor_referee"].update(candidates=5), "at least hotspot_extraction.max_hotspots"),
+        (lambda d: d.update(vertex_ai={"batch_size": 64}), "vertex_ai"),
+    ],
+)
+def test_triage_models_must_exist_in_the_registry(tmp_path, edit, message):
+    configs = copy_configs(tmp_path)
+    edit_yaml(configs / "triage.yaml", edit)
+    with pytest.raises(ConfigLoadError, match=message):
+        load(configs)
+
+
 def test_duplicate_yaml_key_is_rejected(tmp_path):
     configs = copy_configs(tmp_path)
     text = (configs / "triage.yaml").read_text(encoding="utf-8")

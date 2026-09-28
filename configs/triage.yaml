@@ -4,15 +4,17 @@ patch_size_px: 224 # 224x224 patch grid
 tissue_threshold_pct: 0.25 # Keep patch if >= 25% tissue mask coverage
 max_sample_patches: 2048 # High-resolution Smart Scout tissue sampling for Path Foundation (non-overlapping)
 
-vertex_ai:
-  batch_size: 64 # Batched embedding request size
-  concurrency: 8 # Max concurrent HTTP requests
-  max_retries: 5 # Exponential backoff retry count
+# Registry keys (configs/models.yaml), which also hold versions, request limits and artifacts.
+embedding_model: path_foundation # 224x224 tile embeddings at 1.0 µm/px
+tumor_model: triage_probe # classifier over the embeddings
 
-probe:
-  model_name: "probe_v1"
-  model_path: "models/probe/probe_v1.joblib"
-  version: "probe_v1@sha256:3093ac4158633a05b8c570f479c2d448d0bf25beeb2fce77b90641ac75409734"
+# VLM check of candidate hotspots before the top max_hotspots are kept (SPEC-05 §5.4 arm).
+tumor_referee:
+  producer: medgemma
+  prompt: tumor_verification@v2.md
+  candidates: 20
+  field_um: 512.0 # 512 x 512 µm field ...
+  size_px: 512 # ... at ~1.0 µm/px, as the prompt states
 
 hotspot_extraction:
   sigma: 1.0 # Gaussian filter smoothing (~100 µm radius)

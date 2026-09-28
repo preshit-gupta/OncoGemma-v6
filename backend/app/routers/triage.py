@@ -256,97 +256,6 @@ def get_triage_heatmap_image(case_id: str, db: Session = Depends(get_db)):
         )
 
 
-def generate_synthetic_microscopic_patch(mag: str, stain: str, seed_str: str) -> bytes:
-    import hashlib
-    seed = int(hashlib.md5(seed_str.encode()).hexdigest()[:8], 16) % 10000
-    np.random.seed(seed)
-    
-    canvas = np.zeros((512, 512, 3), dtype=np.uint8)
-    
-    if stain == "norm":
-        bg_color = np.array([245, 230, 238], dtype=np.float32)
-        nuc_color = np.array([55, 18, 105], dtype=np.float32)
-        cyto_color = np.array([225, 145, 180], dtype=np.float32)
-        mit_color = np.array([30, 5, 75], dtype=np.float32)
-    else:
-        bg_color = np.array([240, 222, 215], dtype=np.float32)
-        nuc_color = np.array([80, 28, 55], dtype=np.float32)
-        cyto_color = np.array([205, 128, 140], dtype=np.float32)
-        mit_color = np.array([50, 15, 35], dtype=np.float32)
-
-    canvas[:, :] = bg_color.astype(np.uint8)
-    
-    if mag == "10x":
-        for g in range(14):
-            gx = np.random.randint(40, 470)
-            gy = np.random.randint(40, 470)
-            gr = np.random.randint(35, 75)
-            y, x = np.ogrid[:512, :512]
-            mask = ((x - gx)**2 + (y - gy)**2) <= gr**2
-            canvas[mask] = (0.6 * canvas[mask] + 0.4 * cyto_color).astype(np.uint8)
-            for n in range(70):
-                nx = int(np.clip(gx + np.random.normal(0, gr * 0.5), 0, 511))
-                ny = int(np.clip(gy + np.random.normal(0, gr * 0.5), 0, 511))
-                nr = np.random.randint(2, 4)
-                n_mask = ((x - nx)**2 + (y - ny)**2) <= nr**2
-                canvas[n_mask] = nuc_color.astype(np.uint8)
-                
-    elif mag == "20x":
-        for g in range(4):
-            gx = np.random.randint(100, 412)
-            gy = np.random.randint(100, 412)
-            gr = np.random.randint(80, 140)
-            y, x = np.ogrid[:512, :512]
-            mask = ((x - gx)**2 + (y - gy)**2) <= gr**2
-            canvas[mask] = (0.5 * canvas[mask] + 0.5 * cyto_color).astype(np.uint8)
-            l_mask = ((x - gx)**2 + (y - gy)**2) <= (gr * 0.35)**2
-            canvas[l_mask] = bg_color.astype(np.uint8)
-            for n in range(130):
-                ang = np.random.uniform(0, 2 * np.pi)
-                rad = np.random.uniform(gr * 0.35, gr * 0.95)
-                nx = int(np.clip(gx + rad * np.cos(ang), 0, 511))
-                ny = int(np.clip(gy + rad * np.sin(ang), 0, 511))
-                nr = np.random.randint(4, 7)
-                n_mask = ((x - nx)**2 + (y - ny)**2) <= nr**2
-                canvas[n_mask] = nuc_color.astype(np.uint8)
-                
-    else: # 40x
-        y, x = np.ogrid[:512, :512]
-        canvas[:] = (0.3 * bg_color + 0.7 * cyto_color).astype(np.uint8)
-        for n in range(24):
-            nx = np.random.randint(60, 452)
-            ny = np.random.randint(60, 452)
-            nr_x = np.random.randint(14, 28)
-            nr_y = np.random.randint(12, 24)
-            rot = np.random.uniform(0, np.pi)
-            
-            cos_t, sin_t = np.cos(rot), np.sin(rot)
-            x_rot = cos_t * (x - nx) + sin_t * (y - ny)
-            y_rot = -sin_t * (x - nx) + cos_t * (y - ny)
-            n_mask = ((x_rot / nr_x)**2 + (y_rot / nr_y)**2) <= 1.0
-            canvas[n_mask] = nuc_color.astype(np.uint8)
-            
-            for k in range(3):
-                cx_k = nx + np.random.randint(-nr_x // 3, nr_x // 3)
-                cy_k = ny + np.random.randint(-nr_y // 3, nr_y // 3)
-                k_mask = ((x - cx_k)**2 + (y - cy_k)**2) <= 3**2
-                canvas[k_mask & n_mask] = (nuc_color * 0.5).astype(np.uint8)
-
-        for m in range(3):
-            mx = 160 + m * 110 + np.random.randint(-15, 15)
-            my = 220 + np.random.randint(-40, 40)
-            for seg in range(6):
-                sx = mx + np.random.randint(-12, 12)
-                sy = my + np.random.randint(-12, 12)
-                s_mask = ((x - sx)**2 + (y - sy)**2) <= np.random.randint(5, 9)**2
-                canvas[s_mask] = mit_color.astype(np.uint8)
-                
-    img = Image.fromarray(canvas)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
-
-
 @router.get("/{case_id}/hotspots/{hotspot_id}/thumbnail")
 def get_hotspot_thumbnail(
     case_id: str, 
@@ -461,8 +370,10 @@ def get_hotspot_thumbnail(
     if slide_obj:
         from pipeline.tiles import extract_patch_from_pyramid
         slide_id = str(slide_obj.id)
-        width_px = int(getattr(slide_obj, "width_px", 20000) or 20000)
-        height_px = int(getattr(slide_obj, "height_px", 20000) or 20000)
+        if not slide_obj.width_px or not slide_obj.height_px:
+            raise HTTPException(status_code=400, detail="Slide has no pixel dimensions. Cannot extract patch.")
+        width_px = int(slide_obj.width_px)
+        height_px = int(slide_obj.height_px)
         patch_img = extract_patch_from_pyramid(
             slide_id=slide_id,
             cx_um=cx_um,
@@ -534,8 +445,12 @@ def get_hotspot_thumbnail(
         finally:
             shutil.rmtree(scratch_dir, ignore_errors=True)
 
+    # Nothing is drawn in place of a patch that cannot be read (SPEC-01 §3.9).
     if extracted_bytes is None:
-        extracted_bytes = generate_synthetic_microscopic_patch(mag, stain, f"{case_id}_{hotspot_id}_{mag}_{stain}")
+        raise HTTPException(
+            status_code=404,
+            detail=f"The {mag} patch for hotspot {hotspot_id} could not be read from the slide.",
+        )
 
     # Cache to GCS if not user-edited
     if not is_user_edited:

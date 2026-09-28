@@ -27,6 +27,7 @@ from app.core.config_types import (
     Percent,
     PositiveFloat,
     PositiveInt,
+    RegistryKey,
     StrictModel,
 )
 from app.core.fallbacks import FallbackPolicy
@@ -297,16 +298,16 @@ class ScoringConfig(StrictModel):
 
 # --- triage.yaml ------------------------------------------------------------
 
-class TriageVertexConfig(StrictModel):
-    batch_size: PositiveInt
-    concurrency: PositiveInt
-    max_retries: NonNegativeInt
+class TumorRefereeConfig(StrictModel):
+    """The VLM that checks candidate hotspots for invasive tumour (SPEC-05 §5.4 arm)."""
 
-
-class TriageProbeConfig(StrictModel):
-    model_name: NonEmptyStr
-    model_path: NonEmptyStr
-    version: NonEmptyStr
+    producer: RegistryKey
+    prompt: PromptFileName
+    # Candidates sent to the referee; hotspot_extraction.max_hotspots of them are kept.
+    candidates: PositiveInt
+    # Each candidate is shown as a square field_um wide, resampled to size_px (the prompt states both).
+    field_um: PositiveFloat
+    size_px: PositiveInt
 
 
 class HotspotExtractionConfig(StrictModel):
@@ -323,9 +324,19 @@ class TriageConfig(StrictModel):
     patch_size_px: PositiveInt
     tissue_threshold_pct: Fraction
     max_sample_patches: PositiveInt
-    vertex_ai: TriageVertexConfig
-    probe: TriageProbeConfig
+    # Registry keys: the tile embedder and the classifier over its embeddings.
+    embedding_model: RegistryKey
+    tumor_model: RegistryKey
+    tumor_referee: TumorRefereeConfig
     hotspot_extraction: HotspotExtractionConfig
+
+    @model_validator(mode="after")
+    def _enough_candidates(self) -> "TriageConfig":
+        _require(
+            self.tumor_referee.candidates >= self.hotspot_extraction.max_hotspots,
+            "tumor_referee.candidates must be at least hotspot_extraction.max_hotspots",
+        )
+        return self
 
 
 # --- pricing.yaml -----------------------------------------------------------
@@ -364,7 +375,32 @@ class PipelineConfig(StrictModel):
             self.mitosis.hpf.radius_um == self.scoring.hpf.radius_um and self.mitosis.hpf.count == self.scoring.hpf.count,
             "mitosis.yaml hpf and scoring.yaml hpf must have the same radius_um and count",
         )
+        self._triage_models_exist()
         return self
+
+    def _triage_models_exist(self) -> None:
+        models, triage = self.models.models, self.triage
+        embedder = models.get(triage.embedding_model)
+        _require(
+            embedder is not None and embedder.kind == "embedding",
+            f"triage.yaml embedding_model {triage.embedding_model!r} must be an embedding model in models.yaml",
+        )
+        classifier = models.get(triage.tumor_model)
+        _require(
+            classifier is not None
+            and classifier.kind == "classifier"
+            and getattr(getattr(classifier, "input", None), "features", None) == triage.embedding_model,
+            f"triage.yaml tumor_model {triage.tumor_model!r} must be a classifier over {triage.embedding_model}",
+        )
+        referee = models.get(triage.tumor_referee.producer)
+        _require(
+            referee is not None and referee.kind == "vlm",
+            f"triage.yaml tumor_referee.producer {triage.tumor_referee.producer!r} must be a VLM in models.yaml",
+        )
+        _require(
+            triage.tumor_referee.prompt in self.prompts,
+            f"triage.yaml tumor_referee.prompt {triage.tumor_referee.prompt!r} is not in configs/prompts",
+        )
 
     def config_hash(self) -> str:
         return hashlib.sha256(canonical_json(self.model_dump(mode="json")).encode("utf-8")).hexdigest()

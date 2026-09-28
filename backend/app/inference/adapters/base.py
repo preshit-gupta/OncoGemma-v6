@@ -2,7 +2,7 @@
 
 An adapter turns one gateway request into one provider call and returns the raw
 response. It does not retry, validate, cache or record: the gateway does all of
-that. It reports failures only through the three exceptions below.
+that. It reports failures only through the exceptions below.
 """
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Protocol
@@ -21,6 +21,10 @@ class CallTimeout(Exception):
 
 class CallRejected(Exception):
     """The provider refused the request or answered in an unexpected shape. Never retried."""
+
+
+class Unavailable(Exception):
+    """The model cannot be reached and retrying cannot help: a missing artifact or endpoint."""
 
 
 @dataclass(frozen=True)
