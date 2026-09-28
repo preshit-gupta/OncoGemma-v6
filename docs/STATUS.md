@@ -9,8 +9,9 @@ Update this file at the end of every session (SPEC plan §3 rule 8). Keep it und
 
 - v6 repo bootstrapped from v5 history; tag `v5.0.0-baseline`. Specs 00–11; decisions D1–D15 (`docs/IMPLEMENTATION_PLAN.md` §5).
 - Delegation pack: `AGENTS.md`, `GEMINI.md`, `docs/tasks/` (14 cards), `docs/contracts/`, and pre-written acceptance tests for WP-2.4, 2.5, 5.1, 5.3 (they skip until the module exists).
-- Merged into `main` (`ff65fe0`): WP-1.2, 2.4, 2.5, 5.1, 5.2, 5.3, 9.3.
-- **WP-2.1 + 2.2** on `wp/2.1-2.2-alembic-typed-config`, rebased onto `main` (`ff65fe0`), awaiting review:
+- Merged into `main`: WP-1.2, 2.4, 2.5, 5.1, 5.2, 5.3, 9.3 (`ff65fe0`), then WP-2.1 + 2.2 (`5124d9f`, PR #1).
+- **Deployed 2026-09-28** (`cloudbuild.yaml`: API `oncogemma-api-00095-s7k`, frontend, worker job). Production database stamped `0001_v5_baseline` before the deploy; startup upgraded it to `0002_drop_v5_reports`; `alembic check` clean. Later revisions apply at API startup.
+- **WP-2.1 + 2.2:**
   - `backend/alembic/`: `0001_v5_baseline` (the v5 schema), then `0002_drop_v5_reports`. The owner approved deleting the `reports` data on 2026-09-28. Verified on Postgres 15: upgrade, `alembic check`, downgrade and upgrade again, plus the v5 stamp procedure below. CI: `.github/workflows/migrations.yml`.
   - API startup (`ENV != test`) runs `app.core.migrations.upgrade_to_head` under a Postgres advisory lock. It refuses any database that has tables but no `alembic_version`. `create_all` and the v5 startup DDL are gone.
   - `app.core.pipeline_config.PipelineConfig`: every `configs/*.yaml` plus `configs/prompts/*`, `extra="forbid"`, strict types, range and cross-file checks, duplicate-YAML-key check. `config_hash()` is stamped on every stage execution by `worker/main.py` and `worker/cloud_job_entry.py`. Load failure aborts startup.
@@ -36,10 +37,6 @@ Lanes are in `docs/tasks/README.md`.
 
 ## Open items (program owner)
 
-- **Production database, once:**
-  1. Before deploying WP-2.1: from `backend/`, with `DATABASE_URL` pointing at production (for example through the Cloud SQL Auth Proxy), run `alembic stamp 0001_v5_baseline`.
-  2. Deploy. Startup runs `upgrade head`, which drops `reports`.
-  3. Run `alembic check`. It must print "No new upgrade operations detected".
 - Record in the plan §5: D16, drop the v5 `reports` table (2026-09-28).
 - Is `configs/stain_reference.png` part of `config_hash`? It changes outputs but is not YAML; SPEC-04 §3.3 may replace it.
 - Use one git worktree per agent. Delegates share `D:\Projects\OncoGemma v6`, and the branch switched under Claude mid-task. Tests also share the fake-GCS directory under the system temp dir, so concurrent `pytest` runs on one machine interfere.
@@ -51,6 +48,8 @@ Lanes are in `docs/tasks/README.md`.
 - `backend/requirements.txt` has `sqlalchemy>=2.0.28` with only `psycopg2-binary`. SQLAlchemy 2.1 (what a fresh build resolves) maps plain `postgresql://` to psycopg 3, so such URLs fail with `No module named 'psycopg'`. The Cloud SQL socket path names `+psycopg2` and is unaffected. Fix it in WP-1.3.
 - On `main`: `test_triage_worker.py::test_run_triage_stage_e2e` fails every run (Vertex endpoint called despite cached embeddings). `test_batch11…::test_slide_upload_invalid_extension` is flaky: every `TestClient` lifespan starts the in-process worker, which shares the in-memory SQLite connection with the request.
 - `backend/tests` and `tools/tests` are both packages named `tests`, so one `pytest` run cannot collect both. Run them separately.
+- **Before the next deploy:** `main` (PR #2, `c800bd1`) reads the database password only from Secret Manager secret `og-db-password`, which does not exist yet. Follow the PR #2 runbook: new password, `gcloud sql users set-password`, secret, accessor role. The deployed revision still uses the old hardcoded password, which is in git history. A separate session is fixing the two tests above.
+- Production Cloud SQL is Postgres 16; the migrations CI job uses 15 (SPEC-01). Consider moving CI to 16.
 
 ## Blockers
 
