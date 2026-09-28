@@ -114,6 +114,8 @@ export const L = {
     loginSubtitle: "Clinical Review",
     adminUsers: "User management",
     inviteUser: "Invite user",
+    mitosisDefinition: "Mitosis definition",
+    decisionChain: "Decision chain",
   },
   help: {
     selectCase: "Select a case to begin review.",
@@ -145,6 +147,8 @@ export const L = {
     noUsersFound: "No users found in the system.",
     hotspotsLimited: "Hotspot coverage was limited by available tissue area.",
     noInvasiveDetected: "No invasive tumor detected across evaluated slide regions.",
+    hpfCountWarning: "Fewer than 10 standardized high-power fields evaluated.",
+    equivocalReviewNotice: "Review equivocal candidates before proceeding.",
   },
   status: {
     running: "Running…",
@@ -188,6 +192,7 @@ export const L = {
     csrfFailed: "Security validation failed. Please refresh the page and try again.",
     hotspotOverlap: "Hotspots overlap. Keep at least 100 micrometers between tumor regions.",
     invalidPolygon: "Invalid polygon boundary. Please draw a closed shape without self-intersections.",
+    equivocalUnreviewed: "All equivocal candidates inside fields must be reviewed before confirmation.",
   },
   field: {
     caseId: "Case ID",
@@ -244,6 +249,20 @@ export const L = {
     prescanExpectedCount: "Expected count",
     prescanThenTumor: "Prescan and tumor",
     opacity: "Opacity",
+    detectorProb: "Detector p_a",
+    classifierProb: "Classifier p_b",
+    vlmVerdict: "VLM verdict",
+    ruleOverride: "Rule override",
+    counted: "Counted",
+    equivocal: "Equivocal",
+    membraneAbsent: "Membrane absent",
+    condensedProjections: "Condensed projections",
+    phase: "Phase",
+    neoplasticCell: "Neoplastic cell",
+    mimic: "Mimic",
+    decisionPath: "Path",
+    hotkey: "Hotkey",
+    definition: "Definition",
   },
   unit: {
     um: "µm",
@@ -262,5 +281,7 @@ export const L = {
     pointsCount: (n: number) => `(${n} pts)`,
     areaMm2: (area: number) => `${area.toFixed(2)} mm²`,
     domainAccount: (domain: string) => `Use your ${domain} Google account`,
+    summaryMitosis: (count: number, mm2: number, score: number) =>
+      `${count} mitoses / ${mm2.toFixed(2)} mm² · Score ${score}`,
   },
 } as const;
