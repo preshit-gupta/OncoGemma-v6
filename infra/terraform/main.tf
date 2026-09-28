@@ -24,7 +24,8 @@ locals {
     "aiplatform.googleapis.com",
     "artifactregistry.googleapis.com",
     "compute.googleapis.com",
-    "cloudbuild.googleapis.com"
+    "cloudbuild.googleapis.com",
+    "secretmanager.googleapis.com"
   ]
 }
 

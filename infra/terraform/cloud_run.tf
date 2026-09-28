@@ -73,8 +73,25 @@ resource "google_cloud_run_v2_service" "api_service" {
         value = google_storage_bucket.artifacts.name
       }
       env {
-        name  = "DATABASE_URL"
-        value = "postgresql://${var.db_user}:${var.db_password}@/${var.db_name}?host=/cloudsql/${google_sql_database_instance.oncogemma_db_instance.connection_name}"
+        name  = "CLOUD_SQL_CONNECTION_NAME"
+        value = google_sql_database_instance.oncogemma_db_instance.connection_name
+      }
+      env {
+        name  = "DB_USER"
+        value = var.db_user
+      }
+      env {
+        name  = "DB_NAME"
+        value = var.db_name
+      }
+      env {
+        name = "DB_PASSWORD"
+        value_source {
+          secret_key_ref {
+            secret  = var.db_password_secret_id
+            version = "latest"
+          }
+        }
       }
 
       volume_mounts {
@@ -99,7 +116,8 @@ resource "google_cloud_run_v2_service" "api_service" {
 
   depends_on = [
     google_project_service.enabled_apis,
-    google_sql_database_instance.oncogemma_db_instance
+    google_sql_database_instance.oncogemma_db_instance,
+    google_secret_manager_secret_iam_member.sa_db_password_accessor
   ]
 }
 
@@ -199,8 +217,25 @@ resource "google_cloud_run_v2_job" "worker_job" {
           value = google_storage_bucket.artifacts.name
         }
         env {
-          name  = "DATABASE_URL"
-          value = "postgresql://${var.db_user}:${var.db_password}@/${var.db_name}?host=/cloudsql/${google_sql_database_instance.oncogemma_db_instance.connection_name}"
+          name  = "CLOUD_SQL_CONNECTION_NAME"
+          value = google_sql_database_instance.oncogemma_db_instance.connection_name
+        }
+        env {
+          name  = "DB_USER"
+          value = var.db_user
+        }
+        env {
+          name  = "DB_NAME"
+          value = var.db_name
+        }
+        env {
+          name = "DB_PASSWORD"
+          value_source {
+            secret_key_ref {
+              secret  = var.db_password_secret_id
+              version = "latest"
+            }
+          }
         }
         env {
           name  = "VERTEX_MITOSIS_ENDPOINT_ID"
@@ -242,6 +277,7 @@ resource "google_cloud_run_v2_job" "worker_job" {
 
   depends_on = [
     google_project_service.enabled_apis,
-    google_sql_database_instance.oncogemma_db_instance
+    google_sql_database_instance.oncogemma_db_instance,
+    google_secret_manager_secret_iam_member.sa_db_password_accessor
   ]
 }

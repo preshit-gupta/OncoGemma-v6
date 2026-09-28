@@ -62,12 +62,14 @@ class Settings(BaseSettings):
     USE_GEMINI_FLASH_REFEREE: bool = os.getenv("USE_GEMINI_FLASH_REFEREE", "true").lower() in ("true", "1")
     GEMINI_REFEREE_MODEL: str = os.getenv("GEMINI_REFEREE_MODEL", "gemini-2.5-flash")
 
-    # Database
-    DATABASE_URL: str = os.getenv(
-        "DATABASE_URL",
-        "postgresql://oncogemma:oncogemma_dev_password@localhost:5432/oncogemma_db"
-    )
-    
+    # Database: set exactly one of DATABASE_URL or CLOUD_SQL_CONNECTION_NAME (app.core.db).
+    # The Cloud SQL password is read only from the DB_PASSWORD environment variable
+    # (Secret Manager on Cloud Run), never from a setting or a default.
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "")
+    CLOUD_SQL_CONNECTION_NAME: str = os.getenv("CLOUD_SQL_CONNECTION_NAME", "")
+    DB_USER: str = os.getenv("DB_USER", "oncogemma")
+    DB_NAME: str = os.getenv("DB_NAME", "oncogemma_db")
+
     # GCS Configuration
     GCS_RAW_BUCKET: str = os.getenv("GCS_RAW_BUCKET", "oncogemma-dev-raw")
     GCS_PYRAMIDS_BUCKET: str = os.getenv("GCS_PYRAMIDS_BUCKET", "oncogemma-dev-pyramids")

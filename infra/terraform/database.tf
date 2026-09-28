@@ -36,8 +36,14 @@ resource "google_sql_database" "oncogemma_db" {
   instance = google_sql_database_instance.oncogemma_db_instance.name
 }
 
+# The password lives only in Secret Manager, so the user and Cloud Run read the same value.
+data "google_secret_manager_secret_version" "db_password" {
+  secret  = var.db_password_secret_id
+  version = "latest"
+}
+
 resource "google_sql_user" "oncogemma_user" {
   name     = var.db_user
   instance = google_sql_database_instance.oncogemma_db_instance.name
-  password = var.db_password
+  password = data.google_secret_manager_secret_version.db_password.secret_data
 }
