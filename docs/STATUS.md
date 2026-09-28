@@ -51,7 +51,6 @@ Lanes are in `docs/tasks/README.md`.
 
 ## Findings to fix
 
-- `backend/tests` and `tools/tests` are both packages named `tests`, so one `pytest` run cannot collect both. Run them separately.
 - **Since #9 (WP-1.3) an API image built from `main` cannot start**: it installs `requirements/api.lock.txt` (no SciPy/OpenSlide/…), but the routers need them and the API runs stages in-process. Hotfix PR #11 (worker lockfile + `models/` in the API image, plus an import check in `tools/tests`). Do not deploy the API from `main` before #11.
 - Cloud Run's front end reserves `/healthz` and answers it with a Google 404 before the request reaches the app, so the PR #2 runbook's `/healthz` check is wrong: use `/health`. The health endpoints also return the raw DB exception text to unauthenticated callers (WP-4.3).
 - Production Cloud SQL is Postgres 16; the migrations CI job uses 15 (SPEC-01). Consider moving CI to 16. Also, `backend/tests` and `tools/tests` are both packages named `tests`: run them in separate `pytest` runs.
