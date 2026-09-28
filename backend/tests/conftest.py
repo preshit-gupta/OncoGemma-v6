@@ -5,6 +5,8 @@ Finding #405: Guarantees that the test suite runs 100% offline and isolated by d
 - Sets USE_REAL_GCS="false" to prevent hitting live Google Cloud Storage.
 - Sets USE_MOCK_VERTEX_AI="true" to prevent hitting live Vertex AI endpoints.
 - Sets ENV="test" to ensure test runtime configuration.
+- Sets RUN_IN_PROCESS_WORKER="false" so TestClient lifespans do not start the polling
+  worker, which would share the in-memory SQLite connection with requests from another thread.
 """
 
 import os
@@ -15,6 +17,7 @@ os.environ["USE_REAL_GCS"] = "false"
 os.environ["USE_MOCK_VERTEX_AI"] = "true"
 os.environ["ENV"] = "test"
 os.environ["ENVIRONMENT"] = "test"
+os.environ["RUN_IN_PROCESS_WORKER"] = "false"
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 
 # Update the singleton settings instance
@@ -24,6 +27,7 @@ settings.USE_REAL_GCS = False
 settings.USE_MOCK_VERTEX_AI = True
 settings.ENV = "test"
 settings.ENVIRONMENT = "test"
+settings.RUN_IN_PROCESS_WORKER = False
 settings.DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///:memory:")
 
 
@@ -50,11 +54,13 @@ def isolate_test_environment(monkeypatch):
     monkeypatch.setenv("USE_MOCK_VERTEX_AI", "true")
     monkeypatch.setenv("ENV", "test")
     monkeypatch.setenv("ENVIRONMENT", "test")
+    monkeypatch.setenv("RUN_IN_PROCESS_WORKER", "false")
     monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
     monkeypatch.setattr(settings, "USE_REAL_GCS", False)
     monkeypatch.setattr(settings, "USE_MOCK_VERTEX_AI", True)
     monkeypatch.setattr(settings, "ENV", "test")
     monkeypatch.setattr(settings, "ENVIRONMENT", "test", raising=False)
+    monkeypatch.setattr(settings, "RUN_IN_PROCESS_WORKER", False)
     monkeypatch.setattr(settings, "DATABASE_URL", "sqlite:///:memory:")
 
     import app.core.gcs as gcs

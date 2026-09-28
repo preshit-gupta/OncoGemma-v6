@@ -83,6 +83,8 @@ class Settings(BaseSettings):
     CLOUD_TASKS_QUEUE: str = os.getenv("CLOUD_TASKS_QUEUE", "oncogemma-stage-queue")
     WORKER_SERVICE_URL: str = os.getenv("WORKER_SERVICE_URL", "http://localhost:8000")
     CLOUD_TASKS_SERVICE_ACCOUNT: str = os.getenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
+    # Polling worker started by the API lifespan (app.main). The test suite turns it off.
+    RUN_IN_PROCESS_WORKER: bool = True
     
     # Auth
     MOCK_AUTH_ENABLED: bool = True
