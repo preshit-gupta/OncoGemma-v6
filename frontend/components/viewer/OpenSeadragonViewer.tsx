@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
 import OpenSeadragon from "openseadragon";
 import { ZoomIn, ZoomOut, Maximize, ChevronDown, Check, Layers, Info, Image as ImageIcon } from "lucide-react";
 import { API_BASE } from "@/lib/api";
+import { L } from "@/lib/labels";
 
 export interface ViewerHotspot {
   id: string;
@@ -697,7 +698,7 @@ export function OpenSeadragonViewer({
             }`}
           >
             <ImageIcon className="w-3.5 h-3.5" />
-            <span>Original Colors</span>
+            <span>{L.action.origColor}</span>
           </button>
           <button
             onClick={() => setActiveLayer("norm")}
@@ -708,7 +709,7 @@ export function OpenSeadragonViewer({
             }`}
           >
             <Layers className="w-3.5 h-3.5" />
-            <span>Normalized 10×</span>
+            <span>{L.action.normColor} {L.unit.mag10x}</span>
           </button>
         </div>
 
@@ -716,7 +717,7 @@ export function OpenSeadragonViewer({
         {isNormFallbackToOrig && (
           <div className="pointer-events-auto bg-amber-950/80 border border-amber-800/80 text-amber-300 px-2.5 py-1 rounded-full text-xs font-medium flex items-center space-x-1 shadow-md">
             <Info className="w-3.5 h-3.5 text-amber-400" />
-            <span>Original Colors (&gt;10× zoom)</span>
+            <span>{L.action.origColor} ({">"}{L.unit.mag10x})</span>
           </div>
         )}
 
@@ -725,7 +726,7 @@ export function OpenSeadragonViewer({
           <button
             onClick={handleZoomOut}
             className="p-2 hover:bg-slate-800 text-slate-300 hover:text-white rounded transition"
-            title="Zoom Out"
+            title={L.action.zoomOut}
           >
             <ZoomOut className="w-4 h-4" />
           </button>
@@ -733,7 +734,7 @@ export function OpenSeadragonViewer({
           <button
             onClick={handleZoomIn}
             className="p-2 hover:bg-slate-800 text-slate-300 hover:text-white rounded transition"
-            title="Zoom In"
+            title={L.action.zoomIn}
           >
             <ZoomIn className="w-4 h-4" />
           </button>
@@ -741,7 +742,7 @@ export function OpenSeadragonViewer({
           <button
             onClick={handleResetZoom}
             className="p-2 hover:bg-slate-800 text-slate-300 hover:text-white rounded transition"
-            title="Reset View"
+            title={L.action.resetView}
           >
             <Maximize className="w-4 h-4" />
           </button>
@@ -764,15 +765,15 @@ export function OpenSeadragonViewer({
                     autoFocus
                     className="w-12 bg-slate-900 text-white text-xs font-mono px-1 py-0.5 rounded outline-none border border-sky-500"
                   />
-                  <span className="text-xs font-mono text-slate-400 ml-0.5">x</span>
+                  <span className="text-xs font-mono text-slate-400 ml-0.5">{"×"}</span>
                 </form>
               ) : (
                 <button
                   onClick={() => setIsEditingZoom(true)}
                   className="text-xs font-mono font-semibold text-sky-400 hover:text-sky-300 transition"
-                  title="Click to enter custom zoom magnification"
+                  title={L.help.enterCustomZoom}
                 >
-                  {currentMag.toFixed(1)}x
+                  {currentMag.toFixed(1)}{"×"}
                 </button>
               )}
 
@@ -788,7 +789,7 @@ export function OpenSeadragonViewer({
             {showDropdown && (
               <div className="absolute right-0 mt-2 w-32 bg-slate-900 border border-slate-800 rounded-lg shadow-xl py-1 z-20">
                 <div className="px-3 py-1 text-[10px] uppercase font-bold text-slate-500 tracking-wider">
-                  Presets
+                  {L.heading.zoomPresets}
                 </div>
                 {ZOOM_PRESETS.map((power) => (
                   <button
@@ -796,7 +797,7 @@ export function OpenSeadragonViewer({
                     onClick={() => applyPower(power)}
                     className="w-full px-3 py-1.5 text-left text-xs text-slate-300 hover:bg-sky-600 hover:text-white flex items-center justify-between transition font-mono"
                   >
-                    <span>{power}x</span>
+                    <span>{power}{"×"}</span>
                     {Math.abs(currentMag - power) < 0.2 && (
                       <Check className="w-3 h-3 text-sky-400" />
                     )}

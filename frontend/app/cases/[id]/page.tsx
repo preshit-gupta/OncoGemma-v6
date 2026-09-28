@@ -8,6 +8,8 @@ import { formatISTDateTime } from "@/lib/utils";
 import dynamic from "next/dynamic";
 import { StageRail } from "@/components/viewer/StageRail";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { Provenance } from "@/components/Provenance";
+import { L } from "@/lib/labels";
 
 const OpenSeadragonViewer = dynamic(
   () => import("@/components/viewer/OpenSeadragonViewer").then((mod) => mod.OpenSeadragonViewer),
@@ -268,7 +270,8 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
           <Link
             href="/cases"
             className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition"
-            title="Back to Cases"
+            title={L.heading.cases}
+            aria-label={L.heading.cases}
           >
             <ArrowLeft className="w-4 h-4" />
           </Link>
@@ -276,162 +279,181 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
           <div>
             <div className="flex items-center space-x-2">
               <h1 className="text-sm font-semibold tracking-tight">
-                Case #{caseId.substring(0, 8)}
+                {L.field.caseId}: {caseId.substring(0, 8)}
               </h1>
               <span className="text-[10px] bg-sky-900/60 border border-sky-700 text-sky-300 px-2 py-0.5 rounded font-mono font-medium">
-                Nottingham Grading
+                {L.stage.grading}
               </span>
             </div>
             <div className="text-[11px] text-slate-400 flex items-center space-x-3 mt-0.5">
-              <span>MPP: {slide?.mpp_x ? `${slide.mpp_x} µm/px` : "Needs Calibration (Missing MPP)"}</span>
+              <span>{L.field.mpp}: {slide?.mpp_x ? `${slide.mpp_x} ${L.unit.umPerPx}` : L.status.calibrating}</span>
               <span>•</span>
-              <span className="font-mono text-slate-300">Base Scan: {slide?.base_mag ? `${slide.base_mag}× Objective` : "Pending MPP"} {slide?.mpp_x ? `(400× Optical / ${slide.mpp_x} µm/px)` : ""}</span>
-              <span>•</span>
-              <span>Created: {formatISTDateTime(caseDetail?.created_at)}</span>
+              <span>{L.field.created}: {formatISTDateTime(caseDetail?.created_at)}</span>
             </div>
           </div>
         </div>
 
         <div className="flex items-center space-x-2">
-          {/* Pathologist Action Buttons for Step 2 (v4.1) */}
+          {/* Pathologist Action Buttons for Preprocess */}
           {isPreprocessDone && activeStage === "preprocess" && (
             <div className="flex items-center space-x-2 border-r border-slate-700 pr-3 mr-1">
               <button
                 onClick={() => {
                   const hasDownstream = triageStage || mitosisStage || gradingStage;
-                  if (hasDownstream && !window.confirm("Warning: Re-processing this slide will invalidate downstream triage, mitosis, and grading results. Are you sure you want to proceed?")) {
+                  if (hasDownstream && !window.confirm(L.action.retryStage)) {
                     return;
                   }
                   handleReprocessPreprocess();
                 }}
                 disabled={actionLoading}
                 className="px-3 py-1.5 bg-amber-600/90 hover:bg-amber-600 text-white rounded-lg transition text-xs font-semibold flex items-center space-x-1.5 shadow border border-amber-500/50"
-                title="Re-run Macenko stain normalization & QC gate"
+                title={L.action.retryStage}
               >
                 <RotateCcw className={`w-3.5 h-3.5 ${actionLoading ? "animate-spin" : ""}`} />
-                <span>Re-Process Slide</span>
+                <span>{L.action.retryStage}</span>
               </button>
 
               {preprocessStage?.status === "confirmed" ? (
                 <span className="px-3 py-1.5 bg-emerald-950/80 text-emerald-400 border border-emerald-500/40 rounded-lg text-xs font-semibold flex items-center space-x-1.5 shadow">
                   <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>Slide Quality Confirmed</span>
+                  <span>{L.status.confirmed}</span>
                 </span>
               ) : isQcFailed ? (
                 <button
                   onClick={() => setOverrideModalOpen(true)}
                   disabled={actionLoading}
                   className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg transition text-xs font-semibold flex items-center space-x-1.5 shadow border border-rose-400/50"
-                  title="Slide failed automated QC checks. Click to provide clinical override justification & proceed to Step 3."
+                  title={L.error.qcFailed}
                 >
                   <AlertTriangle className="w-3.5 h-3.5" />
-                  <span>Override QC & Proceed</span>
+                  <span>{L.action.overrideQc}</span>
                 </button>
               ) : (
                 <button
                   onClick={() => handleApprovePreprocess()}
                   disabled={actionLoading}
                   className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition text-xs font-semibold flex items-center space-x-1.5 shadow border border-emerald-400/50"
-                  title="Approve slide stain quality & proceed to Step 3 (v4.2 Hotspot Triage)"
+                  title={L.action.confirm}
                 >
                   <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>Approve Slide & Proceed to Step 3</span>
+                  <span>{L.action.confirm}</span>
                 </button>
               )}
             </div>
           )}
 
-          {/* Pathologist Action Buttons for Step 3 (v4.2) */}
+          {/* Pathologist Action Buttons for Triage */}
           {isTriageDone && activeStage === "triage" && (
             <div className="flex items-center space-x-2 border-r border-slate-700 pr-3 mr-1">
               <button
                 onClick={() => {
                   const hasDownstream = mitosisStage || gradingStage;
-                  if (hasDownstream && !window.confirm("Warning: Re-assessing hotspots will invalidate downstream mitosis and grading results. Are you sure you want to proceed?")) {
+                  if (hasDownstream && !window.confirm(L.action.rerunHotspots)) {
                     return;
                   }
                   handleReprocessTriage();
                 }}
                 disabled={actionLoading}
                 className="px-3 py-1.5 bg-amber-600/90 hover:bg-amber-600 text-white rounded-lg transition text-xs font-semibold flex items-center space-x-1.5 shadow border border-amber-500/50"
-                title="Re-run Vertex AI Path Foundation screening and hotspot assessment"
+                title={L.action.rerunHotspots}
               >
                 <RotateCcw className={`w-3.5 h-3.5 ${actionLoading ? "animate-spin" : ""}`} />
-                <span>Re-Assess Hotspots</span>
+                <span>{L.action.rerunHotspots}</span>
               </button>
 
               {triageStage?.status === "confirmed" ? (
                 <span className="px-3 py-1.5 bg-emerald-950/80 text-emerald-400 border border-emerald-500/40 rounded-lg text-xs font-semibold flex items-center space-x-1.5 shadow">
                   <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>Hotspots Confirmed</span>
+                  <span>{L.status.confirmed}</span>
                 </span>
               ) : (
                 <button
                   onClick={handleApproveTriage}
                   disabled={actionLoading}
                   className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition text-xs font-semibold flex items-center space-x-1.5 shadow border border-emerald-400/50"
-                  title="Confirm hotspots & proceed to Step 4 (v4.3 Mitosis Counting)"
+                  title={L.action.confirmHotspots}
                 >
                   <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>Confirm Hotspots & Proceed to Step 4</span>
+                  <span>{L.action.confirmHotspots}</span>
                 </button>
               )}
             </div>
           )}
 
-          {/* Pathologist Action Buttons for Step 4 (v4.3) */}
+          {/* Pathologist Action Buttons for Mitosis */}
           {isMitosisDone && activeStage === "mitosis" && (
             <div className="flex items-center space-x-2 border-r border-slate-700 pr-3 mr-1">
               <button
                 onClick={() => {
                   const hasDownstream = gradingStage;
-                  if (hasDownstream && !window.confirm("Warning: Re-counting mitoses will invalidate downstream Nottingham grading results. Are you sure you want to proceed?")) {
+                  if (hasDownstream && !window.confirm(L.action.replaceHpfs)) {
                     return;
                   }
                   handleReprocessMitosis();
                 }}
                 disabled={actionLoading}
                 className="px-3 py-1.5 bg-amber-600/90 hover:bg-amber-600 text-white rounded-lg transition text-xs font-semibold flex items-center space-x-1.5 shadow border border-amber-500/50"
-                title="Re-run mitosis detection and virtual HPF placement"
+                title={L.action.replaceHpfs}
               >
                 <RotateCcw className={`w-3.5 h-3.5 ${actionLoading ? "animate-spin" : ""}`} />
-                <span>Re-Count Mitoses</span>
+                <span>{L.action.replaceHpfs}</span>
               </button>
 
               {mitosisStage?.status === "confirmed" ? (
                 <span className="px-3 py-1.5 bg-emerald-950/80 text-emerald-400 border border-emerald-500/40 rounded-lg text-xs font-semibold flex items-center space-x-1.5 shadow">
                   <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>Mitoses Confirmed</span>
+                  <span>{L.status.confirmed}</span>
                 </span>
               ) : (
                 <button
                   onClick={handleApproveMitosis}
                   disabled={actionLoading}
                   className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition text-xs font-semibold flex items-center space-x-1.5 shadow border border-emerald-400/50"
-                  title="Confirm mitoses & proceed to Step 5 (v4.4 Nottingham Grading)"
+                  title={L.action.confirmMitoses}
                 >
                   <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>Confirm Mitoses & Proceed to Step 5</span>
+                  <span>{L.action.confirmMitoses}</span>
                 </button>
               )}
             </div>
           )}
 
+          {/* Provenance Popover per Task 4 */}
+          <Provenance
+            provenance={
+              (activeStage === "grading" ? gradingStage :
+               activeStage === "mitosis" ? mitosisStage :
+               activeStage === "triage" ? triageStage :
+               activeStage === "preprocess" ? preprocessStage :
+               ingestStage)?.provenance
+            }
+            model_versions={
+              (activeStage === "grading" ? gradingStage :
+               activeStage === "mitosis" ? mitosisStage :
+               activeStage === "triage" ? triageStage :
+               activeStage === "preprocess" ? preprocessStage :
+               ingestStage)?.model_versions
+            }
+            config_hash={(caseDetail as any)?.config_hash}
+            run_mode={(caseDetail as any)?.run_mode}
+          />
+
           <button
             onClick={() => setShowSlideDetails(!showSlideDetails)}
             className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition text-xs flex items-center space-x-1.5 border border-slate-700"
+            title={L.heading.specimenProperties}
           >
             <Info className="w-3.5 h-3.5 text-sky-400" />
-            <span>Slide Details</span>
+            <span>{L.heading.specimenProperties}</span>
           </button>
 
           <button
             onClick={loadData}
             className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition text-xs flex items-center space-x-1 border border-slate-700"
-            title="Refresh Status"
+            title={L.action.refresh}
           >
             <RefreshCcw className="w-3.5 h-3.5" />
-            <span>Refresh</span>
+            <span>{L.action.refresh}</span>
           </button>
         </div>
       </div>
@@ -449,16 +471,15 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
         </div>
       )}
 
-      {/* QC Hard Failure Diagnostic Banner (v4.1 Stage) */}
+      {/* QC Hard Failure Diagnostic Banner */}
       {activeStage === "preprocess" && isQcFailed && (
         <div className="bg-rose-950/90 border-b border-rose-800 text-rose-200 px-4 py-2.5 flex items-center justify-between text-xs z-20 backdrop-blur">
           <div className="flex items-center space-x-2.5">
             <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
             <div>
-              <span className="font-bold text-white uppercase tracking-wider">Automated QC Hard Failure: </span>
-              <span>{qcStage?.error || "Artifacts detected during whole-slide scanning."} </span>
+              <span className="font-bold text-white uppercase tracking-wider">{L.error.qcFailed} </span>
               <span className="text-[10px] bg-rose-900 border border-rose-700 text-rose-300 px-2 py-0.5 rounded font-mono font-medium ml-1">
-                Needs Rescan
+                {L.action.rescan}
               </span>
             </div>
           </div>
@@ -469,14 +490,14 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
               className="px-3 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded font-medium transition text-xs flex items-center space-x-1"
             >
               <RotateCcw className="w-3 h-3" />
-              <span>Re-Process Slide</span>
+              <span>{L.action.retryStage}</span>
             </button>
             <button
               onClick={() => setOverrideModalOpen(true)}
               disabled={actionLoading}
               className="px-3 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded font-medium transition text-xs flex items-center space-x-1 font-semibold"
             >
-              <span>Clinical Override...</span>
+              <span>{L.action.overrideQc}</span>
             </button>
           </div>
         </div>
@@ -500,7 +521,7 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
         <div className="flex-1 relative overflow-hidden bg-slate-950">
           {loading ? (
             <div className="flex items-center justify-center h-full text-slate-400 text-sm">
-              Loading slide workspace...
+              {L.status.running}
             </div>
           ) : isNeedsMpp ? (
             <div className="flex flex-col items-center justify-center h-full text-slate-300 space-y-4 bg-slate-950 p-8">
@@ -508,16 +529,14 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
                 <AlertTriangle className="w-8 h-8 text-amber-400" />
               </div>
               <div className="text-center max-w-lg">
-                <h3 className="text-base font-bold text-white tracking-tight">Slide Calibration Required (Missing MPP)</h3>
+                <h3 className="text-base font-bold text-white tracking-tight">{L.heading.calibration}</h3>
                 <p className="text-xs text-slate-400 mt-2 leading-relaxed">
-                  Per PRD 01-stage-v4.0 §2.3 step 4, the whole-slide scanner did not record micrometers-per-pixel (MPP).
-                  Automatic guessing of 0.25 µm/px is strictly forbidden to prevent miscalculation of mitotic density and Nottingham Grade.
-                  Please enter the calibrated scanner MPP to begin preprocessing.
+                  {L.help.noSlideYet}
                 </p>
                 <form onSubmit={handleMppSubmit} className="mt-5 bg-slate-900 border border-slate-800 rounded-xl p-4 text-left space-y-3">
                   <div>
                     <label className="block text-[11px] font-medium text-slate-300 mb-1">
-                      MPP X (µm/pixel) <span className="text-rose-400">*</span>
+                      {L.field.mpp} {L.field.xCoord} ({L.unit.umPerPx}) <span className="text-rose-400">*</span>
                     </label>
                     <input
                       type="number"
@@ -526,13 +545,13 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
                       required
                       value={mppInput}
                       onChange={(e) => setMppInput(e.target.value)}
-                      placeholder="e.g. 0.25 for 40× or 0.50 for 20×"
+                      placeholder={L.field.mpp}
                       className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-sky-500 font-mono"
                     />
                   </div>
                   <div>
                     <label className="block text-[11px] font-medium text-slate-300 mb-1">
-                      MPP Y (µm/pixel) <span className="text-slate-500 text-[10px]">(optional, defaults to MPP X)</span>
+                      {L.field.mpp} {L.field.yCoord} ({L.unit.umPerPx})
                     </label>
                     <input
                       type="number"
@@ -540,7 +559,7 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
                       min="0.001"
                       value={mppYInput}
                       onChange={(e) => setMppYInput(e.target.value)}
-                      placeholder="Leave blank for square pixels"
+                      placeholder={L.field.mpp}
                       className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-sky-500 font-mono"
                     />
                   </div>
@@ -553,9 +572,9 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
                     className="w-full bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-xs font-semibold py-2 px-4 rounded-lg transition shadow flex items-center justify-center space-x-2"
                   >
                     {mppSubmitting ? (
-                      <span>Saving & Queuing Preprocess...</span>
+                      <span>{L.status.processing}</span>
                     ) : (
-                      <span>Save Calibration & Queue Preprocess</span>
+                      <span>{L.action.saveMpp}</span>
                     )}
                   </button>
                 </form>
@@ -567,9 +586,9 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
                 <Microscope className="w-8 h-8 text-slate-400" />
               </div>
               <div className="text-center max-w-md">
-                <h3 className="text-base font-bold text-white tracking-tight">No Whole-Slide Image Attached</h3>
+                <h3 className="text-base font-bold text-white tracking-tight">{L.error.noSlideUploaded}</h3>
                 <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
-                  This case does not have a slide file uploaded or the ingest pipeline stage was not initialized.
+                  {L.help.noSlideYet}
                 </p>
                 <div className="mt-5 flex items-center justify-center space-x-3">
                   <Link
@@ -577,7 +596,7 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
                     className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold rounded-lg transition shadow flex items-center space-x-1.5"
                   >
                     <ArrowLeft className="w-3.5 h-3.5" />
-                    <span>Return to Cases & Upload Slide</span>
+                    <span>{L.action.uploadSlide}</span>
                   </Link>
                 </div>
               </div>
@@ -589,29 +608,25 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
                 <Microscope className="w-8 h-8 text-sky-400" />
               </div>
               <div className="text-center max-w-md">
-                <h3 className="text-base font-bold text-white tracking-tight">Processing Whole-Slide Image</h3>
+                <h3 className="text-base font-bold text-white tracking-tight">{L.status.processing}</h3>
                 <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
-                  Extracting WSI metadata, streaming raw slide to Cloud Storage (<span className="font-mono text-sky-400">gs://oncogemma-dev-raw</span>), and generating multi-resolution pyramid tiles...
+                  {L.status.running}
                 </p>
-                <div className="mt-4 inline-flex items-center space-x-2 text-[11px] font-mono text-sky-400 bg-sky-950/60 border border-sky-800/80 px-3 py-1.5 rounded-full">
-                  <span className="w-2 h-2 rounded-full bg-sky-400 animate-ping" />
-                  <span>Pipeline Worker Active</span>
-                </div>
               </div>
             </div>
           ) : isIngestFailed ? (
             <div className="flex flex-col items-center justify-center h-full text-slate-300 space-y-4 bg-slate-950 p-8">
               <AlertTriangle className="w-12 h-12 text-rose-500" />
               <div className="text-center max-w-md">
-                <h3 className="text-base font-bold text-white">Slide Ingest Failed</h3>
+                <h3 className="text-base font-bold text-white">{L.error.stageExecutionFailed}</h3>
                 <p className="text-xs text-slate-400 mt-1">
-                  {ingestStage?.error || "Failed to process slide file during pyramid tile generation."}
+                  {ingestStage?.error || L.error.genericError}
                 </p>
                 <button
                   onClick={handleRetryIngest}
                   className="mt-4 bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold px-4 py-2 rounded-lg transition shadow"
                 >
-                  Retry Ingest Stage
+                  {L.action.retryStage}
                 </button>
               </div>
             </div>
@@ -674,11 +689,12 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
             <div className="flex items-center justify-between border-b border-slate-800 pb-2">
               <h3 className="text-xs font-bold text-sky-400 uppercase tracking-wider flex items-center space-x-1.5">
                 <Info className="w-4 h-4" />
-                <span>Technical Slide Details</span>
+                <span>{L.heading.specimenProperties}</span>
               </h3>
               <button
                 onClick={() => setShowSlideDetails(false)}
                 className="p-1 hover:bg-slate-800 text-slate-400 hover:text-white rounded transition"
+                title={L.action.close}
               >
                 <X className="w-4 h-4" />
               </button>
@@ -686,29 +702,29 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
 
             <div className="space-y-2 text-xs">
               <div className="flex justify-between border-b border-slate-800/50 py-1">
-                <span className="text-slate-400">Slide ID:</span>
-                <span className="font-mono text-slate-200">{slide?.id || "N/A"}</span>
+                <span className="text-slate-400">{L.field.slideFile}:</span>
+                <span className="font-mono text-slate-200">{slide?.id || "-"}</span>
               </div>
               <div className="flex justify-between border-b border-slate-800/50 py-1">
-                <span className="text-slate-400">Original Format:</span>
-                <span className="font-mono text-slate-200 uppercase">{slide?.format || "SVS"}</span>
+                <span className="text-slate-400">{L.field.specimenType}:</span>
+                <span className="font-mono text-slate-200 uppercase">{slide?.format || "-"}</span>
               </div>
               <div className="flex justify-between border-b border-slate-800/50 py-1">
-                <span className="text-slate-400">Dimensions:</span>
-                <span className="font-mono text-slate-200">{slide?.width_px || "N/A"} x {slide?.height_px || "N/A"} px</span>
+                <span className="text-slate-400">{L.field.scale}:</span>
+                <span className="font-mono text-slate-200">{slide?.width_px || 0} × {slide?.height_px || 0}</span>
               </div>
               <div className="flex justify-between border-b border-slate-800/50 py-1">
-                <span className="text-slate-400">Scanner Vendor:</span>
-                <span className="font-mono text-slate-200 capitalize">{slide?.scanner || "Generic"}</span>
+                <span className="text-slate-400">{L.field.magnification}:</span>
+                <span className="font-mono text-slate-200 capitalize">{slide?.scanner || "-"}</span>
               </div>
               <div className="flex justify-between border-b border-slate-800/50 py-1">
-                <span className="text-slate-400">SHA256 Checksum:</span>
+                <span className="text-slate-400">{L.field.configHash}:</span>
                 <span className="font-mono text-[10px] text-slate-300 truncate max-w-[180px]" title={slide?.checksum_sha256}>
-                  {slide?.checksum_sha256 || "N/A"}
+                  {slide?.checksum_sha256 || "-"}
                 </span>
               </div>
               <div className="flex justify-between py-1">
-                <span className="text-slate-400">Label Stripped At:</span>
+                <span className="text-slate-400">{L.field.created}:</span>
                 <span className="font-mono text-slate-200">{formatISTDateTime(slide?.label_stripped_at)}</span>
               </div>
             </div>
@@ -722,11 +738,12 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
               <div className="flex items-center justify-between border-b border-slate-800 pb-3">
                 <div className="flex items-center space-x-2 text-rose-400 font-bold text-sm">
                   <AlertTriangle className="w-4 h-4" />
-                  <span>QC Failure: Pathologist Clinical Override</span>
+                  <span>{L.action.overrideQc}</span>
                 </div>
                 <button
                   onClick={() => setOverrideModalOpen(false)}
                   className="text-slate-400 hover:text-white p-1 rounded hover:bg-slate-800 transition"
+                  title={L.action.close}
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -734,11 +751,10 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
 
               <div className="text-xs text-slate-300 space-y-2">
                 <p className="bg-rose-950/60 border border-rose-800/80 rounded-lg p-3 text-rose-200 font-mono text-[11px]">
-                  {qcStage?.error || "Automated QC detected severe whole-slide image degradation."}
+                  {qcStage?.error || L.error.qcFailed}
                 </p>
                 <p className="text-slate-400 text-[11px] leading-relaxed">
-                  Per CAP guidelines and PRD clinical protocol, proceeding past a QC hard failure requires documented clinical justification.
-                  This justification will be permanently recorded in the diagnostic audit trail (<code>score_override</code>).
+                  {L.help.overrideReasonMinLength}
                 </p>
               </div>
 
@@ -753,7 +769,7 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
               >
                 <div>
                   <label className="block text-[11px] font-medium text-slate-300 mb-1">
-                    Clinical Override Justification <span className="text-rose-400">* (min 10 characters)</span>
+                    {L.field.overrideReason} <span className="text-rose-400">*</span>
                   </label>
                   <textarea
                     rows={3}
@@ -761,14 +777,11 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
                     minLength={10}
                     value={overrideJustification}
                     onChange={(e) => setOverrideJustification(e.target.value)}
-                    placeholder="e.g., Focus blur restricted to periphery; diagnostic invasive tumor region has clear cellular architecture."
+                    placeholder={L.field.overrideReason}
                     className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-xs text-white focus:outline-none focus:border-rose-500 font-sans resize-none"
                   />
                   <div className="flex justify-between text-[10px] text-slate-500 mt-1">
-                    <span>{overrideJustification.trim().length}/10 characters minimum</span>
-                    {overrideJustification.trim().length > 0 && overrideJustification.trim().length < 10 && (
-                      <span className="text-rose-400">Needs {10 - overrideJustification.trim().length} more characters</span>
-                    )}
+                    <span>{overrideJustification.trim().length}/10</span>
                   </div>
                 </div>
 
@@ -778,7 +791,7 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
                     onClick={() => setOverrideModalOpen(false)}
                     className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-medium transition"
                   >
-                    Cancel
+                    {L.action.cancel}
                   </button>
                   <button
                     type="submit"
@@ -786,9 +799,9 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
                     className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold transition flex items-center space-x-1.5 shadow"
                   >
                     {actionLoading ? (
-                      <span>Submitting Override...</span>
+                      <span>{L.status.processing}</span>
                     ) : (
-                      <span>Confirm Override & Move to Step 3</span>
+                      <span>{L.action.overrideQc}</span>
                     )}
                   </button>
                 </div>

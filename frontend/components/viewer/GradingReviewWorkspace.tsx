@@ -34,6 +34,8 @@ import {
   confirmGradingStage,
   API_BASE
 } from "@/lib/api";
+import { L } from "@/lib/labels";
+import { Provenance } from "@/components/Provenance";
 
 interface GradingReviewWorkspaceProps {
   caseId: string;
@@ -514,8 +516,8 @@ export function GradingReviewWorkspace({
     return (
       <div className="flex-1 flex flex-col items-center justify-center p-8 bg-slate-950 text-slate-200">
         <div className="w-10 h-10 border-4 border-sky-500 border-t-transparent rounded-full animate-spin mb-4" />
-        <p className="text-sm font-medium">Evaluating Nottingham Parameters with MedGemma 1.5...</p>
-        <p className="text-xs text-slate-400 mt-1">Processing 24 normalized 10× evidence patches</p>
+        <p className="text-sm font-medium">{L.status.grading}</p>
+        <p className="text-xs text-slate-400 mt-1">{L.status.processing}</p>
       </div>
     );
   }
@@ -524,9 +526,9 @@ export function GradingReviewWorkspace({
     return (
       <div className="flex-1 flex flex-col items-center justify-center p-8 bg-slate-950 text-slate-200">
         <Loader2 className="w-10 h-10 text-sky-400 animate-spin mb-4" />
-        <h3 className="text-base font-semibold text-slate-100">Stage 5: Nottingham Grading in Progress</h3>
+        <h3 className="text-base font-semibold text-slate-100">{L.heading.gradingReview}</h3>
         <p className="text-xs text-slate-400 mt-1 max-w-md text-center">
-          Evaluating 24 normalized tumor patches with MedGemma and synthesizing Elston-Ellis Nottingham grade scores...
+          {L.status.grading}
         </p>
       </div>
     );
@@ -536,13 +538,13 @@ export function GradingReviewWorkspace({
     return (
       <div className="flex-1 flex flex-col items-center justify-center p-8 bg-slate-950 text-slate-200">
         <AlertTriangle className="w-12 h-12 text-rose-400 mb-3" />
-        <h3 className="text-base font-semibold text-rose-300">Stage 5 Grading Error</h3>
+        <h3 className="text-base font-semibold text-rose-300">{L.status.failed}</h3>
         <p className="text-xs text-slate-400 mt-1 max-w-md text-center">{error}</p>
         <button
           onClick={loadData}
           className="mt-4 px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded text-xs font-semibold"
         >
-          Retry Loading
+          {L.action.retry}
         </button>
       </div>
     );
@@ -555,24 +557,25 @@ export function GradingReviewWorkspace({
         <div>
           <div className="flex items-center gap-2">
             <span className="px-2 py-0.5 rounded bg-sky-950 border border-sky-600 text-[11px] font-bold text-sky-300 uppercase tracking-wider">
-              Stage 5: Nottingham Histological Grading
+              {L.heading.nottinghamGrade}
             </span>
-            <span className="text-xs text-slate-400">• Dual-Level Pathologist Review</span>
+            <span className="text-xs text-slate-400">{"•"} {L.heading.gradingReview}</span>
           </div>
           <h1 className="text-lg font-bold text-white mt-0.5">
-            Pathologist Confirmation & Architectural Grading Workspace
+            {L.heading.gradingReview}
           </h1>
         </div>
 
         <div className="flex items-center gap-3">
+          <Provenance model_versions={data?.model_versions} />
           <button
             onClick={loadData}
-            title="Refresh Stage 5 Data"
+            title={L.action.refresh}
             disabled={actionLoading}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-slate-300 hover:text-white text-xs font-semibold transition"
           >
             <RotateCcw className={`w-3.5 h-3.5 ${actionLoading ? "animate-spin" : ""}`} />
-            Refresh
+            {L.action.refresh}
           </button>
         </div>
       </header>
@@ -584,11 +587,9 @@ export function GradingReviewWorkspace({
             <ShieldCheck className="w-5 h-5 text-emerald-400 shrink-0" />
             <div>
               <span className="font-bold">
-                {Boolean((data as any)?.is_signed)
-                  ? "Case Report Signed & Finalized:"
-                  : "Stage 5 Nottingham Grading Confirmed:"}
+                {L.status.confirmed}:
               </span>{" "}
-              Pathologist review is complete and grade scores are permanently locked.
+              {L.help.allCandidatesReviewed}
             </div>
           </div>
         </div>
@@ -600,11 +601,11 @@ export function GradingReviewWorkspace({
           <div className="flex items-center gap-2">
             <ShieldCheck className="w-5 h-5 text-sky-400" />
             <h2 className="text-sm font-bold text-white uppercase tracking-wider">
-              Mandatory Pathologist Sign-Off Gates
+              {L.heading.reviewGates}
             </h2>
           </div>
           <span className="text-xs text-slate-400">
-            Review and approve suggested findings before unlocking Stage 6 (CAP Report)
+            {L.help.reviewAllSamples}
           </span>
         </div>
 
@@ -617,19 +618,19 @@ export function GradingReviewWorkspace({
           }`}>
             <div>
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-200">1. Patch Classification Gate</span>
+                <span className="text-xs font-bold text-slate-200">{L.heading.evidencePatches}</span>
                 {allPatchesApproved ? (
                   <span className="px-2 py-0.5 rounded bg-emerald-900/60 border border-emerald-500 text-[10px] font-bold text-emerald-300 flex items-center gap-1">
-                    <CheckCircle2 className="w-3 h-3" /> Approved
+                    <CheckCircle2 className="w-3 h-3" /> {L.status.approved}
                   </span>
                 ) : (
                   <span className="px-2 py-0.5 rounded bg-amber-900/60 border border-amber-500 text-[10px] font-bold text-amber-300 flex items-center gap-1 animate-pulse">
-                    <AlertCircle className="w-3 h-3" /> Review Pending
+                    <AlertCircle className="w-3 h-3" /> {L.status.needsHuman}
                   </span>
                 )}
               </div>
-              <p className="text-[11px] text-slate-400 mt-1.5">
-                {revSummary?.approved_patches || 0} of {revSummary?.total_patches || 24} patches confirmed
+              <p className="text-[11px] text-slate-400 mt-1.5 font-mono">
+                {revSummary?.approved_patches || 0} / {revSummary?.total_patches || 24}
               </p>
             </div>
             <div className="mt-3">
@@ -639,7 +640,7 @@ export function GradingReviewWorkspace({
                   disabled={actionLoading}
                   className="w-full py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-bold flex items-center justify-center gap-1.5 shadow transition"
                 >
-                  <CheckCheck className="w-3.5 h-3.5" /> Approve All 24 Patches
+                  <CheckCheck className="w-3.5 h-3.5" /> {L.action.confirm}
                 </button>
               )}
             </div>
@@ -653,19 +654,19 @@ export function GradingReviewWorkspace({
           }`}>
             <div>
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-200">2. HPF Field Gate (10 HPFs)</span>
+                <span className="text-xs font-bold text-slate-200">{L.heading.topHpfs}</span>
                 {allHpfsApproved ? (
                   <span className="px-2 py-0.5 rounded bg-emerald-900/60 border border-emerald-500 text-[10px] font-bold text-emerald-300 flex items-center gap-1">
-                    <CheckCircle2 className="w-3 h-3" /> Approved
+                    <CheckCircle2 className="w-3 h-3" /> {L.status.approved}
                   </span>
                 ) : (
                   <span className="px-2 py-0.5 rounded bg-amber-900/60 border border-amber-500 text-[10px] font-bold text-amber-300 flex items-center gap-1 animate-pulse">
-                    <AlertCircle className="w-3 h-3" /> Review Pending
+                    <AlertCircle className="w-3 h-3" /> {L.status.needsHuman}
                   </span>
                 )}
               </div>
-              <p className="text-[11px] text-slate-400 mt-1.5">
-                {revSummary?.approved_hpfs || 0} of {revSummary?.total_hpfs || 10} standard HPFs verified
+              <p className="text-[11px] text-slate-400 mt-1.5 font-mono">
+                {revSummary?.approved_hpfs || 0} / {revSummary?.total_hpfs || 10}
               </p>
             </div>
             <div className="mt-3">
@@ -675,7 +676,7 @@ export function GradingReviewWorkspace({
                   disabled={actionLoading}
                   className="w-full py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-bold flex items-center justify-center gap-1.5 shadow transition"
                 >
-                  <CheckCheck className="w-3.5 h-3.5" /> Approve All 10 HPFs
+                  <CheckCheck className="w-3.5 h-3.5" /> {L.action.confirm}
                 </button>
               )}
             </div>
@@ -689,14 +690,14 @@ export function GradingReviewWorkspace({
           }`}>
             <div>
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-200">3. CAP Histologic Subtype</span>
+                <span className="text-xs font-bold text-slate-200">{L.heading.histologicType}</span>
                 {isTypeConfirmed ? (
                   <span className="px-2 py-0.5 rounded bg-emerald-900/60 border border-emerald-500 text-[10px] font-bold text-emerald-300 flex items-center gap-1">
-                    <CheckCircle2 className="w-3 h-3" /> Confirmed
+                    <CheckCircle2 className="w-3 h-3" /> {L.status.confirmed}
                   </span>
                 ) : (
                   <span className="px-2 py-0.5 rounded bg-amber-900/60 border border-amber-500 text-[10px] font-bold text-amber-300 flex items-center gap-1 animate-pulse">
-                    <AlertCircle className="w-3 h-3" /> Unconfirmed
+                    <AlertCircle className="w-3 h-3" /> {L.status.needsHuman}
                   </span>
                 )}
               </div>
@@ -711,14 +712,14 @@ export function GradingReviewWorkspace({
                   disabled={isConfirmed || actionLoading}
                   className="w-full py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-bold flex items-center justify-center gap-1.5 shadow transition disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  <ShieldCheck className="w-3.5 h-3.5" /> Confirm Histologic Subtype
+                  <ShieldCheck className="w-3.5 h-3.5" /> {L.action.confirm}
                 </button>
               ) : !isConfirmed ? (
                 <button
                   onClick={() => setIsTypeConfirmed(false)}
                   className="w-full py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded text-xs font-medium transition"
                 >
-                  Change Subtype Selection
+                  {L.action.edit}
                 </button>
               ) : null}
             </div>
@@ -731,10 +732,8 @@ export function GradingReviewWorkspace({
         <div className="mx-6 mt-4 p-3 bg-amber-950/60 border border-amber-500/50 rounded-lg flex items-center gap-3 text-amber-200 text-xs">
           <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
           <div>
-            <span className="font-semibold">Quality Agreement Notice: </span>
-            {flags.includes("insufficient_tumor_patches") && "Low tumor patch density (<8 patches with tumor tissue). "}
-            {flags.includes("pleo_high_variance") && "High nuclear pleomorphism variance across sampled areas (>30% off mode). "}
-            Please inspect and verify the evidence patches.
+            <span className="font-semibold">{L.field.reason}: </span>
+            {L.help.reviewAllSamples}
           </div>
         </div>
       )}
@@ -748,41 +747,41 @@ export function GradingReviewWorkspace({
             <div>
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
-                  <span className="w-6 h-6 rounded-full bg-indigo-950 border border-indigo-500 text-indigo-300 font-bold text-xs flex items-center justify-center">
-                    T
+                  <span className="w-6 h-6 rounded-full bg-indigo-950 border border-indigo-500 text-indigo-300 font-bold text-xs flex items-center justify-center font-mono">
+                    {"T"}
                   </span>
-                  <h2 className="text-sm font-bold text-white">Tubule Formation</h2>
+                  <h2 className="text-sm font-bold text-white">{L.heading.tubuleFormation}</h2>
                 </div>
                 {isTubuleOverridden && (
                   <span className="px-2 py-0.5 rounded bg-amber-950 border border-amber-500 text-[10px] font-bold text-amber-300 flex items-center gap-1">
-                    <Edit3 className="w-3 h-3" /> Manually Assigned
+                    <Edit3 className="w-3 h-3" /> {L.field.manual}
                   </span>
                 )}
               </div>
 
               <div className="mt-2 bg-slate-950 rounded-lg p-3 border border-slate-800">
                 <div className="flex items-baseline justify-between">
-                  <span className="text-xs text-slate-400">Score & Classification:</span>
+                  <span className="text-xs text-slate-400">{L.field.tubuleScore}:</span>
                   <span className="text-xl font-extrabold text-white">
-                    Score {activeTubuleScore}{" "}
+                    {L.field.grade} {activeTubuleScore}{" "}
                     <span className="text-xs font-normal text-slate-400">
-                      ({activeTubuleScore === 1 ? ">75%" : activeTubuleScore === 2 ? "10-75%" : "<10%"})
+                      {activeTubuleScore === 1 ? "(>75%)" : activeTubuleScore === 2 ? "(10-75%)" : "(<10%)"}
                     </span>
                   </span>
                 </div>
                 <div className="flex items-baseline justify-between mt-2 pt-2 border-t border-slate-800/80">
-                  <span className="text-xs text-slate-400">Weighted Median:</span>
+                  <span className="text-xs text-slate-400">{L.field.tumorArea}:</span>
                   <span className="text-xs font-semibold text-sky-300">
-                    {data.current?.tubule_percent ?? data.machine?.tubule_percent ?? 0.0}% glandular area
+                    {data.current?.tubule_percent ?? data.machine?.tubule_percent ?? 0.0} {L.unit.percent}
                   </span>
                 </div>
               </div>
 
               {/* Patch Status Summary */}
-              <div className="mt-3 text-xs text-slate-400 flex justify-between items-center">
-                <span>Evaluated across {patches.length} evidence patches</span>
+              <div className="mt-3 text-xs text-slate-400 flex justify-between items-center font-mono">
+                <span>{L.heading.evidencePatches}: {patches.length}</span>
                 <span className="text-emerald-400 font-medium">
-                  {patches.filter((p) => p.review_status !== "suggested").length}/{patches.length} Reviewed
+                  {patches.filter((p) => p.review_status !== "suggested").length} / {patches.length}
                 </span>
               </div>
             </div>
@@ -795,7 +794,7 @@ export function GradingReviewWorkspace({
                   onClick={() => setIsTubuleEditing(true)}
                   className="w-full py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-semibold flex items-center justify-center gap-1.5 transition"
                 >
-                  <Edit3 className="w-3.5 h-3.5 text-sky-400" /> Manual Override Tubule Score
+                  <Edit3 className="w-3.5 h-3.5 text-sky-400" /> {L.action.edit}
                 </button>
               ) : (
                 <div className="space-y-2.5">
@@ -810,14 +809,14 @@ export function GradingReviewWorkspace({
                             : "bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200"
                         }`}
                       >
-                        Score {s}
+                        {L.field.grade} {s}
                       </button>
                     ))}
                   </div>
 
                   {/* Corrected Tubule Percent Numeric Input (#262) */}
                   <div className="flex items-center justify-between bg-slate-950 px-2.5 py-1.5 rounded border border-slate-800">
-                    <label className="text-[11px] text-slate-300">Corrected Tubule Formation %:</label>
+                    <label className="text-[11px] text-slate-300">{L.field.tumorArea} {L.unit.percent}:</label>
                     <div className="flex items-center gap-1">
                       <input
                         type="number"
@@ -834,22 +833,22 @@ export function GradingReviewWorkspace({
                             else setTubuleOverrideScore(3);
                           }
                         }}
-                        placeholder="e.g. 40"
+                        placeholder="40"
                         className="w-16 bg-slate-900 border border-slate-700 rounded px-2 py-0.5 text-xs text-white font-mono text-right outline-none focus:border-sky-500"
                       />
-                      <span className="text-xs text-slate-400">%</span>
+                      <span className="text-xs text-slate-400">{L.unit.percent}</span>
                     </div>
                   </div>
 
                   {isTubuleOverridden && (
                     <div>
                       <label className="text-[10px] text-slate-400 block mb-1">
-                        Clinical Justification (min 10 chars):
+                        {L.help.overrideReasonMinLength}
                       </label>
                       <textarea
                         value={tubuleJustification}
                         onChange={(e) => setTubuleJustification(e.target.value)}
-                        placeholder="State clinical reason for overriding tubule formation score..."
+                        placeholder={L.field.overrideReason}
                         rows={2}
                         className={`w-full bg-slate-950 border rounded p-2 text-xs text-slate-200 focus:outline-none ${
                           tubuleJustification.trim().length >= 10
@@ -863,13 +862,13 @@ export function GradingReviewWorkspace({
                             tubuleJustification.trim().length >= 10 ? "text-emerald-400" : "text-amber-400"
                           }`}
                         >
-                          {tubuleJustification.trim().length}/10 characters
+                          {tubuleJustification.trim().length} / 10
                         </span>
                         <button
                           onClick={handleResetTubule}
                           className="text-[10px] text-slate-400 hover:text-rose-400 underline"
                         >
-                          Reset to Patch Mode
+                          {L.action.resetView}
                         </button>
                       </div>
                     </div>
@@ -885,32 +884,32 @@ export function GradingReviewWorkspace({
             <div>
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
-                  <span className="w-6 h-6 rounded-full bg-purple-950 border border-purple-500 text-purple-300 font-bold text-xs flex items-center justify-center">
-                    P
+                  <span className="w-6 h-6 rounded-full bg-purple-950 border border-purple-500 text-purple-300 font-bold text-xs flex items-center justify-center font-mono">
+                    {"P"}
                   </span>
-                  <h2 className="text-sm font-bold text-white">Nuclear Pleomorphism</h2>
+                  <h2 className="text-sm font-bold text-white">{L.heading.nuclearPleomorphism}</h2>
                 </div>
                 {isPleoOverridden && (
                   <span className="px-2 py-0.5 rounded bg-amber-950 border border-amber-500 text-[10px] font-bold text-amber-300 flex items-center gap-1">
-                    <Edit3 className="w-3 h-3" /> Manually Assigned
+                    <Edit3 className="w-3 h-3" /> {L.field.manual}
                   </span>
                 )}
               </div>
 
               <div className="mt-2 bg-slate-950 rounded-lg p-3 border border-slate-800">
                 <div className="flex items-baseline justify-between">
-                  <span className="text-xs text-slate-400">Score & Atypia:</span>
+                  <span className="text-xs text-slate-400">{L.field.pleoScore}:</span>
                   <span className="text-xl font-extrabold text-white">
-                    Score {activePleoScore}{" "}
+                    {L.field.grade} {activePleoScore}{" "}
                     <span className="text-xs font-normal text-slate-400">
-                      ({activePleoScore === 1 ? "Small/Uniform" : activePleoScore === 2 ? "Moderate" : "Marked/Vesicular"})
+                      {activePleoScore === 1 ? "(1)" : activePleoScore === 2 ? "(2)" : "(3)"}
                     </span>
                   </span>
                 </div>
                 <div className="flex items-baseline justify-between mt-2 pt-2 border-t border-slate-800/80">
-                  <span className="text-xs text-slate-400">Consensus Mode:</span>
+                  <span className="text-xs text-slate-400">{L.field.confidence}:</span>
                   <span className="text-xs font-semibold text-purple-300">
-                    Worst-area weighted mode
+                    {data.histologic_type?.confidence || L.field.moderate}
                   </span>
                 </div>
               </div>
@@ -918,10 +917,10 @@ export function GradingReviewWorkspace({
               {/* Pleo Patch Rationale Sample */}
               <div className="mt-3">
                 <div className="text-[11px] font-medium text-slate-400 mb-1.5">
-                  Sample Patch Rationale:
+                  {L.heading.evidencePatches}:
                 </div>
                 <p className="text-xs text-slate-300 italic bg-slate-950/60 p-2.5 rounded border border-slate-800/60 truncate">
-                  "{patches[0]?.pleo.rationale || "Moderate nuclear pleomorphism with open chromatin and conspicuous nucleoli."}"
+                  {`"${patches[0]?.pleo.rationale || ""}"`}
                 </p>
               </div>
             </div>
@@ -934,7 +933,7 @@ export function GradingReviewWorkspace({
                     onClick={() => setIsPleoEditing(true)}
                     className="w-full py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-semibold flex items-center justify-center gap-1.5 transition"
                   >
-                    <Edit3 className="w-3.5 h-3.5 text-purple-400" /> Manual Override Pleo Score
+                    <Edit3 className="w-3.5 h-3.5 text-purple-400" /> {L.action.edit}
                   </button>
                 ) : (
                   <div className="space-y-2.5">
@@ -949,7 +948,7 @@ export function GradingReviewWorkspace({
                               : "bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200"
                           }`}
                         >
-                          Score {s}
+                          {L.field.grade} {s}
                         </button>
                       ))}
                     </div>
@@ -957,12 +956,12 @@ export function GradingReviewWorkspace({
                     {isPleoOverridden && (
                       <div>
                         <label className="text-[10px] text-slate-400 block mb-1">
-                          Clinical Justification (min 10 chars):
+                          {L.help.overrideReasonMinLength}
                         </label>
                         <textarea
                           value={pleoJustification}
                           onChange={(e) => setPleoJustification(e.target.value)}
-                          placeholder="State clinical reason for overriding nuclear pleomorphism score..."
+                          placeholder={L.field.overrideReason}
                           rows={2}
                           className={`w-full bg-slate-950 border rounded p-2 text-xs text-slate-200 focus:outline-none ${
                             pleoJustification.trim().length >= 10
@@ -976,13 +975,13 @@ export function GradingReviewWorkspace({
                               pleoJustification.trim().length >= 10 ? "text-emerald-400" : "text-amber-400"
                             }`}
                           >
-                            {pleoJustification.trim().length}/10 characters
+                            {pleoJustification.trim().length} / 10
                           </span>
                           <button
                             onClick={handleResetPleo}
                             className="text-[10px] text-slate-400 hover:text-rose-400 underline"
                           >
-                            Reset to Patch Mode
+                            {L.action.resetView}
                           </button>
                         </div>
                       </div>
@@ -998,53 +997,53 @@ export function GradingReviewWorkspace({
             <div>
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
-                  <span className="w-6 h-6 rounded-full bg-emerald-950 border border-emerald-500 text-emerald-300 font-bold text-xs flex items-center justify-center">
-                    M
+                  <span className="w-6 h-6 rounded-full bg-emerald-950 border border-emerald-500 text-emerald-300 font-bold text-xs flex items-center justify-center font-mono">
+                    {"M"}
                   </span>
-                  <h2 className="text-sm font-bold text-white">Mitotic Activity (Density per mm²)</h2>
+                  <h2 className="text-sm font-bold text-white">{L.heading.mitoticCount}</h2>
                 </div>
                 <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
                   allHpfsApproved ? "bg-emerald-950 border border-emerald-500 text-emerald-300" : "bg-amber-950 border border-amber-500 text-amber-300"
                 }`}>
-                  {allHpfsApproved ? "10/10 Approved" : "HPF Review Pending"}
+                  {allHpfsApproved ? `${L.fmt.hpfScore(10)}` : L.status.needsHuman}
                 </span>
               </div>
 
               <div className="mt-2 bg-slate-950 rounded-lg p-3 border border-slate-800">
                 <div className="flex items-baseline justify-between">
-                  <span className="text-xs text-slate-400">Score & Density:</span>
+                  <span className="text-xs text-slate-400">{L.field.mitosisScore}:</span>
                   <span className="text-xl font-extrabold text-white">
-                    Score {activeMitoticScore ?? "—"}{" "}
+                    {L.field.grade} {activeMitoticScore ?? "—"}{" "}
                     <span className="text-xs font-normal text-slate-400">
-                      ({activeMitoticScore === 1 ? "<3.65/mm²" : activeMitoticScore === 2 ? "3.65-7.30/mm²" : "≥7.30/mm²"})
+                      {activeMitoticScore === 1 ? "(<3.65)" : activeMitoticScore === 2 ? "(3.65-7.30)" : "(≥7.30)"}
                     </span>
                   </span>
                 </div>
                 <div className="flex items-baseline justify-between mt-2 pt-2 border-t border-slate-800/80">
-                  <span className="text-xs text-slate-400">Total Confirmed Mitoses:</span>
+                  <span className="text-xs text-slate-400">{L.field.mitosisCount}:</span>
                   <span className="text-xs font-semibold text-emerald-300">
-                    {data.mitotic_summary?.total_mitoses ?? 0} mitoses in 10 HPFs
+                    {data.mitotic_summary?.total_mitoses ?? 0}
                   </span>
                 </div>
               </div>
 
               <div className="mt-3 space-y-1 text-xs text-slate-400">
                 <div className="flex justify-between">
-                  <span>Standard Evaluated Area:</span>
+                  <span>{L.field.tumorArea}:</span>
                   <span className="text-slate-200 font-mono">
-                    {evaluatedHpfAreaMm2.toFixed(3)} mm²
+                    {evaluatedHpfAreaMm2.toFixed(3)} {L.unit.mm2}
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span>Standardized Density:</span>
+                  <span>{L.field.density}:</span>
                   <span className="text-slate-200 font-mono">
-                    {(data.mitotic_summary?.mitoses_per_mm2 ?? ((data.mitotic_summary?.total_mitoses ?? 0) / (evaluatedHpfAreaMm2 || 2.157))).toFixed(1)} mitoses/mm²
+                    {(data.mitotic_summary?.mitoses_per_mm2 ?? ((data.mitotic_summary?.total_mitoses ?? 0) / (evaluatedHpfAreaMm2 || 2.157))).toFixed(1)} / {L.unit.mm2}
                   </span>
                 </div>
                 <div className="flex justify-between text-[11px] text-slate-500 pt-0.5">
-                  <span>Classic 10 HPF Equiv:</span>
+                  <span>{L.fmt.hpfScore(10)}:</span>
                   <span className="font-mono">
-                    {(data.mitotic_summary?.classic_per_10hpf ?? ((data.mitotic_summary?.total_mitoses ?? 0) * (2.74 / (evaluatedHpfAreaMm2 || 2.157)))).toFixed(0)} mitoses
+                    {(data.mitotic_summary?.classic_per_10hpf ?? ((data.mitotic_summary?.total_mitoses ?? 0) * (2.74 / (evaluatedHpfAreaMm2 || 2.157)))).toFixed(0)}
                   </span>
                 </div>
               </div>
@@ -1056,7 +1055,7 @@ export function GradingReviewWorkspace({
                 onClick={onReopenMitosis}
                 className="w-full py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-semibold flex items-center justify-center gap-1.5 transition"
               >
-                <RotateCcw className="w-3.5 h-3.5 text-emerald-400" /> Reopen Stage 4 Mitosis Canvas
+                <RotateCcw className="w-3.5 h-3.5 text-emerald-400" /> {L.action.retry}
               </button>
             </div>
           </div>
@@ -1069,11 +1068,11 @@ export function GradingReviewWorkspace({
               <div className="flex items-center gap-2">
                 <Microscope className="w-5 h-5 text-sky-400" />
                 <h2 className="text-base font-bold text-white">
-                  Patch-Level Morphological Classification Review (24 Patches)
+                  {L.heading.evidencePatches}
                 </h2>
               </div>
               <p className="text-xs text-slate-400 mt-1">
-                Inspect 10× normalized evidence patches. Confirm suggested Tubule % and Nuclear Pleomorphism findings or click Edit to customize.
+                {L.help.reviewAllSamples}
               </p>
             </div>
 
@@ -1090,7 +1089,10 @@ export function GradingReviewWorkspace({
                         : "text-slate-400 hover:text-slate-200"
                     }`}
                   >
-                    {tab === "all" ? `All (${patches.length})` : `${tab} (${patches.filter((p) => p.review_status === tab).length})`}
+                    {tab === "all" ? `${L.action.filterAll} (${patches.length})` :
+                     tab === "suggested" ? `${L.status.needsHuman} (${patches.filter((p) => p.review_status === tab).length})` :
+                     tab === "approved" ? `${L.status.approved} (${patches.filter((p) => p.review_status === tab).length})` :
+                     `${L.field.manual} (${patches.filter((p) => p.review_status === tab).length})`}
                   </button>
                 ))}
               </div>
@@ -1101,7 +1103,7 @@ export function GradingReviewWorkspace({
                   disabled={actionLoading}
                   className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow transition"
                 >
-                  <CheckCheck className="w-3.5 h-3.5" /> Approve All
+                  <CheckCheck className="w-3.5 h-3.5" /> {L.action.confirm}
                 </button>
               )}
             </div>
@@ -1131,12 +1133,12 @@ export function GradingReviewWorkspace({
                   <button
                     type="button"
                     onClick={() => setSelectedPatch(p)}
-                    aria-label={`Inspect Patch #${p.index} (${p.id})`}
+                    aria-label={L.action.details}
                     className="w-full aspect-square bg-slate-900 rounded-lg overflow-hidden relative cursor-pointer group block text-left focus:outline-none focus:ring-2 focus:ring-sky-400"
                   >
                     <img
                       src={p.image_url?.startsWith("http") ? p.image_url : `${API_BASE}${p.image_url}`}
-                      alt={`Patch ${p.id}`}
+                      alt=""
                       className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
                       loading="lazy"
                       onError={(e) => {
@@ -1164,29 +1166,29 @@ export function GradingReviewWorkspace({
                         ? "bg-emerald-950/90 text-emerald-300 border border-emerald-500"
                         : "bg-amber-950/90 text-amber-300 border border-amber-500"
                     }`}>
-                      {isModified ? "Modified" : isApproved ? "Approved" : "Suggested"}
+                      {isModified ? L.field.manual : isApproved ? L.status.approved : L.status.needsHuman}
                     </span>
                   </button>
 
                   {/* Findings Breakdown */}
                   <div className="mt-3 space-y-1.5 text-xs">
                     <div className="flex justify-between items-center">
-                      <span className="text-slate-400 text-[11px]">Tubule:</span>
+                      <span className="text-slate-400 text-[11px]">{L.heading.tubuleFormation}:</span>
                       <span className={`font-bold ${currentTumor ? "text-sky-300" : "text-slate-500 line-through"}`}>
-                        {currentTumor ? `${currentTubule}%` : "No Tumor"}
+                        {currentTumor ? `${currentTubule}%` : "—"}
                       </span>
                     </div>
 
                     <div className="flex justify-between items-center">
-                      <span className="text-slate-400 text-[11px]">Pleomorphism:</span>
+                      <span className="text-slate-400 text-[11px]">{L.heading.nuclearPleomorphism}:</span>
                       <span className="font-bold text-purple-300">
-                        Score {currentPleo}
+                        {L.field.grade} {currentPleo}
                       </span>
                     </div>
 
                     {p.tissue_density !== undefined && p.tissue_density !== null && (
                       <div className="flex justify-between items-center">
-                        <span className="text-slate-500 text-[10px]">Tissue Density:</span>
+                        <span className="text-slate-500 text-[10px]">{L.field.density}:</span>
                         <span className="font-semibold text-emerald-400 text-[10px]">
                           {Math.round(p.tissue_density * 100)}%
                         </span>
@@ -1207,13 +1209,13 @@ export function GradingReviewWorkspace({
                         onClick={() => handleApprovePatch(p)}
                         disabled={actionLoading}
                         className="flex-1 py-1 px-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[11px] font-bold flex items-center justify-center gap-1 shadow transition"
-                        title="Confirm suggested findings"
+                        title={L.action.confirm}
                       >
-                        <Check className="w-3 h-3" /> Approve
+                        <Check className="w-3 h-3" /> {L.action.confirm}
                       </button>
                     ) : (
                       <span className="flex-1 py-1 text-center text-[11px] font-semibold text-emerald-400 flex items-center justify-center gap-1">
-                        <CheckCircle2 className="w-3.5 h-3.5" /> {isConfirmed ? "Locked" : "Reviewed"}
+                        <CheckCircle2 className="w-3.5 h-3.5" /> {isConfirmed ? L.status.confirmed : L.status.approved}
                       </span>
                     )}
 
@@ -1222,7 +1224,7 @@ export function GradingReviewWorkspace({
                         onClick={() => handleOpenEditPatch(p)}
                         disabled={actionLoading}
                         className="p-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded border border-slate-700 transition"
-                        title="Edit patch tubule or pleomorphism score"
+                        title={L.action.edit}
                       >
                         <Edit3 className="w-3.5 h-3.5 text-sky-400" />
                       </button>
@@ -1231,7 +1233,7 @@ export function GradingReviewWorkspace({
                     <button
                       onClick={() => setSelectedPatch(p)}
                       className="p-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded border border-slate-700 transition"
-                      title="Inspect high-resolution patch"
+                      title={L.action.details}
                     >
                       <Eye className="w-3.5 h-3.5 text-slate-300" />
                     </button>
@@ -1249,11 +1251,11 @@ export function GradingReviewWorkspace({
               <div className="flex items-center gap-2">
                 <Layers className="w-5 h-5 text-emerald-400" />
                 <h2 className="text-base font-bold text-white">
-                  HPF-Level Field Review ({data?.hpfs?.length ?? 10} Standardized Fields • {evaluatedHpfAreaMm2.toFixed(3)} mm²)
+                  {L.heading.topHpfs} ({data?.hpfs?.length ?? 10} • {evaluatedHpfAreaMm2.toFixed(3)} {L.unit.mm2})
                 </h2>
               </div>
               <p className="text-xs text-slate-400 mt-1">
-                Verify mitotic counts across the 10 virtual high-power fields (HPFs) placed in highest density hotspot areas.
+                {L.help.reviewAllHpfs}
               </p>
             </div>
 
@@ -1263,7 +1265,7 @@ export function GradingReviewWorkspace({
                 disabled={actionLoading}
                 className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow transition"
               >
-                <CheckCheck className="w-3.5 h-3.5" /> Approve All 10 HPFs
+                <CheckCheck className="w-3.5 h-3.5" /> {L.action.confirm}
               </button>
             )}
           </div>
@@ -1287,12 +1289,12 @@ export function GradingReviewWorkspace({
                   <div>
                     <div className="flex items-center justify-between mb-1.5">
                       <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-[10px] font-mono font-bold text-sky-300">
-                        HPF #{h.seq}
+                        {L.field.fieldNumber} #{h.seq}
                       </span>
                       <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
                         isApproved ? "text-emerald-400 bg-emerald-950/60" : "text-amber-400 bg-amber-950/60"
                       }`}>
-                        {h.review_status === "modified" ? "Modified" : isApproved ? "Approved" : "Suggested"}
+                        {h.review_status === "modified" ? L.field.manual : isApproved ? L.status.approved : L.status.needsHuman}
                       </span>
                     </div>
 
@@ -1301,7 +1303,7 @@ export function GradingReviewWorkspace({
                         {currentCount}
                       </div>
                       <div className="text-[10px] text-slate-400 mt-0.5">
-                        mitoses ({(currentCount / 0.2157).toFixed(1)}/mm²)
+                        {currentCount} ({(currentCount / 0.2157).toFixed(1)} / {L.unit.mm2})
                       </div>
                     </div>
                   </div>
@@ -1313,11 +1315,11 @@ export function GradingReviewWorkspace({
                         disabled={actionLoading}
                         className="flex-1 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[11px] font-bold flex items-center justify-center gap-1 transition"
                       >
-                        <Check className="w-3 h-3" /> Approve
+                        <Check className="w-3 h-3" /> {L.action.confirm}
                       </button>
                     ) : (
                       <span className="flex-1 py-1 text-center text-[10px] font-semibold text-emerald-400 flex items-center justify-center gap-1">
-                        <CheckCircle2 className="w-3 h-3" /> {isConfirmed ? "Locked" : "Verified"}
+                        <CheckCircle2 className="w-3 h-3" /> {isConfirmed ? L.status.confirmed : L.status.approved}
                       </span>
                     )}
                     {!isConfirmed && (
@@ -1325,7 +1327,7 @@ export function GradingReviewWorkspace({
                         onClick={() => handleOpenEditHpf(h)}
                         disabled={actionLoading}
                         className="p-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded border border-slate-700 transition"
-                        title="Adjust mitotic count"
+                        title={L.action.edit}
                       >
                         <Edit3 className="w-3.5 h-3.5 text-sky-400" />
                       </button>
@@ -1342,19 +1344,19 @@ export function GradingReviewWorkspace({
           <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-800">
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-base font-bold text-white">CAP Histologic Subtype Classification</h2>
+                <h2 className="text-base font-bold text-white">{L.heading.histologicType}</h2>
                 {isTypeConfirmed ? (
                   <span className="px-2.5 py-0.5 rounded-full bg-emerald-950 border border-emerald-500 text-emerald-300 text-xs font-bold flex items-center gap-1">
-                    <CheckCircle2 className="w-3.5 h-3.5" /> Confirmed
+                    <CheckCircle2 className="w-3.5 h-3.5" /> {L.status.confirmed}
                   </span>
                 ) : (
                   <span className="px-2.5 py-0.5 rounded-full bg-rose-950 border border-rose-500 text-rose-300 text-xs font-bold flex items-center gap-1 animate-pulse">
-                    <AlertCircle className="w-3.5 h-3.5" /> Action Required Before Confirming Stage 5
+                    <AlertCircle className="w-3.5 h-3.5" /> {L.status.needsHuman}
                   </span>
                 )}
               </div>
               <p className="text-xs text-slate-400 mt-1">
-                Multi-image consensus across top 8 tumor patches. Pathologist confirmation is strictly required.
+                {L.help.reviewAllSamples}
               </p>
             </div>
 
@@ -1365,14 +1367,14 @@ export function GradingReviewWorkspace({
                   disabled={isConfirmed || actionLoading}
                   className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold flex items-center gap-2 shadow-lg shadow-emerald-950 transition disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  <ShieldCheck className="w-4 h-4" /> Confirm Histologic Subtype
+                  <ShieldCheck className="w-4 h-4" /> {L.action.confirm}
                 </button>
               ) : !isConfirmed ? (
                 <button
                   onClick={() => setIsTypeConfirmed(false)}
                   className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded text-xs font-medium transition"
                 >
-                  Edit Subtype Selection
+                  {L.action.edit}
                 </button>
               ) : null}
             </div>
@@ -1381,7 +1383,7 @@ export function GradingReviewWorkspace({
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-5">
             <div className="lg:col-span-1 space-y-3">
               <label className="text-xs font-semibold text-slate-300 block">
-                Primary Histologic Subtype:
+                {L.heading.histologicType}:
               </label>
               <select
                 value={selectedHistologicType}
@@ -1405,7 +1407,7 @@ export function GradingReviewWorkspace({
 
               {data.histologic_type?.differential && data.histologic_type.differential.length > 0 && (
                 <div className="mt-3">
-                  <span className="text-[11px] text-slate-400 block mb-1">Differential Diagnoses Considered:</span>
+                  <span className="text-[11px] text-slate-400 block mb-1">{L.heading.morphology}:</span>
                   <div className="flex flex-wrap gap-1.5">
                     {data.histologic_type.differential.map((d, i) => (
                       <span
@@ -1423,14 +1425,13 @@ export function GradingReviewWorkspace({
             <div className="lg:col-span-2 bg-slate-950/80 border border-slate-800 rounded-lg p-4">
               <div className="flex items-center gap-2 mb-2">
                 <Sparkles className="w-4 h-4 text-sky-400" />
-                <span className="text-xs font-bold text-slate-300">MedGemma Morphological Rationale:</span>
+                <span className="text-xs font-bold text-slate-300">{L.field.refereeVerdict}:</span>
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">
-                  Confidence: {data.histologic_type?.confidence || "High"}
+                  {L.field.confidence}: {data.histologic_type?.confidence || L.field.moderate}
                 </span>
               </div>
               <p className="text-xs text-slate-300 leading-relaxed">
-                {data.histologic_type?.rationale ||
-                  "Invasive ductal carcinoma characterized by cohesive malignant cell cords and irregular tubular formations infiltrating fibrous desmoplastic stroma."}
+                {data.histologic_type?.rationale || ""}
               </p>
             </div>
           </div>
@@ -1441,13 +1442,10 @@ export function GradingReviewWorkspace({
           <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-800">
             <div>
               <span className="text-xs font-bold text-sky-400 uppercase tracking-wider">
-                Overall Histological Synthesis
+                {L.heading.summary}
               </span>
               <h2 className="text-2xl font-black text-white mt-0.5 flex items-center gap-3">
-                Nottingham Histological Grade {activeGrade}
-                <span className="text-sm font-normal text-slate-300">
-                  ({activeGrade === 1 ? "Well Differentiated" : activeGrade === 2 ? "Moderately Differentiated" : "Poorly Differentiated"})
-                </span>
+                {L.heading.nottinghamGrade} {activeGrade}
               </h2>
             </div>
 
@@ -1455,11 +1453,11 @@ export function GradingReviewWorkspace({
               {isGradeRecomputing && (
                 <div className="flex items-center gap-1.5 text-xs text-sky-400 bg-sky-950/60 px-2.5 py-1 rounded-full border border-sky-800/60">
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  <span>Syncing Grade...</span>
+                  <span>{L.status.grading}</span>
                 </div>
               )}
               <div className="px-4 py-2 bg-slate-950 border border-slate-800 rounded-lg text-right">
-                <div className="text-[10px] text-slate-400">Nottingham Sum (T + P + M)</div>
+                <div className="text-[10px] text-slate-400">{L.field.totalScore}</div>
                 <div className="text-xl font-mono font-bold text-sky-300">{activeSum} / 9</div>
               </div>
             </div>
@@ -1468,35 +1466,34 @@ export function GradingReviewWorkspace({
           {/* Formula Display */}
           <div className="mt-4 grid grid-cols-1 md:grid-cols-4 gap-3 bg-slate-950/70 p-4 rounded-lg border border-slate-800 text-xs">
             <div className="flex items-center justify-between">
-              <span className="text-slate-400">Tubule Score (T):</span>
+              <span className="text-slate-400">{L.field.tubuleScore}:</span>
               <span className="font-mono font-bold text-white">
                 {activeTubuleScore} {isTubuleOverridden && <span className="text-amber-400">*</span>}
               </span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-slate-400">Pleomorphism Score (P):</span>
+              <span className="text-slate-400">{L.field.pleoScore}:</span>
               <span className="font-mono font-bold text-white">
                 {activePleoScore} {isPleoOverridden && <span className="text-amber-400">*</span>}
               </span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-slate-400">Mitotic Score (M):</span>
+              <span className="text-slate-400">{L.field.mitosisScore}:</span>
               <span className="font-mono font-bold text-white">{activeMitoticScore}</span>
             </div>
             <div className="flex items-center justify-between border-t md:border-t-0 md:border-l md:pl-3 border-slate-800">
-              <span className="text-sky-400 font-semibold">Sum = {activeSum} →</span>
-              <span className="font-bold text-sky-300">Grade {activeGrade}</span>
+              <span className="text-sky-400 font-semibold">{L.field.totalScore}: {activeSum} →</span>
+              <span className="font-bold text-sky-300">{L.field.grade} {activeGrade}</span>
             </div>
           </div>
 
           {/* Diagnostic Summary Narrative */}
           <div className="mt-5">
             <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
-              Diagnostic Summary Narrative:
+              {L.heading.summary}:
             </h4>
             <p className="text-xs text-slate-200 leading-relaxed bg-slate-950/90 p-4 rounded-lg border border-slate-800/80">
-              {data.narrative ||
-                `Invasive breast carcinoma (${selectedHistologicType}), Nottingham Histological Grade ${activeGrade} (Total Score ${activeSum}/9). Tubule formation is evaluated across 24 evidence patches (${data.current?.tubule_percent ?? data.machine?.tubule_percent ?? 22}%, Score ${activeTubuleScore}). Nuclear pleomorphism demonstrates atypia (Score ${activePleoScore}). Mitotic activity is evaluated across 10 standardized high-power fields (Score ${activeMitoticScore}).`}
+              {data.narrative || ""}
             </p>
           </div>
 
@@ -1505,34 +1502,34 @@ export function GradingReviewWorkspace({
             <div className="text-xs text-slate-400">
               {isConfirmed ? (
                 <span className="text-emerald-400 flex items-center gap-1.5 font-bold">
-                  <CheckCircle2 className="w-4 h-4" /> Stage 5 Nottingham Grading Confirmed & Locked (Read-Only).
+                  <CheckCircle2 className="w-4 h-4" /> {L.status.confirmed}
                 </span>
               ) : !allPatchesApproved ? (
                 <span className="text-amber-400 flex items-center gap-1.5">
-                  <AlertCircle className="w-4 h-4" /> Please approve all 24 image patches above (Gate 1).
+                  <AlertCircle className="w-4 h-4" /> {L.help.reviewAllSamples}
                 </span>
               ) : !allHpfsApproved ? (
                 <span className="text-amber-400 flex items-center gap-1.5">
-                  <AlertCircle className="w-4 h-4" /> Please approve all 10 High-Power Fields above (Gate 2).
+                  <AlertCircle className="w-4 h-4" /> {L.help.reviewAllHpfs}
                 </span>
               ) : !isTypeConfirmed ? (
                 <span className="text-amber-400 flex items-center gap-1.5">
-                  <AlertCircle className="w-4 h-4" /> Please click "Confirm Histologic Subtype" above (Gate 3).
+                  <AlertCircle className="w-4 h-4" /> {L.help.reviewAllSamples}
                 </span>
               ) : !isTubuleJustificationValid || !isPleoJustificationValid ? (
                 <span className="text-amber-400 flex items-center gap-1.5">
-                  <AlertCircle className="w-4 h-4" /> Please provide at least 10 characters justification for manual score overrides.
+                  <AlertCircle className="w-4 h-4" /> {L.help.overrideReasonMinLength}
                 </span>
               ) : (
                 <span className="text-emerald-400 flex items-center gap-1.5">
-                  <CheckCircle2 className="w-4 h-4" /> All dual-level review gates satisfied. Ready to proceed to CAP Report Generation.
+                  <CheckCircle2 className="w-4 h-4" /> {L.help.readyToConfirm}
                 </span>
               )}
             </div>
 
             {isConfirmed ? (
               <div className="px-6 py-3 rounded-lg text-xs font-bold flex items-center gap-2 bg-emerald-950/80 border border-emerald-500/40 text-emerald-400">
-                <CheckCircle2 className="w-4 h-4" /> Nottingham Grading Confirmed
+                <CheckCircle2 className="w-4 h-4" /> {L.status.confirmed}
               </div>
             ) : (
               <button
@@ -1547,11 +1544,11 @@ export function GradingReviewWorkspace({
                 {isSubmitting ? (
                   <>
                     <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    Finalizing Nottingham Grade...
+                    {L.status.grading}
                   </>
                 ) : (
                   <>
-                    Confirm Nottingham Grade & Advance to CAP Report (Stage 6) <ArrowRight className="w-4 h-4" />
+                    {L.action.confirmGrade} <ArrowRight className="w-4 h-4" />
                   </>
                 )}
               </button>
@@ -1579,13 +1576,13 @@ export function GradingReviewWorkspace({
               <div className="flex items-center gap-2">
                 <Edit3 className="w-4 h-4 text-sky-400" />
                 <h3 id="patch-edit-modal-title" className="text-sm font-bold text-white">
-                  Pathologist Review: Patch #{editingPatch.index} ({editingPatch.id})
+                  {L.heading.patchView} #{editingPatch.index}
                 </h3>
               </div>
               <button
                 type="button"
                 onClick={() => setEditingPatch(null)}
-                aria-label="Close dialog"
+                aria-label={L.action.close}
                 className="p-1 hover:bg-slate-800 text-slate-400 hover:text-white rounded"
               >
                 <X className="w-5 h-5" />
@@ -1596,7 +1593,7 @@ export function GradingReviewWorkspace({
               <div className="w-32 h-32 bg-black rounded-lg overflow-hidden border border-slate-800 mx-auto">
                 <img
                   src={editingPatch.image_url?.startsWith("http") ? editingPatch.image_url : `${API_BASE}${editingPatch.image_url}`}
-                  alt={`Patch ${editingPatch.id}`}
+                  alt=""
                   className="w-full h-full object-cover"
                   onError={(e) => {
                     const target = e.target as HTMLImageElement;
@@ -1609,7 +1606,7 @@ export function GradingReviewWorkspace({
               {/* Tubule Formation Percentage Slider */}
               <div className="bg-slate-950 p-3.5 rounded-lg border border-slate-800 space-y-2">
                 <div className="flex justify-between items-center">
-                  <label className="text-xs font-semibold text-slate-300">Tubule Formation (%)</label>
+                  <label className="text-xs font-semibold text-slate-300">{L.heading.tubuleFormation} ({L.unit.percent})</label>
                   <span className="text-sm font-mono font-bold text-sky-400">{patchEditTubule}%</span>
                 </div>
                 <input
@@ -1622,17 +1619,17 @@ export function GradingReviewWorkspace({
                   className="w-full accent-sky-500 cursor-pointer"
                 />
                 <div className="flex justify-between text-[10px] text-slate-500">
-                  <span>Score 3 (&lt;10%)</span>
-                  <span>Score 2 (10-75%)</span>
-                  <span>Score 1 (&gt;75%)</span>
+                  <span>{L.field.grade} {"3 (<10%)"}</span>
+                  <span>{L.field.grade} {"2 (10-75%)"}</span>
+                  <span>{L.field.grade} {"1 (>75%)"}</span>
                 </div>
               </div>
 
               {/* Tumor Present Toggle */}
               <div className="flex items-center justify-between bg-slate-950 p-3.5 rounded-lg border border-slate-800">
                 <div>
-                  <span className="text-xs font-semibold text-slate-200 block">Invasive Tumor Present</span>
-                  <span className="text-[10px] text-slate-400">Include this patch in glandular area calculations</span>
+                  <span className="text-xs font-semibold text-slate-200 block">{L.field.tumorArea}</span>
+                  <span className="text-[10px] text-slate-400">{L.help.reviewAllSamples}</span>
                 </div>
                 <button
                   type="button"
@@ -1651,7 +1648,7 @@ export function GradingReviewWorkspace({
 
               {/* Nuclear Pleomorphism Score (1, 2, 3) */}
               <div className="bg-slate-950 p-3.5 rounded-lg border border-slate-800 space-y-2">
-                <label className="text-xs font-semibold text-slate-300 block">Nuclear Pleomorphism Score</label>
+                <label className="text-xs font-semibold text-slate-300 block">{L.heading.nuclearPleomorphism}</label>
                 <div className="grid grid-cols-3 gap-2">
                   {[1, 2, 3].map((score) => (
                     <button
@@ -1664,10 +1661,7 @@ export function GradingReviewWorkspace({
                           : "bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200"
                       }`}
                     >
-                      <span>Score {score}</span>
-                      <span className="text-[10px] font-normal text-slate-500">
-                        {score === 1 ? "Small/Uniform" : score === 2 ? "Moderate" : "Marked"}
-                      </span>
+                      <span>{L.field.grade} {score}</span>
                     </button>
                   ))}
                 </div>
@@ -1676,12 +1670,12 @@ export function GradingReviewWorkspace({
               {/* Pathologist Observation Notes */}
               <div>
                 <label className="text-xs font-semibold text-slate-300 block mb-1">
-                  Morphological Notes (Optional)
+                  {L.heading.morphology}
                 </label>
                 <textarea
                   value={patchEditNotes}
                   onChange={(e) => setPatchEditNotes(e.target.value)}
-                  placeholder="Record morphological rationale for this patch..."
+                  placeholder={L.field.reason}
                   rows={2}
                   className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-200 focus:outline-none focus:border-sky-500"
                 />
@@ -1693,14 +1687,14 @@ export function GradingReviewWorkspace({
                 onClick={() => setEditingPatch(null)}
                 className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-semibold transition"
               >
-                Cancel
+                {L.action.cancel}
               </button>
               <button
                 onClick={handleSavePatchEdit}
                 disabled={actionLoading}
                 className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-bold shadow-lg shadow-sky-950 transition flex items-center gap-1.5"
               >
-                <Check className="w-4 h-4" /> Save Patch Changes
+                <Check className="w-4 h-4" /> {L.action.save}
               </button>
             </div>
           </div>
@@ -1720,13 +1714,13 @@ export function GradingReviewWorkspace({
               <div className="flex items-center gap-2">
                 <Layers className="w-4 h-4 text-emerald-400" />
                 <h3 id="hpf-edit-modal-title" className="text-sm font-bold text-white">
-                  Adjust HPF #{editingHpf.seq} Mitotic Count
+                  {L.field.fieldNumber} #{editingHpf.seq} {L.field.mitosisCount}
                 </h3>
               </div>
               <button
                 type="button"
                 onClick={() => setEditingHpf(null)}
-                aria-label="Close dialog"
+                aria-label={L.action.close}
                 className="p-1 hover:bg-slate-800 text-slate-400 hover:text-white rounded"
               >
                 <X className="w-5 h-5" />
@@ -1736,7 +1730,7 @@ export function GradingReviewWorkspace({
             <div className="p-6 space-y-4">
               <div className="bg-slate-950 p-4 rounded-lg border border-slate-800 text-center space-y-3">
                 <label className="text-xs font-semibold text-slate-300 block">
-                  Confirmed Mitotic Figures in HPF #{editingHpf.seq}
+                  {L.field.fieldNumber} #{editingHpf.seq}
                 </label>
                 <div className="flex items-center justify-center gap-4">
                   <button
@@ -1756,19 +1750,19 @@ export function GradingReviewWorkspace({
                   </button>
                 </div>
                 <div className="text-[11px] text-slate-400">
-                  Standardized Field Density: {(hpfEditCount / 0.2157).toFixed(1)} mitoses/mm²
+                  {L.field.density}: {(hpfEditCount / 0.2157).toFixed(1)} / {L.unit.mm2}
                 </div>
               </div>
 
               <div className="bg-slate-950 p-3.5 rounded-lg border border-slate-800 space-y-1.5">
                 <label className="text-xs font-semibold text-slate-300 block">
-                  Pathologist Note
+                  {L.field.reason}
                 </label>
                 <input
                   type="text"
                   value={hpfEditNotes}
                   onChange={(e) => setHpfEditNotes(e.target.value)}
-                  placeholder="e.g. Verified prophase and metaphase figures..."
+                  placeholder={L.field.reason}
                   className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-xs text-slate-200 focus:outline-none focus:border-sky-500"
                 />
               </div>
@@ -1779,7 +1773,7 @@ export function GradingReviewWorkspace({
                   onClick={() => setEditingHpf(null)}
                   className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-medium transition"
                 >
-                  Cancel
+                  {L.action.cancel}
                 </button>
                 <button
                   type="button"
@@ -1787,7 +1781,7 @@ export function GradingReviewWorkspace({
                   disabled={actionLoading}
                   className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold shadow transition"
                 >
-                  Save HPF Review
+                  {L.action.save}
                 </button>
               </div>
             </div>
@@ -1808,13 +1802,13 @@ export function GradingReviewWorkspace({
               <div className="flex items-center gap-2">
                 <Microscope className="w-4 h-4 text-sky-400" />
                 <h3 id="patch-inspect-modal-title" className="text-sm font-bold text-white">
-                  Evidence Patch #{selectedPatch.index} ({selectedPatch.id}) • 10× Magnification
+                  {L.heading.patchView} #{selectedPatch.index}
                 </h3>
               </div>
               <button
                 type="button"
                 onClick={() => setSelectedPatch(null)}
-                aria-label="Close dialog"
+                aria-label={L.action.close}
                 className="p-1 hover:bg-slate-800 text-slate-400 hover:text-white rounded"
               >
                 <X className="w-5 h-5" />
@@ -1825,7 +1819,7 @@ export function GradingReviewWorkspace({
               <div className="w-full aspect-square max-h-72 bg-black rounded-lg overflow-hidden border border-slate-800 mx-auto">
                 <img
                   src={`${API_BASE}${selectedPatch.image_url}`}
-                  alt={`Patch ${selectedPatch.id}`}
+                  alt=""
                   className="w-full h-full object-contain"
                 />
               </div>
@@ -1833,15 +1827,15 @@ export function GradingReviewWorkspace({
               {/* Hotspot & Tissue Density Metadata Strip */}
               <div className="flex items-center justify-between bg-slate-950 px-3 py-2 rounded-lg border border-slate-800 text-xs">
                 <div className="flex items-center gap-2">
-                  <span className="text-[10px] text-slate-400">Hotspot Origin:</span>
+                  <span className="text-[10px] text-slate-400">{L.heading.hotspots}:</span>
                   <span className="font-mono font-bold text-sky-300 bg-sky-950 px-1.5 py-0.5 rounded border border-sky-800">
-                    {selectedPatch.hotspot_id || "Direct Sampling"}
+                    {selectedPatch.hotspot_id || L.field.manual}
                   </span>
                 </div>
                 <div className="flex items-center gap-3">
                   {selectedPatch.tissue_density !== undefined && selectedPatch.tissue_density !== null && (
                     <div className="flex items-center gap-1">
-                      <span className="text-[10px] text-slate-400">Tissue Density:</span>
+                      <span className="text-[10px] text-slate-400">{L.field.density}:</span>
                       <span className="font-mono font-bold text-emerald-400">
                         {Math.round(selectedPatch.tissue_density * 100)}%
                       </span>
@@ -1862,39 +1856,39 @@ export function GradingReviewWorkspace({
                       }
                     }}
                     className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-sky-300 rounded text-[11px] font-medium flex items-center gap-1 border border-slate-700 transition cursor-pointer"
-                    title="Jump to patch position on whole slide viewer"
+                    title={L.action.locate}
                   >
                     <Crosshair className="w-3 h-3 text-sky-400" />
-                    <span>Locate on Slide</span>
+                    <span>{L.action.locate}</span>
                   </button>
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3 text-xs">
                 <div className="bg-slate-950 p-3 rounded-lg border border-slate-800">
-                  <span className="text-[10px] text-slate-400 block">Tubule Formation</span>
+                  <span className="text-[10px] text-slate-400 block">{L.heading.tubuleFormation}</span>
                   <span className="text-lg font-bold text-sky-400">
                     {selectedPatch.user_tubule_percent ?? selectedPatch.tubule.tubule_percent}%
                   </span>
                   <span className="text-[10px] text-slate-500 block mt-1">
-                    Confidence: {selectedPatch.tubule.confidence}
+                    {L.field.confidence}: {selectedPatch.tubule.confidence}
                   </span>
                 </div>
 
                 <div className="bg-slate-950 p-3 rounded-lg border border-slate-800">
-                  <span className="text-[10px] text-slate-400 block">Nuclear Pleomorphism</span>
+                  <span className="text-[10px] text-slate-400 block">{L.heading.nuclearPleomorphism}</span>
                   <span className="text-lg font-bold text-purple-400">
-                    Score {selectedPatch.user_pleo_score ?? selectedPatch.pleo.pleomorphism_score}
+                    {L.field.grade} {selectedPatch.user_pleo_score ?? selectedPatch.pleo.pleomorphism_score}
                   </span>
                   <span className="text-[10px] text-slate-500 block mt-1">
-                    Confidence: {selectedPatch.pleo.confidence}
+                    {L.field.confidence}: {selectedPatch.pleo.confidence}
                   </span>
                 </div>
               </div>
 
               <div className="bg-slate-950 p-3 rounded-lg border border-slate-800 text-xs">
-                <span className="text-[10px] text-slate-400 block mb-1">Pleomorphism Rationale:</span>
-                <p className="text-slate-300 italic">"{selectedPatch.pleo.rationale}"</p>
+                <span className="text-[10px] text-slate-400 block mb-1">{L.field.refereeVerdict}:</span>
+                <p className="text-slate-300 italic">{`"${selectedPatch.pleo.rationale}"`}</p>
               </div>
 
               <div className="flex items-center justify-between pt-2 border-t border-slate-800">
@@ -1906,7 +1900,7 @@ export function GradingReviewWorkspace({
                     }}
                     className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-sky-300 rounded text-xs font-semibold flex items-center gap-1.5 transition"
                   >
-                    <Edit3 className="w-3.5 h-3.5" /> Modify Findings
+                    <Edit3 className="w-3.5 h-3.5" /> {L.action.edit}
                   </button>
                 )}
 
@@ -1918,11 +1912,11 @@ export function GradingReviewWorkspace({
                     disabled={actionLoading}
                     className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-bold flex items-center gap-1.5 shadow transition"
                   >
-                    <Check className="w-3.5 h-3.5" /> Approve Patch
+                    <Check className="w-3.5 h-3.5" /> {L.action.confirm}
                   </button>
                 ) : (
                   <span className="text-xs font-bold text-emerald-400 flex items-center gap-1">
-                    <CheckCircle2 className="w-4 h-4" /> {isConfirmed ? "Stage Confirmed (Locked)" : "Pathologist Approved"}
+                    <CheckCircle2 className="w-4 h-4" /> {isConfirmed ? L.status.confirmed : L.status.approved}
                   </span>
                 )}
               </div>

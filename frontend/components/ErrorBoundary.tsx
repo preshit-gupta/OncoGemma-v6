@@ -1,6 +1,7 @@
 "use client";
 
 import React, { Component, ErrorInfo, ReactNode } from "react";
+import { L } from "@/lib/labels";
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -52,11 +53,10 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
               </svg>
             </div>
             <h3 className="font-bold text-lg text-slate-100">
-              Clinical Viewer Error
+              {L.error.stageExecutionFailed}
             </h3>
             <p className="text-sm text-slate-400">
-              An unexpected error occurred while rendering this stage viewer.
-              Your case data is safe and unaffected.
+              {L.error.genericError}
             </p>
             {this.state.error && (
               <pre className="w-full text-left text-[11px] font-mono text-rose-300/80 bg-slate-950 border border-slate-800 rounded-lg p-3 overflow-x-auto max-h-32 scrollbar-thin">
@@ -81,7 +81,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
                   d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
                 />
               </svg>
-              Retry
+              {L.action.retry}
             </button>
           </div>
         </div>

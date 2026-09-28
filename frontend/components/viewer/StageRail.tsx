@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import { CheckCircle2, Clock, XCircle, Play, PanelLeftClose, PanelLeft, RotateCcw, UserCheck } from "lucide-react";
 import { retryStage } from "@/lib/api";
+import { L } from "@/lib/labels";
 
 export interface StageInfo {
   id: string;
@@ -23,11 +24,11 @@ interface StageRailProps {
 }
 
 const STAGE_ORDER = [
-  { name: "ingest", label: "v4.0 WSI Ingest" },
-  { name: "preprocess", label: "v4.1 Stain & QC Gate" },
-  { name: "triage", label: "v4.2 Hotspot Triage" },
-  { name: "mitosis", label: "v4.3 Mitosis Counting" },
-  { name: "grading", label: "v4.4 Nottingham Grade" },
+  { name: "ingest", label: L.stage.ingest },
+  { name: "preprocess", label: L.stage.preprocess },
+  { name: "triage", label: L.stage.triage },
+  { name: "mitosis", label: L.stage.mitosis },
+  { name: "grading", label: L.stage.grading },
 ];
 
 export function StageRail({ caseId, stages, activeStage, onSelectStage, onRefresh }: StageRailProps) {
@@ -56,17 +57,17 @@ export function StageRail({ caseId, stages, activeStage, onSelectStage, onRefres
   const formatStatusLabel = (status: string) => {
     switch (status) {
       case "awaiting_review":
-        return "Ready for Review";
+        return L.status.awaitingReview;
       case "confirmed":
-        return "Confirmed";
+        return L.status.confirmed;
       case "done":
-        return "Completed";
+        return L.status.done;
       case "running":
-        return "Processing...";
+        return L.status.running;
       case "queued":
-        return "In Queue";
+        return L.status.pending;
       case "failed":
-        return "Failed";
+        return L.status.failed;
       default:
         return status;
     }
@@ -102,15 +103,16 @@ export function StageRail({ caseId, stages, activeStage, onSelectStage, onRefres
         {!collapsed && (
           <div>
             <h2 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
-              Workflow Pipeline
+              {L.heading.workflowPipeline}
             </h2>
-            <p className="text-[10px] text-slate-500">Nottingham Grade Diagnostics</p>
+            <p className="text-[10px] text-slate-500">{L.stage.grading}</p>
           </div>
         )}
         <button
           onClick={() => setCollapsed(!collapsed)}
           className="p-1 hover:bg-slate-200 text-slate-500 rounded transition mx-auto"
-          title={collapsed ? "Expand Pipeline Sidebar" : "Collapse Sidebar"}
+          title={L.heading.workflowPipeline}
+          aria-label={L.heading.workflowPipeline}
         >
           {collapsed ? <PanelLeft className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
         </button>
@@ -128,7 +130,7 @@ export function StageRail({ caseId, stages, activeStage, onSelectStage, onRefres
             <div key={st.name} className="flex flex-col space-y-1">
               <button
                 onClick={() => onSelectStage(st.name)}
-                title={collapsed ? `${st.label} (${status})` : undefined}
+                title={collapsed ? `${st.label}` : undefined}
                 className={`w-full text-left rounded-lg border transition-all flex items-center ${
                   collapsed ? "p-2.5 justify-center" : "p-3 justify-between"
                 } ${
@@ -149,7 +151,7 @@ export function StageRail({ caseId, stages, activeStage, onSelectStage, onRefres
                     <div className="truncate">
                       <div className="text-xs font-semibold truncate">{st.label}</div>
                       <div className="text-[10px] text-slate-400 capitalize truncate">
-                        {formatStatusLabel(status)} {stageInfo?.attempt && stageInfo.attempt > 1 ? `(Attempt ${stageInfo.attempt})` : ""}
+                        {formatStatusLabel(status)}
                       </div>
                     </div>
                   )}
@@ -161,7 +163,8 @@ export function StageRail({ caseId, stages, activeStage, onSelectStage, onRefres
                       onClick={(e) => handleRetry(e, st.name)}
                       disabled={retryingStage === st.name}
                       className="p-1 hover:bg-rose-100 text-rose-600 rounded transition"
-                      title="Retry Stage Execution"
+                      title={L.action.retryStage}
+                      aria-label={L.action.retryStage}
                     >
                       <RotateCcw className={`w-3.5 h-3.5 ${retryingStage === st.name ? "animate-spin" : ""}`} />
                     </button>
@@ -173,7 +176,7 @@ export function StageRail({ caseId, stages, activeStage, onSelectStage, onRefres
               {/* Show error snippet if failed */}
               {!collapsed && isFailed && stageInfo?.error && (
                 <div className="mx-1 px-2.5 py-1.5 bg-rose-50 border border-rose-200 rounded text-[10px] text-rose-700 font-mono truncate" title={stageInfo.error}>
-                  Error: {stageInfo.error.split("\n").filter(Boolean).pop() || "Stage failed"}
+                  {L.field.status}: {stageInfo.error.split("\n").filter(Boolean).pop() || L.status.failed}
                 </div>
               )}
             </div>
@@ -184,7 +187,7 @@ export function StageRail({ caseId, stages, activeStage, onSelectStage, onRefres
       {/* Footer */}
       {!collapsed && (
         <div className="p-3 border-t border-slate-100 bg-slate-50 text-[11px] text-slate-400 truncate">
-          OncoGemma v4.0 • Pathologist Verified
+          {L.heading.appTitle} • {L.status.done}
         </div>
       )}
     </aside>
