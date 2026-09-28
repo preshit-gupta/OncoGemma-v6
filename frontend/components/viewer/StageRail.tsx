@@ -28,7 +28,6 @@ const STAGE_ORDER = [
   { name: "triage", label: "v4.2 Hotspot Triage" },
   { name: "mitosis", label: "v4.3 Mitosis Counting" },
   { name: "grading", label: "v4.4 Nottingham Grade" },
-  { name: "report", label: "v4.5 CAP Report" },
 ];
 
 export function StageRail({ caseId, stages, activeStage, onSelectStage, onRefresh }: StageRailProps) {

@@ -1,3 +1,5 @@
+> Archived v5 audit (2026-09-04). Describes v5 at commit 899d0e8, not the current code.
+
 # OncoGemma v5 Code Audit
 
 Repository: https://github.com/preshit-gupta/OncoGemma-v5 (commit `899d0e8`). Audited against the staged PRDs in `prd/00-overview.md` through `prd/07-stage-v4.6-validation.md`.

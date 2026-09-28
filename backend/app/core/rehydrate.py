@@ -91,7 +91,6 @@ def rehydrate_case_from_gcs(case_id_val: Any, db: Session) -> Case | None:
         ("triage", f"cases/{case_str}/triage/output.json", "awaiting_review"),
         ("mitosis", f"cases/{case_str}/mitosis/output.json", "awaiting_review"),
         ("grading", f"cases/{case_str}/grading/output.json", "awaiting_review"),
-        ("report", f"cases/{case_str}/report/output.json", "awaiting_review"),
     ]
 
     for stage_name, gcs_path, default_status in stages_to_check:

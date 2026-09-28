@@ -16,7 +16,6 @@ from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
 from app.models.detection import Detection
 from app.models.hpf_site import HpfSite
-from app.models.report import Report
 
 SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
 
@@ -244,21 +243,11 @@ def test_confirm_safety_gate_blocking_and_success(setup_test_case):
     assert res_success.json()["next_stage"] == "grading"
 
 
-def test_confirm_mitosis_guards_signed_report(setup_test_case):
+def test_confirm_mitosis_does_not_clobber_completed_grading(setup_test_case):
     case_id = setup_test_case
     case_uid = uuid.UUID(case_id)
 
     db = TestingSessionLocal()
-    # Add a signed report
-    signed_rep = Report(
-        case_id=case_uid,
-        status="signed",
-        signed_by="Dr. Attending Pathologist",
-        signed_at=None,
-        integrity_hash="abcdef123456"
-    )
-    db.add(signed_rep)
-
     # Set grading stage execution to done
     grading_exec = StageExecution(
         case_id=case_uid,

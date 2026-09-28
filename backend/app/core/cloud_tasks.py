@@ -25,7 +25,7 @@ def dispatch_stage_task(
     
     Args:
         case_id: The UUID string of the Case.
-        stage: The stage name ('ingest', 'preprocess', 'qc', 'triage', 'mitosis', 'grading', 'report').
+        stage: The stage name ('ingest', 'preprocess', 'qc', 'triage', 'mitosis', 'grading').
         stage_exec_id: Optional UUID string of the StageExecution row.
         payload: Optional additional dictionary parameters.
         delay_seconds: Delay before Cloud Tasks dispatches the task.

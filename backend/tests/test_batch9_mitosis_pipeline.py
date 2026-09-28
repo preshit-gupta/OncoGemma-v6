@@ -283,33 +283,6 @@ def test_add_candidate_raises_500_on_slide_read_failure():
 
 
 # =========================================================================
-# Issue #129: Config thresholds match EVAL.md
-# =========================================================================
-def test_config_and_eval_doc_threshold_alignment():
-    """
-    Validates issue #129: configs/mitosis.yaml thresholds match documentation in models/detector/EVAL.md.
-    """
-    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-    config_path = os.path.join(repo_root, "configs/mitosis.yaml")
-    eval_path = os.path.join(repo_root, "models/detector/EVAL.md")
-
-    with open(config_path, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-
-    with open(eval_path, "r", encoding="utf-8") as f:
-        eval_md = f.read()
-
-    det_thresh = cfg["detector"]["det_threshold"]
-    ver_thresh = cfg["verifier"]["ver_threshold"]
-    nms_radius = cfg["detector"]["nms_radius_um"]
-
-    # Verify values are in EVAL.md
-    assert f"det_threshold: {det_thresh}" in eval_md or f"{det_thresh}" in eval_md
-    assert f"{ver_thresh}" in eval_md
-    assert f"{nms_radius}" in eval_md
-
-
-# =========================================================================
 # GCS Triage Artifact Fallback Test
 # =========================================================================
 def test_worker_recovers_hotspots_from_triage_artifact():

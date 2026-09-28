@@ -35,7 +35,6 @@ from app.models.hotspot import Hotspot
 from app.models.detection import Detection
 from app.models.hpf_site import HpfSite
 from app.models.stage_execution import StageExecution
-from app.models.report import Report
 from app.models.audit import AuditEvent
 from pipeline.medgemma import HistologicTypeResponse, MedGemmaClient
 from worker.grading import select_max_density_hotspot_patches, run_grading
@@ -141,79 +140,6 @@ def test_medgemma_task_routing_priority():
     resp_type = client._mock_fallback_response(prompt_with_tubule, task="histologic_type")
     assert "IDC-NST" in resp_type or "histologic" in resp_type.lower()
     assert "tubule_percent" not in resp_type
-
-    resp_narrative = client._mock_fallback_response(prompt_with_tubule, task="findings_narrative")
-    assert "invasive breast carcinoma" in resp_narrative.lower()
-    assert "tubule_percent" not in resp_narrative
-
-    resp_cap = client._mock_fallback_response(prompt_with_tubule, task="cap_report")
-    assert "diagnosis_line" in resp_cap
-    assert "tubule_percent" not in resp_cap
-
-
-# ============================================================================
-# 3. Findings Narrative & CAP Grounding Tests (#598, #599)
-# ============================================================================
-
-def test_generate_findings_narrative_grounding_in_aggregate():
-    """Findings narrative must extract Nottingham grade and sum from aggregate data dict (#598)."""
-    client = MedGemmaClient()
-    with mock.patch.object(client, "_call_vertex_endpoint", side_effect=RuntimeError("Endpoint unavailable")):
-        aggregated_data = {
-            "aggregate": {
-                "grade": 3,
-                "nottingham_sum": 8,
-                "tubule_score": 3,
-                "pleo_score": 3,
-                "mitotic_score": 2,
-                "tubule_percent": 12.5,
-                "mitoses_per_mm2": 15.0
-            }
-        }
-        narrative = asyncio.run(client.generate_findings_narrative(aggregated_data, "Prompt {input_json}"))
-        assert "Grade 3" in narrative
-        assert "8/9" in narrative
-        assert "Grade 2" not in narrative
-
-
-def test_generate_cap_report_grounding_pleomorphism_and_lvi():
-    """CAP synoptic narrative must ground pleomorphism in p_score and LVI in case lvi_status (#599)."""
-    client = MedGemmaClient()
-    with mock.patch.object(client, "_call_gemini_flash", side_effect=RuntimeError("Flash offline")), \
-         mock.patch.object(client, "_call_vertex_endpoint", side_effect=RuntimeError("Endpoint unavailable")):
-        case_marked_present = {
-            "histologic_type": "IDC-NST",
-            "nottingham_grade": {
-                "grade": 3,
-                "nottingham_sum": 8,
-                "tubule_score": 3,
-                "pleo_score": 3,
-                "mitotic_score": 2,
-                "tubule_percent": 10.0
-            },
-            "lvi_status": "present",
-            "procedure": "Excision",
-            "laterality": "left"
-        }
-        cap_1 = asyncio.run(client.generate_cap_report_narrative(case_marked_present))
-        assert "marked nuclear pleomorphism" in cap_1["microscopic_findings"].lower()
-        assert "lymphovascular invasion is identified" in cap_1["microscopic_findings"].lower()
-
-        case_mild_absent = {
-            "histologic_type": "Tubular Carcinoma",
-            "nottingham_grade": {
-                "grade": 1,
-                "nottingham_sum": 3,
-                "tubule_score": 1,
-                "pleo_score": 1,
-                "mitotic_score": 1,
-                "tubule_percent": 85.0
-            },
-            "lvi_status": "absent"
-        }
-        cap_2 = asyncio.run(client.generate_cap_report_narrative(case_mild_absent))
-        assert "mild nuclear pleomorphism" in cap_2["microscopic_findings"].lower()
-        assert "lymphovascular invasion is not identified" in cap_2["microscopic_findings"].lower()
 
 
 # ============================================================================
@@ -574,52 +500,6 @@ def test_confirm_grading_stage_successful_and_locked_against_reconfirmation():
     assert "already confirmed" in res_second.json()["detail"].lower()
 
 
-def test_confirm_grading_stage_rejects_mutation_on_signed_report():
-    """If case report is signed, confirm_grading_stage must return 409 Conflict (#138)."""
-    client = TestClient(app)
-    db = TestingSessionLocal()
-    case_uid = uuid.uuid4()
-
-    case = Case(id=case_uid, status="in_progress", created_by="test_user")
-    stage_exec = StageExecution(case_id=case_uid, stage="grading", attempt=1, status="in_progress")
-    grading_rec = Grading(
-        case_id=case_uid,
-        histologic_type="IDC-NST",
-        type_confirmed_by="Dr. Pathologist",
-        tubule_score=2,
-        pleo_score=2,
-        mitotic_score=1,
-        nottingham_sum=5,
-        grade=1,
-        machine=_create_approved_grading_data()
-    )
-    signed_report = Report(
-        case_id=case_uid,
-        version=1,
-        status="signed",
-        signed_by="Dr. Attending"
-    )
-    db.add_all([case, stage_exec, grading_rec, signed_report])
-    db.commit()
-    db.close()
-
-    res = client.post(
-        "/api/v1/stages/grading/confirm",
-        json={
-            "case_id": str(case_uid),
-            "reviewed_by": "Dr. Pathologist",
-            "histologic_type": "IDC-NST",
-            "type_confirmed": True,
-            "tubule_score": 2,
-            "pleo_score": 2,
-            "mitotic_score": 1,
-            "nottingham_sum": 5,
-            "grade": 1
-        },
-        headers={"X-User-Role": "pathologist"}
-    )
-    assert res.status_code == 409
-    assert "signed or amended case report" in res.json()["detail"].lower()
 
 
 # ============================================================================

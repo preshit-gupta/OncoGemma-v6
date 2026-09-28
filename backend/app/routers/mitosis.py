@@ -1031,17 +1031,7 @@ def confirm_mitosis_stage(payload: MitosisConfirmPayload, db: Session = Depends(
     stage_exec.reviewed_at = datetime.now(timezone.utc)
     stage_exec.reviewed_by = payload.reviewed_by
 
-    # Queue Stage 5 (grading) - Guarded against overwriting signed reports
-    from app.models.report import Report
-    try:
-        report_status = db.scalar(
-            select(Report.status).where(Report.case_id == case_uid)
-        )
-        is_report_signed = report_status in ("signed", "amended") if report_status else False
-    except Exception:
-        db.rollback()
-        is_report_signed = False
-
+    # Queue Stage 5 (grading)
     next_exec = db.scalars(
         select(StageExecution).where(
             (StageExecution.case_id == case_uid) | (StageExecution.case_id == str(case_id)),
@@ -1049,20 +1039,19 @@ def confirm_mitosis_stage(payload: MitosisConfirmPayload, db: Session = Depends(
         ).order_by(StageExecution.attempt.desc())
     ).first()
 
-    if not is_report_signed:
-        if not next_exec:
-            next_exec = StageExecution(
-                case_id=case_uid,
-                stage="grading",
-                attempt=1,
-                status="queued"
-            )
-            db.add(next_exec)
-        elif next_exec.status not in ("confirmed", "done"):
-            next_exec.status = "queued"
-            next_exec.started_at = None
-            next_exec.completed_at = None
-            next_exec.error = None
+    if not next_exec:
+        next_exec = StageExecution(
+            case_id=case_uid,
+            stage="grading",
+            attempt=1,
+            status="queued"
+        )
+        db.add(next_exec)
+    elif next_exec.status not in ("confirmed", "done"):
+        next_exec.status = "queued"
+        next_exec.started_at = None
+        next_exec.completed_at = None
+        next_exec.error = None
 
     # Synchronize confirmed detections & HPFs back to GCS output.json and snapshot metrics (#118)
     total_m = 0
