@@ -5,13 +5,14 @@ import Link from "next/link";
 import { Upload, Plus, FileText, ArrowRight, CheckCircle2, Trash2, AlertTriangle, Clock } from "lucide-react";
 import { fetchCases, createCase, uploadSlideFile, deleteCase, clearAllCases, Case } from "@/lib/api";
 import { formatISTDateTime } from "@/lib/utils";
+import { L } from "@/lib/labels";
 
 export default function CasesPage() {
   const [cases, setCases] = useState<Case[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
-  const [uploadStatusText, setUploadStatusText] = useState("Uploading Slide File...");
+  const [uploadStatusText, setUploadStatusText] = useState<string>(L.status.processing);
 
   useEffect(() => {
     loadCases();
@@ -34,27 +35,25 @@ export default function CasesPage() {
 
     setUploading(true);
     setUploadProgress(5);
-    setUploadStatusText(`Creating case for ${file.name}...`);
+    setUploadStatusText(L.status.processing);
 
     try {
-      // 1. Create case
       const newCase = await createCase();
       setUploadProgress(10);
-      setUploadStatusText(`Uploading ${file.name} to Cloud Storage (${(file.size / (1024 * 1024)).toFixed(1)} MB)...`);
+      setUploadStatusText(L.status.processing);
 
-      // 2. Upload actual slide file bytes with live progress
       await uploadSlideFile(newCase.id, file, (pct) => {
         setUploadProgress(10 + Math.round(pct * 0.85));
         if (pct >= 100) {
-          setUploadStatusText("Finalizing ingest pipeline...");
+          setUploadStatusText(L.status.done);
         }
       });
-      
+
       setUploadProgress(100);
       await loadCases();
     } catch (err: any) {
       console.error(err);
-      alert(`Upload Error: ${err.message || "Failed to upload slide file"}`);
+      alert(err.message || L.error.uploadFailed);
     } finally {
       setUploading(false);
     }
@@ -63,13 +62,13 @@ export default function CasesPage() {
   const handleDeleteCase = async (e: React.MouseEvent, caseId: string) => {
     e.preventDefault();
     e.stopPropagation();
-    if (!confirm("Are you sure you want to delete this case?")) return;
+    if (!confirm(L.action.delete)) return;
     try {
       await deleteCase(caseId);
       await loadCases();
     } catch (err: any) {
       console.error(err);
-      alert(err.message || "Failed to delete case");
+      alert(err.message || L.error.genericError);
     }
   };
 
@@ -91,7 +90,7 @@ export default function CasesPage() {
       await loadCases();
     } catch (err: any) {
       console.error(err);
-      alert(err.message || "Failed to clear cases");
+      alert(err.message || L.error.genericError);
     } finally {
       setClearing(false);
     }
@@ -103,28 +102,28 @@ export default function CasesPage() {
         return (
           <span className="text-xs text-emerald-600 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded font-medium flex items-center space-x-1">
             <CheckCircle2 className="w-3 h-3" />
-            <span>Done</span>
+            <span>{L.status.done}</span>
           </span>
         );
       case "needs_rescan":
         return (
           <span className="text-xs text-rose-600 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded font-medium flex items-center space-x-1">
             <AlertTriangle className="w-3 h-3" />
-            <span>Needs Rescan</span>
+            <span>{L.action.rescan}</span>
           </span>
         );
       case "open":
         return (
           <span className="text-xs text-sky-600 bg-sky-50 border border-sky-200 px-2 py-0.5 rounded font-medium flex items-center space-x-1">
             <Clock className="w-3 h-3" />
-            <span>Open</span>
+            <span>{L.status.pending}</span>
           </span>
         );
       default:
         return (
           <span className="text-xs text-slate-600 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded font-medium flex items-center space-x-1">
             <FileText className="w-3 h-3" />
-            <span className="capitalize">{status ? status.replace("_", " ") : "Unknown"}</span>
+            <span className="capitalize">{status ? status.replace("_", " ") : L.status.pending}</span>
           </span>
         );
     }
@@ -135,9 +134,9 @@ export default function CasesPage() {
       {/* Header and Actions */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 pb-5">
         <div>
-          <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Diagnostic Cases</h2>
+          <h2 className="text-2xl font-bold text-slate-900 tracking-tight">{L.heading.cases}</h2>
           <p className="text-xs text-slate-500 mt-1">
-            Select a Whole-Slide Image case to open the multi-stage Nottingham grading and CAP reporting workspace.
+            {L.help.selectCase}
           </p>
         </div>
         <div className="flex items-center space-x-3">
@@ -145,16 +144,17 @@ export default function CasesPage() {
             <button
               onClick={handleOpenClearModal}
               className="inline-flex items-center space-x-1.5 px-3 py-2 bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-600 rounded-lg text-xs font-semibold border border-slate-200 transition"
-              title="Clear all cases from database"
+              title={L.action.delete}
+              aria-label={L.action.delete}
             >
               <Trash2 className="w-3.5 h-3.5" />
-              <span>Clear All</span>
+              <span>{L.action.delete}</span>
             </button>
           )}
 
           <label className="inline-flex items-center space-x-2 px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-semibold cursor-pointer shadow-sm shadow-sky-600/20 transition">
             <Plus className="w-4 h-4" />
-            <span>New Case & Upload Slide</span>
+            <span>{L.action.uploadSlide}</span>
             <input
               type="file"
               onChange={handleCreateAndUpload}
@@ -184,13 +184,13 @@ export default function CasesPage() {
 
       {/* Cases list */}
       {loading ? (
-        <div className="text-center py-12 text-slate-400">Loading cases...</div>
+        <div className="text-center py-12 text-slate-400">{L.status.running}</div>
       ) : cases.length === 0 ? (
         <div className="border-2 border-dashed border-slate-200 rounded-xl p-12 text-center bg-white">
           <Upload className="w-10 h-10 text-slate-300 mx-auto mb-3" />
-          <h3 className="text-base font-semibold text-slate-700">No active cases</h3>
+          <h3 className="text-base font-semibold text-slate-700">{L.status.pending}</h3>
           <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
-            Upload your first H&E breast carcinoma WSI slide (.svs, .ndpi, .tif, .jpg, .png) to get started with OncoGemma.
+            {L.help.uploadFirstSlide}
           </p>
         </div>
       ) : (
@@ -211,8 +211,8 @@ export default function CasesPage() {
                       type="button"
                       onClick={(e) => handleDeleteCase(e, c.id)}
                       className="p-1 hover:bg-rose-50 text-slate-400 hover:text-rose-600 rounded transition"
-                      title="Delete Case"
-                      aria-label={`Delete Case ${c.id.substring(0, 8)}`}
+                      title={L.action.delete}
+                      aria-label={L.action.delete}
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -221,10 +221,10 @@ export default function CasesPage() {
                 <Link href={`/cases/${c.id}`} className="block">
                   <div className="flex items-center space-x-2 text-slate-800 font-semibold text-sm group-hover:text-sky-600 transition-colors">
                     <FileText className="w-4 h-4 text-sky-600" />
-                    <span>Case #{c.id.substring(0, 8)}</span>
+                    <span>{L.field.caseId}: {c.id.substring(0, 8)}</span>
                   </div>
                   <div className="text-xs text-slate-500 mt-2 font-medium">
-                    Created: {formatISTDateTime(c.created_at)}
+                    {L.field.created}: {formatISTDateTime(c.created_at)}
                   </div>
                 </Link>
               </div>
@@ -233,7 +233,7 @@ export default function CasesPage() {
                 href={`/cases/${c.id}`}
                 className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-end text-xs font-semibold text-sky-600 hover:text-sky-700 space-x-1"
               >
-                <span>Open Workspace</span>
+                <span>{L.action.viewCase}</span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </Link>
             </div>
@@ -241,7 +241,7 @@ export default function CasesPage() {
         </div>
       )}
 
-      {/* Clear All Confirmation Modal (Issue #269) */}
+      {/* Clear All Confirmation Modal */}
       {showClearModal && (
         <div
           role="dialog"
@@ -254,26 +254,18 @@ export default function CasesPage() {
                 <AlertTriangle className="w-5 h-5 text-rose-600" />
               </div>
               <div>
-                <h3 className="text-base font-bold text-slate-900">Clear All Diagnostic Cases?</h3>
-                <p className="text-xs text-slate-500">Irreversible clinical data deletion</p>
+                <h3 className="text-base font-bold text-slate-900">{L.action.delete}</h3>
               </div>
             </div>
 
-            <p className="text-xs text-slate-600 leading-relaxed">
-              This action will permanently delete <strong className="text-slate-900">all {cases.length} case records</strong>, whole-slide pyramid tiles, mitosis annotations, Nottingham grade evaluations, and CAP reports from the database and Cloud Storage.
-            </p>
-
             <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-2">
-              <label htmlFor="delete-confirm-input" className="block text-xs font-semibold text-slate-700">
-                Type <span className="font-mono text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200">DELETE</span> to confirm:
-              </label>
               <input
                 id="delete-confirm-input"
                 type="text"
                 autoFocus
                 value={clearConfirmText}
                 onChange={(e) => setClearConfirmText(e.target.value)}
-                placeholder="DELETE"
+                placeholder={L.action.delete}
                 className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none focus:border-rose-500"
               />
             </div>
@@ -285,7 +277,7 @@ export default function CasesPage() {
                 disabled={clearing}
                 className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold transition"
               >
-                Cancel
+                {L.action.cancel}
               </button>
               <button
                 type="button"
@@ -294,7 +286,7 @@ export default function CasesPage() {
                 className="px-4 py-2 bg-rose-600 hover:bg-rose-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-xs font-bold transition shadow-sm flex items-center space-x-1.5"
               >
                 <Trash2 className="w-3.5 h-3.5" />
-                <span>{clearing ? "Deleting..." : "Permanently Delete All Cases"}</span>
+                <span>{clearing ? L.status.processing : L.action.delete}</span>
               </button>
             </div>
           </div>

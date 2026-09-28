@@ -12,6 +12,7 @@ import {
   Eye
 } from "lucide-react";
 import { MitosisCandidate, API_BASE } from "@/lib/api";
+import { L } from "@/lib/labels";
 
 interface MitosisGalleryProps {
   caseId: string;
@@ -72,7 +73,7 @@ export function MitosisGallery({
           <div className="flex items-center gap-2">
             <Layers className="w-4 h-4 text-emerald-400" />
             <span className="font-semibold text-xs tracking-wider uppercase text-slate-300">
-              Field #{fieldSeq} Candidates
+              {L.field.fieldNumber} #{fieldSeq} {L.heading.mitoticCandidates}
             </span>
           </div>
           <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-mono">
@@ -90,7 +91,7 @@ export function MitosisGallery({
                 : "text-slate-400 hover:text-slate-200"
             }`}
           >
-            All ({candidates.length})
+            {L.action.filterAll} ({candidates.length})
           </button>
           <button
             onClick={() => onSetFilterMode("unreviewed")}
@@ -100,7 +101,7 @@ export function MitosisGallery({
                 : "text-slate-400 hover:text-amber-300"
             }`}
           >
-            Unrev ({unreviewedCount})
+            {L.action.filterUnreviewed} ({unreviewedCount})
           </button>
           <button
             onClick={() => onSetFilterMode("mitosis")}
@@ -110,7 +111,7 @@ export function MitosisGallery({
                 : "text-slate-400 hover:text-emerald-300"
             }`}
           >
-            Mitosis ({mitosisCount})
+            {L.action.markMitosis} ({mitosisCount})
           </button>
           <button
             onClick={() => onSetFilterMode("not_mitosis")}
@@ -120,16 +121,16 @@ export function MitosisGallery({
                 : "text-slate-400 hover:text-slate-200"
             }`}
           >
-            Rej ({rejectedCount})
+            {L.action.filterRejected} ({rejectedCount})
           </button>
         </div>
 
         {/* Keyboard Shortcut Tips */}
         <div className="mt-2 flex items-center justify-between text-[10px] text-slate-400 bg-slate-900/50 px-2 py-1 rounded border border-slate-800/80">
-          <span><kbd className="px-1 py-0.5 bg-slate-800 rounded text-slate-200 font-mono">j</kbd>/<kbd className="px-1 py-0.5 bg-slate-800 rounded text-slate-200 font-mono">k</kbd> Nav</span>
-          <span><kbd className="px-1 py-0.5 bg-emerald-950 text-emerald-300 border border-emerald-700/50 rounded font-mono">m</kbd> Mitosis</span>
-          <span><kbd className="px-1 py-0.5 bg-rose-950 text-rose-300 border border-rose-700/50 rounded font-mono">x</kbd> Reject</span>
-          <span><kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200 font-mono">Space</kbd> 40× Focus</span>
+          <span><kbd className="px-1 py-0.5 bg-slate-800 rounded text-slate-200 font-mono">{"j"}</kbd>/<kbd className="px-1 py-0.5 bg-slate-800 rounded text-slate-200 font-mono">{"k"}</kbd></span>
+          <span><kbd className="px-1 py-0.5 bg-emerald-950 text-emerald-300 border border-emerald-700/50 rounded font-mono">{"m"}</kbd> {L.action.markMitosis}</span>
+          <span><kbd className="px-1 py-0.5 bg-rose-950 text-rose-300 border border-rose-700/50 rounded font-mono">{"x"}</kbd> {L.action.markNotMitosis}</span>
+          <span><kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200 font-mono">{"Space"}</kbd> {L.unit.mag40x}</span>
         </div>
       </div>
 
@@ -138,7 +139,7 @@ export function MitosisGallery({
         {filteredCandidates.length === 0 ? (
           <div className="h-48 flex flex-col items-center justify-center text-slate-500 text-xs">
             <Filter className="w-6 h-6 mb-2 stroke-[1.5] text-slate-600" />
-            No candidates in this filter tab
+            {L.help.noMitoses}
           </div>
         ) : (
           filteredCandidates.map((cand, idx) => {
@@ -188,25 +189,25 @@ export function MitosisGallery({
                       {/* State Badge */}
                       {isMitosis && (
                         <span className="flex items-center gap-1 text-[10px] text-emerald-400 bg-emerald-950/80 px-1.5 py-0.5 rounded border border-emerald-700/40">
-                          <CheckCircle2 className="w-3 h-3" /> Mitosis
+                          <CheckCircle2 className="w-3 h-3" /> {L.action.markMitosis}
                         </span>
                       )}
                       {isRejected && (
                         <span className="flex items-center gap-1 text-[10px] text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700/40">
-                          <XCircle className="w-3 h-3 text-slate-500" /> Rejected
+                          <XCircle className="w-3 h-3 text-slate-500" /> {L.status.rejected}
                         </span>
                       )}
                       {isUnreviewed && (
                         <span className="flex items-center gap-1 text-[10px] text-amber-400 bg-amber-950/80 px-1.5 py-0.5 rounded border border-amber-700/40">
-                          <HelpCircle className="w-3 h-3" /> Review
+                          <HelpCircle className="w-3 h-3" /> {L.status.needsHuman}
                         </span>
                       )}
                     </div>
 
                     <div className="mt-1 flex items-center gap-2 text-[11px] text-slate-400 font-mono">
-                      <span>Det: <strong className="text-slate-300">{((cand.det_conf || 0) * 100).toFixed(0)}%</strong></span>
+                      <span>{L.field.detector}: <strong className="text-slate-300">{((cand.det_conf || 0) * 100).toFixed(0)}%</strong></span>
                       {cand.ver_conf !== null && cand.ver_conf !== undefined && (
-                        <span>Ver: <strong className="text-slate-300">{((cand.ver_conf || 0) * 100).toFixed(0)}%</strong></span>
+                        <span>{L.field.verifier}: <strong className="text-slate-300">{((cand.ver_conf || 0) * 100).toFixed(0)}%</strong></span>
                       )}
                       {cand.medgemma_verdict && (
                         <span 
@@ -221,24 +222,24 @@ export function MitosisGallery({
                         >
                           <Sparkles className="w-2.5 h-2.5 text-indigo-400" />
                           {cand.medgemma_verdict === "CONFIRMED"
-                            ? "MedGemma"
+                            ? "Referee"
                             : cand.medgemma_verdict === "REJECTED_APOPTOSIS"
                             ? "Apoptosis"
                             : cand.medgemma_verdict === "REJECTED_LYMPHOCYTE"
                             ? "Lymphocyte"
-                            : "MedGemma"}
+                            : "Referee"}
                         </span>
                       )}
                       {cand.label_source && cand.label_source !== "model" && !cand.label_source.startsWith("medgemma") && (
                         <span className="text-[9px] px-1 bg-sky-950 text-sky-300 rounded border border-sky-800/40">
-                          Manual
+                          {L.field.manual}
                         </span>
                       )}
                     </div>
 
                     {cand.medgemma_rationale && (
                       <p className="mt-1 text-[10px] text-indigo-200/80 line-clamp-1 italic font-sans" title={cand.medgemma_rationale}>
-                        &ldquo;{cand.medgemma_rationale}&rdquo;
+                        {"\""}{cand.medgemma_rationale}{"\""}
                       </p>
                     )}
 
@@ -255,7 +256,7 @@ export function MitosisGallery({
                             : "bg-slate-800 text-slate-300 hover:bg-emerald-950 hover:text-emerald-300 border border-slate-700/60"
                         }`}
                       >
-                        <CheckCircle2 className="w-3 h-3" /> Mitosis
+                        <CheckCircle2 className="w-3 h-3" /> {L.action.markMitosis}
                       </button>
 
                       <button
@@ -269,7 +270,7 @@ export function MitosisGallery({
                             : "bg-slate-800 text-slate-400 hover:bg-rose-950/40 hover:text-rose-300 border border-slate-700/60"
                         }`}
                       >
-                        <XCircle className="w-3 h-3" /> Reject
+                        <XCircle className="w-3 h-3" /> {L.action.markNotMitosis}
                       </button>
 
                       <button
@@ -277,7 +278,7 @@ export function MitosisGallery({
                           e.stopPropagation();
                           onJumpToCandidate(cand);
                         }}
-                        title="Focus in 40x Viewer"
+                        title={L.action.locate}
                         className="p-1 rounded bg-slate-800 text-slate-400 hover:text-sky-300 hover:bg-slate-700 border border-slate-700/60 transition-colors"
                       >
                         <ExternalLink className="w-3.5 h-3.5" />
@@ -300,9 +301,9 @@ export function MitosisGallery({
           >
             <CheckCircle2 className="w-4 h-4" />
             <span>
-              {fieldSeq < totalFields ? `Approve Field #${fieldSeq} & Next (${fieldSeq + 1}/${totalFields})` : "Approve Field #10 (Complete)"}
+              {fieldSeq < totalFields ? `${L.action.confirm} #${fieldSeq} (${fieldSeq + 1}/${totalFields})` : `${L.action.confirm} (10/10)`}
             </span>
-            <kbd className="ml-1 px-1 py-0.5 bg-emerald-700/80 rounded text-[10px] font-mono">↵ Enter</kbd>
+            <kbd className="ml-1 px-1 py-0.5 bg-emerald-700/80 rounded text-[10px] font-mono">↵</kbd>
           </button>
         </div>
       )}

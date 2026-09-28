@@ -22,6 +22,8 @@ import {
   Check
 } from "lucide-react";
 import { API_BASE, retryStage } from "@/lib/api";
+import { L } from "@/lib/labels";
+import { Provenance } from "../Provenance";
 import { OpenSeadragonViewer } from "./OpenSeadragonViewer";
 
 interface HotspotItem {
@@ -443,7 +445,7 @@ export function TriageViewer({
     return (
       <div className="w-full h-full bg-slate-950 flex flex-col items-center justify-center text-slate-400">
         <Loader2 className="w-8 h-8 animate-spin text-sky-500 mb-2" />
-        <p className="text-sm font-medium">Extracting 10× Path Foundation Tumor Hotspots...</p>
+        <p className="text-sm font-medium">{L.status.extractingHotspots}</p>
       </div>
     );
   }
@@ -490,22 +492,22 @@ export function TriageViewer({
                   onClick={() => { setRoiDrawType("box"); setActivePolygonPoints([]); }}
                   className={`px-2.5 py-1 rounded ${roiDrawType === "box" ? "bg-sky-600 text-white" : "text-slate-400 hover:text-white"}`}
                 >
-                  600µm Box
+                  {L.action.boxRoi}
                 </button>
                 <button
                   onClick={() => { setRoiDrawType("polygon"); }}
                   className={`px-2.5 py-1 rounded flex items-center space-x-1 ${roiDrawType === "polygon" ? "bg-sky-600 text-white" : "text-slate-400 hover:text-white"}`}
                 >
                   <PenTool className="w-3 h-3" />
-                  <span>Custom Polygon</span>
+                  <span>{L.action.customPolygon}</span>
                 </button>
               </div>
             </div>
 
             <span className="text-xs font-medium text-sky-100">
               {roiDrawType === "box"
-                ? "Click anywhere on the slide to place a standardized 600×600 µm HPF box"
-                : `Click points on slide to outline focus (${activePolygonPoints.length} vertices added)`}
+                ? L.help.clickToPlaceHotspot
+                : `${L.heading.polygonVertices} ${L.fmt.pointsCount(activePolygonPoints.length)}`}
             </span>
 
             <div className="flex items-center space-x-2">
@@ -515,7 +517,7 @@ export function TriageViewer({
                   className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition flex items-center space-x-1 shadow-md"
                 >
                   <Check className="w-3 h-3" />
-                  <span>Finish Polygon</span>
+                  <span>{L.action.finishPolygon}</span>
                 </button>
               )}
               <button
@@ -525,7 +527,7 @@ export function TriageViewer({
                 }}
                 className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-bold transition border border-slate-700"
               >
-                Cancel
+                {L.action.cancel}
               </button>
             </div>
           </div>
@@ -537,7 +539,7 @@ export function TriageViewer({
           <div className="flex items-center space-x-3 justify-between">
             <div className="flex items-center space-x-2 text-xs font-semibold text-slate-200">
               <Flame className="w-4 h-4 text-amber-400" />
-              <span>Tumor Heatmap</span>
+              <span>{L.action.toggleHeatmap}</span>
             </div>
 
             <div className="flex items-center space-x-2">
@@ -575,7 +577,7 @@ export function TriageViewer({
           <div className="flex items-center space-x-3 justify-between pt-2 border-t border-slate-800/80">
             <div className="flex items-center space-x-2 text-xs font-semibold text-slate-200">
               <MapPin className="w-4 h-4 text-sky-400" />
-              <span>Hotspot Locations Mask</span>
+              <span>{L.action.toggleMask}</span>
             </div>
 
             <label className="relative inline-flex items-center cursor-pointer">
@@ -592,18 +594,18 @@ export function TriageViewer({
           {/* Colormap Legend */}
           {showHeatmap && (
             <div className="pt-2 border-t border-slate-800/80 flex items-center space-x-2 text-[10px] text-slate-400">
-              <span className="font-semibold text-slate-500">Scale:</span>
+              <span className="font-semibold text-slate-500">{L.field.scale}:</span>
               <div className="flex items-center space-x-1">
                 <div className="w-2.5 h-2.5 rounded-sm bg-[#440154]" />
-                <span>Stroma</span>
+                <span>{L.field.stroma}</span>
               </div>
               <div className="flex items-center space-x-1">
                 <div className="w-2.5 h-2.5 rounded-sm bg-[#21918c]" />
-                <span>Moderate</span>
+                <span>{L.field.moderate}</span>
               </div>
               <div className="flex items-center space-x-1">
                 <div className="w-2.5 h-2.5 rounded-sm bg-[#fde725]" />
-                <span className="text-amber-300 font-semibold">Hotspot (&gt;75%)</span>
+                <span className="text-amber-300 font-semibold">{L.field.hotspotArea} {`(>75%)`}</span>
               </div>
             </div>
           )}
@@ -617,27 +619,27 @@ export function TriageViewer({
           <div>
             <h2 className="text-sm font-bold text-slate-100 flex items-center space-x-2">
               <Flame className="w-4 h-4 text-amber-500" />
-              <span>Stage 3: Hotspot Triage</span>
+              <span>{L.heading.hotspotTriage}</span>
             </h2>
-            <p className="text-[11px] text-slate-400 mt-0.5">Path Foundation 10× Tumor Front Screening</p>
           </div>
           <div className="flex items-center space-x-2">
+            <Provenance model_versions={data?.model_versions} />
             <button
               onClick={() => fetchTriageData()}
               className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-xs font-semibold flex items-center space-x-1 transition shadow-sm"
-              title="Refresh Triage Data"
+              title={L.action.refresh}
             >
               <RotateCcw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
-              <span className="hidden sm:inline">Refresh</span>
+              <span className="hidden sm:inline">{L.action.refresh}</span>
             </button>
             <button
               onClick={handleReprocessTriage}
               disabled={reprocessing}
               className="p-1.5 bg-amber-600/20 hover:bg-amber-600/40 text-amber-400 border border-amber-500/30 rounded-lg text-xs font-semibold flex items-center space-x-1 transition shadow-sm"
-              title="Re-run Vertex AI Path Foundation screening and hotspot assessment"
+              title={L.action.rerunHotspots}
             >
               <RotateCcw className={`w-3.5 h-3.5 ${reprocessing ? "animate-spin" : ""}`} />
-              <span className="hidden sm:inline">Re-Assess</span>
+              <span className="hidden sm:inline">{L.action.rerunHotspots}</span>
             </button>
             <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
               data?.status === "confirmed" ? "bg-emerald-950 text-emerald-400 border border-emerald-800" : "bg-amber-950 text-amber-400 border border-amber-800"
@@ -650,19 +652,19 @@ export function TriageViewer({
         {/* Stats Summary Panel */}
         <div className="p-4 bg-slate-950/60 border-b border-slate-800 grid grid-cols-2 gap-3">
           <div className="bg-slate-900 p-2.5 rounded-lg border border-slate-800">
-            <div className="text-[10px] font-semibold uppercase text-slate-400">Active Hotspots</div>
+            <div className="text-[10px] font-semibold uppercase text-slate-400">{L.heading.activeHotspots}</div>
             <div className="text-lg font-bold font-mono text-sky-400">{activeHotspotsCount}</div>
           </div>
           <div className="bg-slate-900 p-2.5 rounded-lg border border-slate-800">
-            <div className="text-[10px] font-semibold uppercase text-slate-400">Total Tumor Area</div>
-            <div className="text-lg font-bold font-mono text-amber-400">{totalAreaMm2.toFixed(2)} mm²</div>
+            <div className="text-[10px] font-semibold uppercase text-slate-400">{L.field.tumorArea}</div>
+            <div className="text-lg font-bold font-mono text-amber-400">{L.fmt.areaMm2(totalAreaMm2)}</div>
           </div>
         </div>
 
         {/* Hotspots List */}
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">Proposed Tumor ROIs</span>
+            <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">{L.heading.proposedRois}</span>
             <button
               onClick={() => setIsAddingRoiMode(!isAddingRoiMode)}
               className={`px-2.5 py-1 rounded text-xs font-semibold flex items-center space-x-1.5 transition ${
@@ -670,16 +672,16 @@ export function TriageViewer({
                   ? "bg-sky-600 text-white ring-2 ring-sky-400 shadow-md shadow-sky-600/30"
                   : "bg-sky-600/20 hover:bg-sky-600/40 text-sky-400 border border-sky-600/40"
               }`}
-              title="Click on the Whole Slide Image to select a custom tumor ROI"
+              title={L.help.clickToPlaceHotspot}
             >
               <Plus className="w-3.5 h-3.5" />
-              <span>{isAddingRoiMode ? "Cancel Pinning" : "+ Pin ROI on Slide"}</span>
+              <span>{isAddingRoiMode ? L.action.cancel : `+ ${L.action.addHotspot}`}</span>
             </button>
           </div>
 
           {hotspotsList.length === 0 ? (
             <div className="p-4 border border-dashed border-slate-800 rounded-lg text-center text-xs text-slate-500">
-              No tumor hotspots extracted.
+              {L.help.noHotspots}
             </div>
           ) : (
             hotspotsList.map((hs) => {
@@ -716,10 +718,10 @@ export function TriageViewer({
                                 ? "bg-sky-600 text-white shadow-md shadow-sky-600/30"
                                 : "bg-slate-800 hover:bg-sky-600/30 text-sky-400 border border-slate-700"
                             }`}
-                            title="Highlight hotspot location on slide with crosshair reticle"
+                            title={L.action.locate}
                           >
                             <Crosshair className="w-3 h-3" />
-                            <span>Locate</span>
+                            <span>{L.action.locate}</span>
                           </button>
 
                           <button
@@ -729,10 +731,10 @@ export function TriageViewer({
                                 ? "bg-amber-600 text-white shadow-md shadow-amber-600/30"
                                 : "bg-slate-800 hover:bg-amber-600/30 text-amber-400 border border-slate-700"
                             }`}
-                            title="Edit polygon boundary vertices"
+                            title={L.help.editVertices}
                           >
                             <Edit3 className="w-3 h-3" />
-                            <span>Vertices</span>
+                            <span>{L.action.edit}</span>
                           </button>
                         </>
                       )}
@@ -742,13 +744,13 @@ export function TriageViewer({
                           onClick={() => handleRestoreHotspot(hs.id)}
                           className="text-xs text-emerald-400 hover:underline font-semibold"
                         >
-                          Restore
+                          {L.action.includeHotspot}
                         </button>
                       ) : (
                         <button
                           onClick={() => handleDeleteHotspot(hs.id)}
                           className="p-1 hover:bg-slate-800 text-slate-500 hover:text-rose-400 rounded"
-                          title="Delete Hotspot"
+                          title={L.help.deleteHotspot}
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
@@ -760,12 +762,12 @@ export function TriageViewer({
                   {editingVertexHotspotId === hs.id && !hs.excluded && (
                     <div className="p-2.5 bg-slate-950 border border-amber-500/40 rounded-lg mb-2 space-y-2">
                       <div className="flex items-center justify-between text-[11px] font-bold text-amber-300">
-                        <span>Polygon Vertices ({hs.polygon_um?.length || 0} pts)</span>
+                        <span>{L.heading.polygonVertices} {L.fmt.pointsCount(hs.polygon_um?.length || 0)}</span>
                         <button
                           onClick={() => handleAddVertex(hs.id, 0)}
                           className="px-1.5 py-0.5 bg-amber-950 hover:bg-amber-900 border border-amber-700 text-[10px] text-amber-200 rounded font-semibold"
                         >
-                          + Add Vertex
+                          + {L.action.addPoint}
                         </button>
                       </div>
                       <div className="max-h-36 overflow-y-auto space-y-1.5 pr-1 font-mono text-[10px]">
@@ -773,14 +775,14 @@ export function TriageViewer({
                           <div key={vIdx} className="flex items-center space-x-1 bg-slate-900/90 p-1 rounded border border-slate-800">
                             <span className="text-slate-500 w-4 text-center">#{vIdx}</span>
                             <div className="flex-1 flex items-center space-x-1">
-                              <span className="text-slate-400">X:</span>
+                              <span className="text-slate-400">{L.field.xCoord}:</span>
                               <input
                                 type="number"
                                 value={pt[0]}
                                 onChange={(e) => handleUpdateVertex(hs.id, vIdx, parseFloat(e.target.value) || 0, pt[1])}
                                 className="w-16 bg-slate-950 border border-slate-700 rounded px-1 text-slate-200 text-[10px]"
                               />
-                              <span className="text-slate-400">Y:</span>
+                              <span className="text-slate-400">{L.field.yCoord}:</span>
                               <input
                                 type="number"
                                 value={pt[1]}
@@ -791,7 +793,7 @@ export function TriageViewer({
                             <button
                               onClick={() => handleRemoveVertex(hs.id, vIdx)}
                               className="text-slate-600 hover:text-rose-400 p-0.5"
-                              title="Delete vertex"
+                              title={L.help.deletePoint}
                             >
                               <X className="w-3 h-3" />
                             </button>
@@ -806,7 +808,7 @@ export function TriageViewer({
                     <div
                       className="relative group/thumb cursor-pointer overflow-hidden rounded border border-slate-800 bg-slate-950 h-28 mb-2 flex items-center justify-center shadow-inner"
                       onClick={() => setPreviewHotspot(hs)}
-                      title="Click to inspect microscopic morphology"
+                      title={L.help.inspectMorphology}
                     >
                       {(() => {
                         const poly = hs.polygon_um || [];
@@ -818,7 +820,7 @@ export function TriageViewer({
                         return (
                           <img
                             src={thumbSrc}
-                            alt={`10x patch ${hs.id}`}
+                            alt={hs.id}
                             className="w-full h-full object-cover group-hover/thumb:scale-105 transition-transform duration-200"
                           />
                         );
@@ -826,24 +828,24 @@ export function TriageViewer({
                       <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent flex items-end justify-between p-2 opacity-90 group-hover/thumb:opacity-100 transition">
                         <span className="text-[10px] text-sky-300 font-semibold flex items-center space-x-1">
                           <ZoomIn className="w-3 h-3" />
-                          <span>10× Patch View</span>
+                          <span>{L.unit.mag10x} {L.heading.patchView}</span>
                         </span>
                         <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-900/90 text-amber-300 border border-amber-500/30">
-                          {((hs.prob_mean || 0.7) * 100).toFixed(0)}% Tumor
+                          {((hs.prob_mean || 0.7) * 100).toFixed(0)}{L.unit.percent} {L.field.tumorArea}
                         </span>
                       </div>
                     </div>
                   )}
 
                   <div className="grid grid-cols-3 gap-1 text-[11px] font-mono text-slate-400 mb-2">
-                    <div>Area: <span className="text-slate-200">{hs.area_mm2} mm²</span></div>
-                    <div>Mean: <span className="text-slate-200">{hs.prob_mean}</span></div>
-                    <div>Max: <span className="text-slate-200">{hs.prob_max}</span></div>
+                    <div>{L.field.tumorArea}: <span className="text-slate-200">{L.fmt.areaMm2(hs.area_mm2)}</span></div>
+                    <div>{L.field.meanTumorProb}: <span className="text-slate-200">{hs.prob_mean}</span></div>
+                    <div>{L.field.peakTumorProb}: <span className="text-slate-200">{hs.prob_max}</span></div>
                   </div>
 
                   {hs.medgemma_rationale && (
                     <div className="text-[10px] text-sky-300 bg-sky-950/40 p-1.5 rounded border border-sky-800/40 mb-2 leading-relaxed">
-                      <span className="font-semibold text-sky-400">Referee: </span>
+                      <span className="font-semibold text-sky-400">{L.field.refereeVerdict}: </span>
                       <span className="font-mono text-slate-200 uppercase text-[9px] mr-1">[{hs.medgemma_lesion_type?.replace('_', ' ') || 'TUMOR'}]</span>
                       <span>{hs.medgemma_rationale}</span>
                     </div>
@@ -853,7 +855,7 @@ export function TriageViewer({
                     <div className="flex items-center space-x-2 pt-2 border-t border-slate-800/80">
                       <input
                         type="text"
-                        placeholder="Reason for exclusion..."
+                        placeholder={L.field.exclusionReason}
                         value={excludeReasonInput[hs.id] || ""}
                         onChange={(e) => setExcludeReasonInput({ ...excludeReasonInput, [hs.id]: e.target.value })}
                         className="flex-1 bg-slate-950 border border-slate-800 text-xs px-2 py-1 rounded text-slate-300 placeholder-slate-600 focus:outline-none focus:border-slate-700"
@@ -862,14 +864,14 @@ export function TriageViewer({
                         onClick={() => handleExcludeHotspot(hs.id)}
                         className="px-2 py-1 bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-800/60 rounded text-xs font-semibold transition"
                       >
-                        Exclude
+                        {L.action.excludeHotspot}
                       </button>
                     </div>
                   )}
 
                   {hs.excluded && hs.exclude_reason && (
                     <div className="text-[11px] text-amber-400 italic mt-1">
-                      Excluded: {hs.exclude_reason}
+                      {L.status.excluded}: {hs.exclude_reason}
                     </div>
                   )}
                 </div>
@@ -888,7 +890,7 @@ export function TriageViewer({
               className="mt-0.5 accent-rose-500 rounded cursor-pointer"
             />
             <span className="text-xs text-slate-300">
-              No invasive tumor identified (route directly to benign report queue)
+              {L.help.noInvasiveTumor}
             </span>
           </label>
 
@@ -897,10 +899,10 @@ export function TriageViewer({
               onClick={handleReprocessTriage}
               disabled={reprocessing}
               className="px-3 py-2.5 bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/40 rounded-lg text-xs font-semibold flex items-center justify-center space-x-1.5 transition shadow-sm"
-              title="Re-run assessment of hotspots"
+              title={L.action.rerunHotspots}
             >
               <RotateCcw className={`w-3.5 h-3.5 ${reprocessing ? "animate-spin" : ""}`} />
-              <span>Re-Assess</span>
+              <span>{L.action.rerunHotspots}</span>
             </button>
 
             <button
@@ -913,18 +915,18 @@ export function TriageViewer({
                   ? "bg-sky-600 hover:bg-sky-500 text-white shadow-sky-600/20"
                   : "bg-slate-800 text-slate-500 cursor-not-allowed"
               }`}
-              title={data?.status === "confirmed" ? "Stage already confirmed" : "Confirm 10 High-Power Fields and advance to Stage 4 (Mitosis Counting)"}
+              title={data?.status === "confirmed" ? L.status.confirmed : L.action.confirmHotspots}
             >
               {submitting ? (
                 <Loader2 className="w-4 h-4 animate-spin" />
               ) : data?.status === "confirmed" ? (
                 <>
                   <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                  <span>Stage Confirmed</span>
+                  <span>{L.status.confirmed}</span>
                 </>
               ) : (
                 <>
-                  <span>Confirm & Move to Stage 4</span>
+                  <span>{L.action.confirmHotspots}</span>
                   <ArrowRight className="w-4 h-4" />
                 </>
               )}
@@ -942,7 +944,7 @@ export function TriageViewer({
               <div className="flex items-center space-x-2">
                 <Activity className="w-4 h-4 text-sky-400" />
                 <h3 className="text-sm font-bold text-slate-100">
-                  Microscopic Morphology — <span className="font-mono text-sky-400">{previewHotspot.id}</span>
+                  {L.heading.morphology} — <span className="font-mono text-sky-400">{previewHotspot.id}</span>
                 </h3>
               </div>
               <button
@@ -969,7 +971,7 @@ export function TriageViewer({
                           : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
                       }`}
                     >
-                      {m === "10x" ? "10×" : m === "20x" ? "20×" : "40×"}
+                      {m === "10x" ? L.unit.mag10x : m === "20x" ? L.unit.mag20x : L.unit.mag40x}
                     </button>
                   ))}
                 </div>
@@ -983,9 +985,9 @@ export function TriageViewer({
                         ? "bg-emerald-600 text-white shadow-sm"
                         : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
                     }`}
-                    title="Macenko Standardized Stain Normalization"
+                    title={L.help.stainNormHelp}
                   >
-                    <span>Norm H&E</span>
+                    <span>{L.action.normColor}</span>
                   </button>
                   <button
                     onClick={() => setStainMode("orig")}
@@ -994,9 +996,9 @@ export function TriageViewer({
                         ? "bg-amber-600 text-white shadow-sm"
                         : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
                     }`}
-                    title="Original Scanner H&E Colors"
+                    title={L.action.origColor}
                   >
-                    <span>Orig H&E</span>
+                    <span>{L.action.origColor}</span>
                   </button>
                 </div>
               </div>
@@ -1011,7 +1013,7 @@ export function TriageViewer({
                     <img
                       key={`${previewHotspot.id}-${modalMag}-${stainMode}`}
                       src={`${API_BASE}/api/v1/stages/triage/${caseId}/hotspots/${previewHotspot.id}/thumbnail?mag=${modalMag}&stain=${stainMode}&cx=${cx}&cy=${cy}`}
-                      alt={`Microscopic morphology for ${previewHotspot.id} at ${modalMag} (${stainMode})`}
+                      alt={previewHotspot.id}
                       className="w-full h-full object-cover transition-opacity duration-200"
                     />
                   );
@@ -1024,15 +1026,15 @@ export function TriageViewer({
               {/* Morphologic Metrics */}
               <div className="w-full grid grid-cols-3 gap-2">
                 <div className="bg-slate-950/80 p-2 rounded-lg border border-slate-800 text-center">
-                  <div className="text-[9px] text-slate-400 font-semibold uppercase">Cluster Area</div>
-                  <div className="text-sm font-bold font-mono text-slate-100 mt-0.5">{previewHotspot.area_mm2} mm²</div>
+                  <div className="text-[9px] text-slate-400 font-semibold uppercase">{L.field.tumorArea}</div>
+                  <div className="text-sm font-bold font-mono text-slate-100 mt-0.5">{L.fmt.areaMm2(previewHotspot.area_mm2)}</div>
                 </div>
                 <div className="bg-slate-950/80 p-2 rounded-lg border border-slate-800 text-center">
-                  <div className="text-[9px] text-slate-400 font-semibold uppercase">Mean Tumor Prob</div>
+                  <div className="text-[9px] text-slate-400 font-semibold uppercase">{L.field.meanTumorProb}</div>
                   <div className="text-sm font-bold font-mono text-sky-400 mt-0.5">{(previewHotspot.prob_mean * 100).toFixed(0)}%</div>
                 </div>
                 <div className="bg-slate-950/80 p-2 rounded-lg border border-slate-800 text-center">
-                  <div className="text-[9px] text-slate-400 font-semibold uppercase">Peak Tumor Prob</div>
+                  <div className="text-[9px] text-slate-400 font-semibold uppercase">{L.field.peakTumorProb}</div>
                   <div className="text-sm font-bold font-mono text-amber-400 mt-0.5">{(previewHotspot.prob_max * 100).toFixed(0)}%</div>
                 </div>
               </div>
@@ -1042,13 +1044,13 @@ export function TriageViewer({
                   <Activity className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
                   <div className="space-y-1">
                     <div className="flex items-center space-x-2">
-                      <span className="font-semibold text-sky-300">MedGemma Referee Verdict:</span>
+                      <span className="font-semibold text-sky-300">{L.field.refereeVerdict}:</span>
                       <span className="font-mono text-[10px] uppercase px-1.5 py-0.5 rounded bg-sky-900/60 text-sky-200 border border-sky-700/60">
                         {previewHotspot.medgemma_lesion_type?.replace('_', ' ')}
                       </span>
                       {previewHotspot.medgemma_cellularity && (
                         <span className="text-[10px] text-slate-400">
-                          ({previewHotspot.medgemma_cellularity} cellularity)
+                          ({previewHotspot.medgemma_cellularity} {L.field.cellularity.toLowerCase()})
                         </span>
                       )}
                     </div>
@@ -1056,13 +1058,6 @@ export function TriageViewer({
                   </div>
                 </div>
               )}
-
-              <div className="w-full text-[11px] text-slate-400 bg-slate-950/40 p-2.5 rounded-lg border border-slate-800/80 flex items-start space-x-2">
-                <Info className="w-3.5 h-3.5 text-sky-400 shrink-0 mt-0.5" />
-                <p>
-                  Screened via Vertex AI Path Foundation and verified by MedGemma 1.5. This ROI will be transferred to <strong>Stage 4 (Mitosis Counting)</strong> for high-power mitotic figure enumeration.
-                </p>
-              </div>
             </div>
 
             {/* Pinned Modal Footer */}
@@ -1071,7 +1066,7 @@ export function TriageViewer({
                 onClick={() => setPreviewHotspot(null)}
                 className="px-5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold transition border border-slate-700"
               >
-                Close Morphology Inspector
+                {L.action.close}
               </button>
             </div>
           </div>

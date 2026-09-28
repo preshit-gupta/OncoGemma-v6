@@ -38,6 +38,8 @@ import {
 } from "@/lib/api";
 import { OpenSeadragonViewer, ViewerDetectionMarker, ViewerHotspot } from "./OpenSeadragonViewer";
 import { MitosisGallery } from "./MitosisGallery";
+import { L } from "@/lib/labels";
+import { Provenance } from "../Provenance";
 
 type WorkflowPhase = "overview" | "field_review" | "completion_summary";
 
@@ -592,7 +594,7 @@ export function MitosisViewer({
     return (
       <div className="flex-1 flex flex-col items-center justify-center bg-slate-950 text-slate-200">
         <Loader2 className="w-8 h-8 animate-spin text-emerald-400 mb-3" />
-        <span className="text-sm font-medium">Loading Mitosis Detection & Virtual HPFs...</span>
+        <span className="text-sm font-medium">{L.status.countingMitoses}</span>
       </div>
     );
   }
@@ -602,13 +604,13 @@ export function MitosisViewer({
       <div className="flex-1 flex flex-col items-center justify-center bg-slate-950 text-slate-200 p-6">
         <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 max-w-md text-center flex flex-col items-center gap-3">
           <AlertTriangle className="w-8 h-8 text-rose-400" />
-          <h3 className="font-semibold text-slate-100">Failed to Load Mitosis Stage</h3>
+          <h3 className="font-semibold text-slate-100">{L.error.stageExecutionFailed}</h3>
           <p className="text-xs text-rose-300/90">{error}</p>
           <button
             onClick={loadStageData}
             className="mt-2 px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold flex items-center gap-1.5"
           >
-            <RotateCcw className="w-3.5 h-3.5" /> Retry
+            <RotateCcw className="w-3.5 h-3.5" /> {L.action.retry}
           </button>
         </div>
       </div>
@@ -630,7 +632,7 @@ export function MitosisViewer({
           <button
             onClick={() => setError(null)}
             className="text-rose-400 hover:text-rose-200 p-1"
-            title="Dismiss"
+            title={L.action.close}
           >
             <X className="w-3.5 h-3.5" />
           </button>
@@ -643,7 +645,7 @@ export function MitosisViewer({
           <div className="flex items-center gap-2">
             <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
             <span>
-              <strong>Algorithmic Fallback Active:</strong> Running on first-principles Optical Density heuristics (<code className="bg-amber-900/60 px-1 py-0.5 rounded text-amber-300 font-mono">od_heuristic@dev</code>). Deep learning YOLO/MIDOG weights or Vertex AI endpoint (<code className="bg-amber-900/60 px-1 py-0.5 rounded text-amber-300 font-mono">VERTEX_MITOSIS_ENDPOINT_ID</code>) are unconfigured. Mitosis candidates require pathologist verification.
+              <strong>{L.status.needsHuman}:</strong> {L.help.reviewAllCandidates}
             </span>
           </div>
         </div>
@@ -659,27 +661,24 @@ export function MitosisViewer({
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="font-bold text-sm text-slate-100 tracking-tight">
-                  Stage v4.3: Mitosis Scoring (40× Objective / 400× Optical)
+                  {L.heading.mitosisScoring}
                 </h1>
                 {workflowPhase === "overview" && (
                   <span className="text-[11px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-semibold">
-                    Whole-Slide Overview
+                    {L.heading.slideOverview}
                   </span>
                 )}
                 {workflowPhase === "field_review" && (
                   <span className="text-[11px] px-2 py-0.5 rounded bg-sky-950 text-sky-300 border border-sky-800/60 font-semibold">
-                    Field #{activeHpfSeq} of {hpfs.length || 10}
+                    {L.field.fieldNumber} #{activeHpfSeq} / {hpfs.length || 10}
                   </span>
                 )}
                 {workflowPhase === "completion_summary" && (
                   <span className="text-[11px] px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800/60 font-semibold flex items-center gap-1">
-                    <CheckCircle2 className="w-3 h-3" /> Review Complete
+                    <CheckCircle2 className="w-3 h-3" /> {L.status.done}
                   </span>
                 )}
               </div>
-              <span className="text-[11px] text-slate-400">
-                10-HPF Systematic Review & Nottingham Mitotic Indexing (WHO 5th Ed)
-              </span>
             </div>
           </div>
 
@@ -687,11 +686,11 @@ export function MitosisViewer({
           <div className="flex items-center gap-3">
             {/* Total Mitoses Pill */}
             <div className="bg-slate-950 px-3 py-1 rounded-lg border border-slate-800 text-xs flex items-center gap-2">
-              <span className="text-slate-400">Total:</span>
+              <span className="text-slate-400">{L.heading.summary}:</span>
               <span className="font-bold text-emerald-400 font-mono text-sm">
                 {summary.count_total}
               </span>
-              <span className="text-slate-500 text-[11px]">in 10 HPFs</span>
+              <span className="text-slate-500 text-[11px]">{L.fmt.hpfScore(10)}</span>
             </div>
 
             {/* Mitotic Score Badge */}
@@ -709,7 +708,7 @@ export function MitosisViewer({
               ) : (
                 <Activity className="w-3.5 h-3.5" />
               )}
-              <span>Nottingham Mitotic Score: {summary.mitotic_score} ({summary.mitotic_score === 3 ? "High ≥20" : summary.mitotic_score === 2 ? "Mod 10-19" : "Low 0-9"})</span>
+              <span>{L.field.mitosisScore}: {summary.mitotic_score}</span>
             </div>
 
             {/* Refresh Data Button */}
@@ -717,57 +716,15 @@ export function MitosisViewer({
               onClick={loadStageData}
               disabled={loading}
               className="p-1 rounded-lg bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-700 transition"
-              title="Refresh Mitosis Stage Data"
+              title={L.action.refresh}
             >
               <RotateCcw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
             </button>
 
-            {/* Calculation Details Popover Button */}
-            <button
-              onClick={() => setShowCalculationDetails(!showCalculationDetails)}
-              className="p-1 rounded-lg bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-700 transition"
-              title="View Standardized Density & Area Math"
-            >
-              <Info className="w-4 h-4" />
-            </button>
+            {/* Provenance Popover */}
+            <Provenance model_versions={data?.model_versions} />
           </div>
         </div>
-
-        {/* Calculation Details Dropdown (Hidden by default) */}
-        {showCalculationDetails && (
-          <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 text-xs text-slate-300 flex items-center justify-between animate-fadeIn">
-            <div className="flex items-center gap-6">
-              <div>
-                <span className="text-slate-500 block text-[10px] uppercase font-semibold">10-HPF Standard Area</span>
-                <span className="font-bold font-mono text-slate-200">{summary.area_mm2.toFixed(3)} mm²</span>
-              </div>
-              <div>
-                <span className="text-slate-500 block text-[10px] uppercase font-semibold">Standardized Density</span>
-                <span className="font-bold font-mono text-sky-400">{summary.per_mm2.toFixed(1)} mitoses/mm²</span>
-              </div>
-              <div>
-                <span className="text-slate-500 block text-[10px] uppercase font-semibold">Classic 10 HPF Equiv (2.74 mm²)</span>
-                <span className="font-bold font-mono text-slate-200">{summary.classic_per_10hpf.toFixed(0)} mitoses</span>
-              </div>
-              <div>
-                <span className="text-slate-500 block text-[10px] uppercase font-semibold">WHO Scoring Rules</span>
-                <span className="text-slate-400">&lt;3.65/mm² = 1 | 3.65-7.30 = 2 | ≥7.30 = 3</span>
-              </div>
-              <div>
-                <span className="text-slate-500 block text-[10px] uppercase font-semibold">Model Provenance</span>
-                <span className="text-slate-400 font-mono text-[11px]">
-                  Det: {data?.model_versions?.detector || "od_heuristic"} | Ref: {data?.model_versions?.referee || "gemini-1.5-flash"}
-                </span>
-              </div>
-            </div>
-            <button
-              onClick={() => setShowCalculationDetails(false)}
-              className="text-xs text-slate-400 hover:text-white px-2 py-1 bg-slate-800 rounded"
-            >
-              Close
-            </button>
-          </div>
-        )}
 
         {/* STEPPER BAR: 10 Field Navigation Pills & Toolbar */}
         <div className="flex items-center justify-between pt-1 border-t border-slate-800/80">
@@ -781,13 +738,13 @@ export function MitosisViewer({
               }`}
             >
               <Compass className="w-3.5 h-3.5" />
-              <span>Slide Overview</span>
+              <span>{L.heading.slideOverview}</span>
             </button>
 
             <div className="h-4 w-px bg-slate-800 mx-1" />
 
             <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mr-1 shrink-0">
-              Fields:
+              {L.field.fieldNumber}:
             </span>
             {hpfs.map((hpf) => {
               const isActive = workflowPhase === "field_review" && hpf.seq === activeHpfSeq;
@@ -805,7 +762,7 @@ export function MitosisViewer({
                       : "bg-slate-800 text-slate-300 border-slate-700/70 hover:bg-slate-700 hover:text-white"
                   }`}
                 >
-                  <span>Field {hpf.seq}</span>
+                  <span>{L.field.fieldNumber} {hpf.seq}</span>
                   {isApproved ? (
                     <Check className="w-3 h-3 text-emerald-400" />
                   ) : (
@@ -826,7 +783,6 @@ export function MitosisViewer({
                   onClick={() => setActiveHpfSeq(Math.max(1, activeHpfSeq - 1))}
                   disabled={activeHpfSeq === 1}
                   className="p-1 rounded text-slate-300 hover:text-white hover:bg-slate-700 disabled:opacity-40 disabled:hover:bg-transparent"
-                  title="Previous Field"
                 >
                   <ChevronLeft className="w-4 h-4" />
                 </button>
@@ -837,7 +793,6 @@ export function MitosisViewer({
                   onClick={() => setActiveHpfSeq(Math.min(hpfs.length || 10, activeHpfSeq + 1))}
                   disabled={activeHpfSeq === (hpfs.length || 10)}
                   className="p-1 rounded text-slate-300 hover:text-white hover:bg-slate-700 disabled:opacity-40 disabled:hover:bg-transparent"
-                  title="Next Field"
                 >
                   <ChevronRight className="w-4 h-4" />
                 </button>
@@ -852,16 +807,16 @@ export function MitosisViewer({
                   ? "bg-emerald-950/90 text-emerald-300 border-emerald-600/80 hover:bg-emerald-900/60 shadow-sm"
                   : "bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700 hover:text-slate-200"
               }`}
-              title="Toggle Mitotic Figure Annotations & Green Dots (Hotkey: A)"
+              title={L.action.showMarks}
             >
               {showCandidateMarkers ? (
                 <Eye className="w-3.5 h-3.5 text-emerald-400" />
               ) : (
                 <EyeOff className="w-3.5 h-3.5 text-slate-500" />
               )}
-              <span>{showCandidateMarkers ? "Mitosis Dots: ON" : "Mitosis Dots: OFF"}</span>
+              <span>{showCandidateMarkers ? `${L.action.showMarks}: ON` : `${L.action.showMarks}: OFF`}</span>
               <kbd className="text-[9px] font-mono px-1 py-0.2 bg-slate-900/80 rounded border border-slate-700 text-slate-400">
-                A
+                {"A"}
               </kbd>
             </button>
 
@@ -876,9 +831,9 @@ export function MitosisViewer({
                 className={`px-2 py-0.5 rounded text-[11px] font-medium transition-all ${
                   magMode === "10x" ? "bg-slate-700 text-white font-semibold shadow-sm" : "text-slate-400 hover:text-slate-200"
                 }`}
-                title="10× Overview (Whole HPF field of view, 1.0 µm/px)"
+                title={L.unit.mag10x}
               >
-                10× Overview
+                {L.unit.mag10x}
               </button>
               <button
                 onClick={() => {
@@ -888,9 +843,9 @@ export function MitosisViewer({
                 className={`px-2 py-0.5 rounded text-[11px] font-medium transition-all ${
                   magMode === "20x" ? "bg-slate-700 text-white font-semibold shadow-sm" : "text-slate-400 hover:text-slate-200"
                 }`}
-                title="20× Intermediate field (0.50 µm/px)"
+                title={L.unit.mag20x}
               >
-                20× Field
+                {L.unit.mag20x}
               </button>
               <button
                 onClick={() => {
@@ -900,9 +855,9 @@ export function MitosisViewer({
                 className={`px-2 py-0.5 rounded text-[11px] font-medium flex items-center gap-1 transition-all ${
                   magMode === "40x" ? "bg-emerald-700 text-white font-semibold shadow-sm" : "text-slate-400 hover:text-slate-200"
                 }`}
-                title="40× High-Power Objective (True 0.25 µm/px Nottingham Mitosis Counting)"
+                title={L.unit.mag40x}
               >
-                <Microscope className="w-3 h-3 text-emerald-300" /> 40× High-Power
+                <Microscope className="w-3 h-3 text-emerald-300" /> {L.unit.mag40x}
               </button>
             </div>
 
@@ -914,7 +869,7 @@ export function MitosisViewer({
                   stainMode === "norm" ? "bg-emerald-700 text-white font-semibold" : "text-slate-400 hover:text-slate-200"
                 }`}
               >
-                <Sparkles className="w-3 h-3 text-amber-300" /> Norm H&E
+                <Sparkles className="w-3 h-3 text-amber-300" /> {L.action.normColor}
               </button>
               <button
                 onClick={() => setStainMode("orig")}
@@ -922,7 +877,7 @@ export function MitosisViewer({
                   stainMode === "orig" ? "bg-slate-700 text-white font-semibold" : "text-slate-400 hover:text-slate-200"
                 }`}
               >
-                Orig
+                {L.action.origColor}
               </button>
             </div>
 
@@ -936,7 +891,7 @@ export function MitosisViewer({
               }`}
             >
               <Crosshair className="w-3.5 h-3.5" />
-              {isPinningMode ? "Click Slide to Pin" : "+ Pin (40×)"}
+              {isPinningMode ? L.help.clickToPlaceHotspot : `+ ${L.action.markMitosis}`}
             </button>
 
             {/* Re-place HPFs Button (#468) */}
@@ -944,14 +899,14 @@ export function MitosisViewer({
               onClick={handleReplaceHpfs}
               disabled={isReplacingHpfs}
               className="px-2.5 py-1 rounded text-[11px] font-semibold flex items-center gap-1.5 transition-all border bg-slate-800 text-sky-300 border-sky-700/60 hover:bg-sky-950/70 disabled:opacity-50"
-              title="Re-run greedy 10-HPF placement based on confirmed mitoses"
+              title={L.action.replaceHpfs}
             >
               {isReplacingHpfs ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin text-sky-400" />
               ) : (
                 <Compass className="w-3.5 h-3.5 text-sky-400" />
               )}
-              <span>Re-place HPFs</span>
+              <span>{L.action.replaceHpfs}</span>
             </button>
           </div>
         </div>
@@ -1002,31 +957,31 @@ export function MitosisViewer({
                 <div className="flex items-center gap-2 border-b border-slate-800 pb-3">
                   <FileCheck2 className="w-5 h-5 text-emerald-400" />
                   <div>
-                    <h2 className="font-bold text-sm text-slate-100">Automated Triage Complete</h2>
-                    <span className="text-xs text-slate-400">10 Standardized HPF Sites Mapped</span>
+                    <h2 className="font-bold text-sm text-slate-100">{L.heading.topHpfs}</h2>
+                    <span className="text-xs text-slate-400">{L.fmt.hpfScore(10)}</span>
                   </div>
                 </div>
 
                 {/* Score Summary Box */}
                 <div className="bg-slate-950 rounded-xl p-3.5 border border-slate-800 space-y-2">
                   <div className="flex items-center justify-between text-xs">
-                    <span className="text-slate-400">Automated Mitosis Count:</span>
-                    <span className="font-mono font-bold text-emerald-400 text-sm">{summary.count_total} mitoses</span>
+                    <span className="text-slate-400">{L.field.mitosisCount}:</span>
+                    <span className="font-mono font-bold text-emerald-400 text-sm">{summary.count_total}</span>
                   </div>
                   <div className="flex items-center justify-between text-xs">
-                    <span className="text-slate-400">Total Evaluated Area:</span>
-                    <span className="font-mono font-bold text-slate-200">{summary.area_mm2.toFixed(3)} mm² ({summary.n_hpf} HPFs)</span>
+                    <span className="text-slate-400">{L.field.tumorArea}:</span>
+                    <span className="font-mono font-bold text-slate-200">{L.fmt.areaMm2(summary.area_mm2)} ({summary.n_hpf})</span>
                   </div>
                   <div className="flex items-center justify-between text-xs">
-                    <span className="text-slate-400">Calculated Proliferation:</span>
-                    <span className="font-mono font-bold text-sky-400">{summary.per_mm2.toFixed(1)} /mm²</span>
+                    <span className="text-slate-400">{L.field.density}:</span>
+                    <span className="font-mono font-bold text-sky-400">{summary.per_mm2.toFixed(1)} /{L.unit.mm2}</span>
                   </div>
                   <div className="border-t border-slate-800 pt-2 flex items-center justify-between">
-                    <span className="text-xs font-semibold text-slate-300">Initial Mitotic Score:</span>
+                    <span className="text-xs font-semibold text-slate-300">{L.field.mitosisScore}:</span>
                     <span className={`px-2 py-0.5 rounded font-bold text-xs ${
                       summary.mitotic_score === 3 ? "bg-rose-950 text-rose-300 border border-rose-700" : "bg-emerald-950 text-emerald-300 border border-emerald-700"
                     }`}>
-                      Score {summary.mitotic_score} ({summary.mitotic_score === 3 ? "High ≥20" : "Low/Mod"})
+                      {L.field.grade} {summary.mitotic_score}
                     </span>
                   </div>
                 </div>
@@ -1034,7 +989,7 @@ export function MitosisViewer({
                 {/* 10-HPF List */}
                 <div className="space-y-1.5">
                   <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider block">
-                    HPF Fields Mapped:
+                    {L.heading.topHpfs}:
                   </span>
                   <div className="space-y-1 max-h-56 overflow-y-auto pr-1">
                     {hpfs.map((h) => (
@@ -1047,10 +1002,10 @@ export function MitosisViewer({
                           <span className="w-5 h-5 rounded-full bg-slate-800 flex items-center justify-center font-mono font-bold text-[11px] text-slate-300">
                             {h.seq}
                           </span>
-                          <span className="text-slate-300 font-medium">Field #{h.seq}</span>
+                          <span className="text-slate-300 font-medium">{L.field.fieldNumber} #{h.seq}</span>
                         </div>
                         <div className="flex items-center gap-2">
-                          <span className="text-emerald-400 font-mono font-bold">{h.count} mitoses</span>
+                          <span className="text-emerald-400 font-mono font-bold">{h.count}</span>
                           <ChevronRight className="w-3.5 h-3.5 text-slate-500" />
                         </div>
                       </div>
@@ -1066,7 +1021,7 @@ export function MitosisViewer({
                   className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-lg flex items-center justify-center gap-2 transition active:scale-[0.98]"
                 >
                   <Microscope className="w-4 h-4" />
-                  <span>Start 10-HPF Guided Review (Field 1)</span>
+                  <span>{L.action.confirm} ({L.field.fieldNumber} 1)</span>
                   <ArrowRight className="w-4 h-4" />
                 </button>
               </div>
@@ -1186,11 +1141,11 @@ export function MitosisViewer({
 
                   {/* On-Stage Floating Controls */}
                   <div className="absolute top-3 left-3 bg-slate-900/90 backdrop-blur px-2.5 py-1 rounded-lg border border-slate-700 text-[11px] font-mono text-slate-200 shadow flex items-center gap-2 z-10 pointer-events-none">
-                    <span className="font-bold text-emerald-400">HPF #{activeHpfSeq}</span>
+                    <span className="font-bold text-emerald-400">{L.field.fieldNumber} #{activeHpfSeq}</span>
                     <span className="text-slate-400">•</span>
-                    <span>{magMode === "40x" ? "40× Objective (0.25 µm/px)" : magMode === "20x" ? "20× Field (0.50 µm/px)" : "10× Overview (1.00 µm/px)"}</span>
+                    <span>{magMode === "40x" ? L.unit.mag40x : magMode === "20x" ? L.unit.mag20x : L.unit.mag10x}</span>
                     <span className="text-slate-400">•</span>
-                    <span className="text-sky-300 font-semibold">{stageZoom.toFixed(1)}× Zoom</span>
+                    <span className="text-sky-300 font-semibold">{stageZoom.toFixed(1)}{"×"}</span>
                   </div>
 
                   {/* Top-Right Quick Zoom Buttons & Mitosis Count */}
@@ -1202,7 +1157,7 @@ export function MitosisViewer({
                         setMagMode("40x");
                       }}
                       className="w-6 h-6 flex items-center justify-center bg-slate-900/90 hover:bg-slate-800 text-slate-200 hover:text-white rounded border border-slate-700 shadow text-xs font-bold transition"
-                      title="Zoom In"
+                      title={L.action.zoomIn}
                     >
                       +
                     </button>
@@ -1217,7 +1172,7 @@ export function MitosisViewer({
                         }
                       }}
                       className="w-6 h-6 flex items-center justify-center bg-slate-900/90 hover:bg-slate-800 text-slate-200 hover:text-white rounded border border-slate-700 shadow text-xs font-bold transition"
-                      title="Zoom Out"
+                      title={L.action.zoomOut}
                     >
                       -
                     </button>
@@ -1229,13 +1184,13 @@ export function MitosisViewer({
                         setMagMode("10x");
                       }}
                       className="px-2 py-0.5 bg-slate-900/90 hover:bg-slate-800 text-slate-300 hover:text-white rounded border border-slate-700 shadow text-[10px] font-mono transition"
-                      title="Reset to 10× Overview"
+                      title={L.action.resetView}
                     >
-                      Reset
+                      {L.action.resetView}
                     </button>
                     <div className="bg-slate-900/90 backdrop-blur px-2.5 py-1 rounded-lg border border-slate-700 text-[11px] font-mono text-emerald-400 font-bold shadow flex items-center gap-1.5">
                       <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                      {activeHpf?.count || 0} Mitoses
+                      {activeHpf?.count || 0} {L.heading.mitoticCandidates}
                     </div>
                   </div>
 
@@ -1249,7 +1204,7 @@ export function MitosisViewer({
                           className="w-full h-full object-cover"
                         />
                         <div className="absolute bottom-0 inset-x-0 bg-black/80 text-[7px] font-mono text-center text-sky-300 py-0.2">
-                          40× Crop
+                          {L.unit.mag40x}
                         </div>
                       </div>
                       <div className="flex-1 min-w-0">
@@ -1260,12 +1215,12 @@ export function MitosisViewer({
                               ? "bg-emerald-950 text-emerald-300 border border-emerald-700"
                               : (selectedCandidate.label === "not_mitosis" ? "bg-slate-800 text-slate-400 border border-slate-700" : "bg-amber-950 text-amber-300 border border-amber-700")
                           }`}>
-                            {selectedCandidate.label === "mitosis" ? "Mitosis" : (selectedCandidate.label === "not_mitosis" ? "Rejected" : "Unreviewed")}
+                            {selectedCandidate.label === "mitosis" ? L.action.markMitosis : (selectedCandidate.label === "not_mitosis" ? L.status.rejected : L.status.needsHuman)}
                           </span>
                         </div>
                         <div className="flex items-center gap-2 mt-0.5 text-[9px] text-slate-400 font-mono">
-                          <span>Det: {((selectedCandidate.det_conf || 0) * 100).toFixed(0)}%</span>
-                          {selectedCandidate.ver_conf !== null && <span>Ver: {((selectedCandidate.ver_conf || 0) * 100).toFixed(0)}%</span>}
+                          <span>{L.field.detector}: {((selectedCandidate.det_conf || 0) * 100).toFixed(0)}%</span>
+                          {selectedCandidate.ver_conf !== null && <span>{L.field.verifier}: {((selectedCandidate.ver_conf || 0) * 100).toFixed(0)}%</span>}
                         </div>
                         <div className="flex items-center gap-1 mt-1">
                           <button
@@ -1277,7 +1232,7 @@ export function MitosisViewer({
                               selectedCandidate.label === "mitosis" ? "bg-emerald-700 text-white" : "bg-slate-800 hover:bg-emerald-900 text-emerald-300 border border-emerald-800/60"
                             }`}
                           >
-                            <Check className="w-2.5 h-2.5" /> Mitosis (M)
+                            <Check className="w-2.5 h-2.5" /> {L.action.markMitosis}
                           </button>
                           <button
                             onClick={(e) => {
@@ -1288,7 +1243,7 @@ export function MitosisViewer({
                               selectedCandidate.label === "not_mitosis" ? "bg-rose-800 text-white" : "bg-slate-800 hover:bg-rose-900 text-rose-300 border border-rose-800/60"
                             }`}
                           >
-                            <X className="w-2.5 h-2.5" /> Reject (X)
+                            <X className="w-2.5 h-2.5" /> {L.action.markNotMitosis}
                           </button>
                         </div>
                       </div>
@@ -1303,13 +1258,13 @@ export function MitosisViewer({
                         setShowCandidateMarkers(!showCandidateMarkers);
                       }}
                       className="bg-slate-900/90 hover:bg-slate-800 backdrop-blur px-2 py-1 rounded-lg border border-slate-700 text-[10px] font-medium text-slate-300 hover:text-white shadow flex items-center gap-1 transition-all"
-                      title="Toggle annotations on/off (Key: A)"
+                      title={L.action.showMarks}
                     >
                       {showCandidateMarkers ? <Eye className="w-3 h-3 text-emerald-400" /> : <EyeOff className="w-3 h-3 text-slate-500" />}
-                      <span>{showCandidateMarkers ? "Hide Pins" : "Show Pins"}</span>
+                      <span>{L.action.showMarks}</span>
                     </button>
                     <span className="bg-slate-900/90 backdrop-blur px-2 py-1 rounded-lg border border-slate-700 text-[10px] text-slate-400">
-                      <kbd className="text-slate-200 font-mono font-bold">Space</kbd> 40× Focus
+                      <kbd className="text-slate-200 font-mono font-bold">{"Space"}</kbd> {L.unit.mag40x}
                     </span>
                   </div>
                 </div>
@@ -1318,9 +1273,9 @@ export function MitosisViewer({
                 <div className="absolute bottom-6 left-6 bg-slate-900/95 backdrop-blur-md rounded-xl p-2.5 border border-slate-800 shadow-2xl flex flex-col gap-1.5 w-44 select-none z-10">
                   <div className="flex items-center justify-between text-[10px] font-bold text-slate-300 uppercase tracking-wider">
                     <span className="flex items-center gap-1.5 text-sky-400">
-                      <MapPin className="w-3.5 h-3.5" /> Biopsy Location
+                      <MapPin className="w-3.5 h-3.5" /> {L.heading.specimenProperties}
                     </span>
-                    <span className="text-slate-500 font-mono text-[9px]">Field #{activeHpfSeq}</span>
+                    <span className="text-slate-500 font-mono text-[9px]">{L.field.fieldNumber} #{activeHpfSeq}</span>
                   </div>
                   <div className="relative w-full h-44 bg-slate-950 rounded-lg overflow-hidden border border-slate-800 flex items-center justify-center p-1">
                     {(() => {
@@ -1346,7 +1301,7 @@ export function MitosisViewer({
                         >
                           <img
                             src={wholeSlideThumbnailUrl}
-                            alt="Biopsy overview"
+                            alt={L.heading.slideOverview}
                             className="w-full h-full object-fill rounded pointer-events-none"
                             onError={(e) => {
                               (e.target as HTMLImageElement).src = `data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160"><rect width="100%" height="100%" fill="%230f172a"/><text x="50%" y="50%" fill="%2394a3b8" text-anchor="middle" font-size="10">Biopsy Core</text></svg>`;
@@ -1378,7 +1333,7 @@ export function MitosisViewer({
             <div className="w-96 shrink-0 h-full flex flex-col bg-slate-900 border-l border-slate-800">
               {/* Scope Selector: Active Field vs All Candidates */}
               <div className="px-3 py-1.5 bg-slate-900 border-b border-slate-800 flex items-center justify-between shrink-0">
-                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Candidate Scope</span>
+                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">{L.heading.mitoticCandidates}</span>
                 <div className="flex items-center bg-slate-950 p-0.5 rounded border border-slate-800">
                   <button
                     onClick={() => setGalleryScope("field")}
@@ -1386,7 +1341,7 @@ export function MitosisViewer({
                       galleryScope === "field" ? "bg-sky-600 text-white font-semibold shadow-sm" : "text-slate-400 hover:text-slate-200"
                     }`}
                   >
-                    Field #{activeHpfSeq} ({activeFieldCandidates.length})
+                    {L.field.fieldNumber} #{activeHpfSeq} ({activeFieldCandidates.length})
                   </button>
                   <button
                     onClick={() => setGalleryScope("all")}
@@ -1394,7 +1349,7 @@ export function MitosisViewer({
                       galleryScope === "all" ? "bg-sky-600 text-white font-semibold shadow-sm" : "text-slate-400 hover:text-slate-200"
                     }`}
                   >
-                    All ({candidates.length})
+                    {L.action.filterAll} ({candidates.length})
                   </button>
                 </div>
               </div>
@@ -1432,38 +1387,38 @@ export function MitosisViewer({
                   <CheckCircle2 className="w-7 h-7" />
                 </div>
                 <div>
-                  <h2 className="font-bold text-lg text-slate-100">10-HPF Systematic Review Complete</h2>
-                  <span className="text-xs text-slate-400">All 10 High-Power Fields verified by pathologist</span>
+                  <h2 className="font-bold text-lg text-slate-100">{L.heading.summary}</h2>
+                  <span className="text-xs text-slate-400">{L.help.allCandidatesReviewed}</span>
                 </div>
               </div>
 
               {/* Final Score Card */}
               <div className="grid grid-cols-3 gap-3">
                 <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 flex flex-col items-center justify-center">
-                  <span className="text-xs text-slate-400 uppercase font-semibold">Total Verified Mitoses</span>
+                  <span className="text-xs text-slate-400 uppercase font-semibold">{L.field.mitosisCount}</span>
                   <span className="font-bold font-mono text-2xl text-emerald-400 mt-1">
                     {summary.count_total}
                   </span>
-                  <span className="text-[11px] text-slate-500 mt-0.5">Across 10 HPFs</span>
+                  <span className="text-[11px] text-slate-500 mt-0.5">{L.fmt.hpfScore(10)}</span>
                 </div>
 
                 <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 flex flex-col items-center justify-center">
-                  <span className="text-xs text-slate-400 uppercase font-semibold">Standard Density</span>
+                  <span className="text-xs text-slate-400 uppercase font-semibold">{L.field.density}</span>
                   <span className="font-bold font-mono text-2xl text-sky-400 mt-1">
                     {summary.per_mm2.toFixed(1)}
                   </span>
-                  <span className="text-[11px] text-slate-500 mt-0.5">mitoses / mm²</span>
+                  <span className="text-[11px] text-slate-500 mt-0.5">{L.unit.mm2}</span>
                 </div>
 
                 <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 flex flex-col items-center justify-center">
-                  <span className="text-xs text-slate-400 uppercase font-semibold">Nottingham Mitotic Score</span>
+                  <span className="text-xs text-slate-400 uppercase font-semibold">{L.field.mitosisScore}</span>
                   <span className={`font-bold text-2xl mt-1 ${
                     summary.mitotic_score === 3 ? "text-rose-400" : summary.mitotic_score === 2 ? "text-amber-400" : "text-emerald-400"
                   }`}>
-                    Score {summary.mitotic_score}
+                    {L.field.grade} {summary.mitotic_score}
                   </span>
                   <span className="text-[11px] text-slate-400 mt-0.5">
-                    {summary.mitotic_score === 3 ? "High Proliferation (≥20)" : summary.mitotic_score === 2 ? "Moderate (10-19)" : "Low (0-9)"}
+                    {summary.mitotic_score === 3 ? "(≥20)" : summary.mitotic_score === 2 ? "(10-19)" : "(0-9)"}
                   </span>
                 </div>
               </div>
@@ -1471,13 +1426,13 @@ export function MitosisViewer({
               {/* 10-Field Mitotic Distribution Grid */}
               <div className="space-y-2">
                 <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider block">
-                  Field-by-Field Breakdown:
+                  {L.heading.topHpfs}
                 </span>
                 <div className="grid grid-cols-5 gap-2">
                   {hpfs.map((h) => (
                     <div key={h.seq} className="bg-slate-950 p-2 rounded-lg border border-slate-800 flex items-center justify-between text-xs">
-                      <span className="text-slate-400">Field #{h.seq}</span>
-                      <span className="font-mono font-bold text-emerald-400">{h.count}m</span>
+                      <span className="text-slate-400">{L.field.fieldNumber} #{h.seq}</span>
+                      <span className="font-mono font-bold text-emerald-400">{h.count}</span>
                     </div>
                   ))}
                 </div>
@@ -1490,10 +1445,10 @@ export function MitosisViewer({
                     <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
                     <div>
                       <h4 className="text-sm font-semibold text-amber-300">
-                        {unreviewedHighConf} High-Confidence Candidate{unreviewedHighConf > 1 ? "s" : ""} Require Resolution
+                        {unreviewedHighConf} {L.heading.mitoticCandidates}
                       </h4>
                       <p className="text-xs text-amber-400/80 mt-0.5">
-                        Clinical safety gate requires all detections outside reviewed fields (&ge;50% confidence) to be verified or rejected before advancing to Nottingham Grading.
+                        {L.help.reviewAllCandidates}
                       </p>
                     </div>
                   </div>
@@ -1504,13 +1459,13 @@ export function MitosisViewer({
                     className="px-3.5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg text-xs transition flex items-center justify-center gap-1.5 shrink-0 shadow-sm"
                   >
                     {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <XCircle className="w-3.5 h-3.5" />}
-                    <span>Bulk Reject Remaining</span>
+                    <span>{L.action.markNotMitosis}</span>
                   </button>
                 </div>
               ) : (
                 <div className="bg-emerald-950/30 border border-emerald-500/30 rounded-xl px-4 py-3 flex items-center gap-2.5 text-xs text-emerald-300">
                   <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span>All high-confidence candidate mitotic figures have been verified or rejected. Safety gate satisfied.</span>
+                  <span>{L.help.allCandidatesReviewed}</span>
                 </div>
               )}
 
@@ -1521,24 +1476,24 @@ export function MitosisViewer({
                     onClick={() => setWorkflowPhase("field_review")}
                     className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition flex items-center gap-1.5"
                   >
-                    <RotateCcw className="w-3.5 h-3.5" /> Review Fields Again
+                    <RotateCcw className="w-3.5 h-3.5" /> {L.action.retry}
                   </button>
                   <button
                     onClick={() => setWorkflowPhase("overview")}
                     className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition flex items-center gap-1.5"
                   >
-                    <Compass className="w-3.5 h-3.5" /> Slide Overview
+                    <Compass className="w-3.5 h-3.5" /> {L.heading.slideOverview}
                   </button>
                 </div>
 
                 <button
                   onClick={handleConfirmStage}
                   disabled={submitting || unreviewedHighConf > 0}
-                  title={unreviewedHighConf > 0 ? "Review or bulk reject all high-confidence candidates before confirming" : "Confirm Stage 4 & Proceed"}
+                  title={unreviewedHighConf > 0 ? L.help.reviewAllCandidates : L.action.confirmMitoses}
                   className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded-xl shadow-lg text-sm flex items-center gap-2 transition active:scale-[0.98]"
                 >
                   {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-                  <span>Confirm Stage 4 & Proceed</span>
+                  <span>{L.action.confirmMitoses}</span>
                   <ArrowRight className="w-4 h-4" />
                 </button>
               </div>

@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "lint:labels": "node scripts/lint-labels.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.359.0",
