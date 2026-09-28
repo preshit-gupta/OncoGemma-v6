@@ -185,13 +185,13 @@ def test_confirm_triage_zero_tumor_guardrail(db_session):
             )
         assert exc_info.value.status_code == 422
 
-        # 2. Confirming with no_invasive_tumor=True succeeds and routes to "report"
+        # 2. Confirming with no_invasive_tumor=True succeeds and finishes triage without queuing report
         res = confirm_triage(
             TriageConfirmPayload(case_id=case_id, no_invasive_tumor=True),
             db=db_session
         )
         assert res["status"] == "confirmed"
-        assert res["next_stage_queued"] == "report"
+        assert res["next_stage_queued"] is None
 
 
 def test_save_edits_rejected_on_confirmed_stage(db_session):

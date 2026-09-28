@@ -22,7 +22,6 @@ from worker.qc import run_qc
 from worker.triage import run_triage
 from worker.mitosis import run_mitosis
 from worker.grading import run_grading
-from worker.report import run_report
 
 HANDLERS = {
     "ingest": run_ingest,
@@ -31,7 +30,6 @@ HANDLERS = {
     "triage": run_triage,
     "mitosis": run_mitosis,
     "grading": run_grading,
-    "report": run_report,
 }
 
 

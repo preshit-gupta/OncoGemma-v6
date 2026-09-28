@@ -466,15 +466,13 @@ def run_grading(stage_exec: StageExecution, db: Session) -> Tuple[str, Dict[str,
         tubule_prompt, tubule_sha = load_prompt_template("tubule", "v1")
         pleo_prompt, pleo_sha = load_prompt_template("pleo", "v1")
         type_prompt, type_sha = load_prompt_template("histologic_type", "v1")
-        narrative_prompt, narrative_sha = load_prompt_template("findings_narrative", "v1")
 
         model_versions = {
             "medgemma": settings.VERTEX_MEDGEMMA_MODEL_VERSION,
             "prompts": {
                 "tubule": f"v1@{tubule_sha[:8]}",
                 "pleo": f"v1@{pleo_sha[:8]}",
-                "histologic_type": f"v1@{type_sha[:8]}",
-                "findings_narrative": f"v1@{narrative_sha[:8]}"
+                "histologic_type": f"v1@{type_sha[:8]}"
             }
         }
 
@@ -598,19 +596,7 @@ def run_grading(stage_exec: StageExecution, db: Session) -> Tuple[str, Dict[str,
             cfg=scoring_cfg
         )
 
-        # 7. Grounded Narrative Synthesis
-        narrative_input = {
-            "histologic_type": type_response.model_dump(),
-            "aggregate": aggregate_res,
-            "mitotic_summary": {
-                "total_mitoses": total_mitoses,
-                "mitotic_score": mitotic_score,
-                "evaluated_hpfs": len(hpf_sites)
-            }
-        }
-        narrative_text = asyncio.run(medgemma.generate_findings_narrative(narrative_input, narrative_prompt))
-
-        # 8. Assemble Full Output JSON
+        # 7. Assemble Full Output JSON
         output_payload = {
             "case_id": case_id,
             "slide_id": slide_id,
@@ -619,7 +605,7 @@ def run_grading(stage_exec: StageExecution, db: Session) -> Tuple[str, Dict[str,
             "evidence": {"morphometry": None},
             "aggregate": aggregate_res,
             "histologic_type": type_response.model_dump(),
-            "narrative": narrative_text,
+            "narrative": None,
             "model_versions": model_versions,
             "needs_human": needs_human_flag,
             "schema_failed_patches": schema_failed_patches,

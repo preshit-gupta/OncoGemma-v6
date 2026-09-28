@@ -242,7 +242,7 @@ def test_grading_api_full_workflow():
     conf_data = res_confirm.json()
     assert conf_data["status"] == "success"
     assert conf_data["grade"] == 3
-    assert conf_data["next_stage"] == "report"
+    assert conf_data["next_stage"] is None
 
     # Verify persisted row in DB
     db2 = TestingSessionLocal()

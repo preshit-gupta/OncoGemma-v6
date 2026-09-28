@@ -677,34 +677,38 @@ def confirm_triage(payload: TriageConfirmPayload, db: Session = Depends(get_db))
     stage_exec.reviewed_at = datetime.now(timezone.utc)
     stage_exec.reviewed_by = payload.reviewed_by
 
+    case_uid = to_uuid(payload.case_id)
     if payload.no_invasive_tumor:
-        next_stage_name = "report"
+        next_stage_name = None
         input_data = {"benign_flag": True, "reason": "No invasive tumor identified"}
+        case_obj = db.get(Case, case_uid)
+        if case_obj:
+            case_obj.status = "done"
+        next_exec = None
     else:
         next_stage_name = "mitosis"
         input_data = {"confirmed_hotspots_count": len(effective_hotspots)}
 
-    case_uid = to_uuid(payload.case_id)
-    # Ensure attempt monotonicity when queuing next stage (Issue #279, #285, #535)
-    stmt_existing = (
-        select(StageExecution)
-        .where(
-            (StageExecution.case_id == case_uid) | (StageExecution.case_id == str(payload.case_id)),
-            StageExecution.stage == next_stage_name
+        # Ensure attempt monotonicity when queuing next stage (Issue #279, #285, #535)
+        stmt_existing = (
+            select(StageExecution)
+            .where(
+                (StageExecution.case_id == case_uid) | (StageExecution.case_id == str(payload.case_id)),
+                StageExecution.stage == next_stage_name
+            )
+            .order_by(StageExecution.attempt.desc())
         )
-        .order_by(StageExecution.attempt.desc())
-    )
-    existing_next = db.scalars(stmt_existing).first()
-    next_attempt = (existing_next.attempt + 1) if existing_next else 1
+        existing_next = db.scalars(stmt_existing).first()
+        next_attempt = (existing_next.attempt + 1) if existing_next else 1
 
-    next_exec = StageExecution(
-        case_id=case_uid,
-        stage=next_stage_name,
-        attempt=next_attempt,
-        status="queued",
-        input_ref=input_data
-    )
-    db.add(next_exec)
+        next_exec = StageExecution(
+            case_id=case_uid,
+            stage=next_stage_name,
+            attempt=next_attempt,
+            status="queued",
+            input_ref=input_data
+        )
+        db.add(next_exec)
 
     audit = AuditEvent(
         case_id=str(payload.case_id),
@@ -720,15 +724,16 @@ def confirm_triage(payload: TriageConfirmPayload, db: Session = Depends(get_db))
     db.add(audit)
     db.commit()
 
-    try:
-        from app.core.cloud_tasks import dispatch_stage_task
-        dispatch_stage_task(
-            case_id=str(payload.case_id),
-            stage=next_stage_name,
-            stage_exec_id=str(next_exec.id)
-        )
-    except Exception as e:
-        print(f"[CloudTasks Warning] Failed to dispatch next stage {next_stage_name}: {e}")
+    if next_exec and next_stage_name:
+        try:
+            from app.core.cloud_tasks import dispatch_stage_task
+            dispatch_stage_task(
+                case_id=str(payload.case_id),
+                stage=next_stage_name,
+                stage_exec_id=str(next_exec.id)
+            )
+        except Exception as e:
+            print(f"[CloudTasks Warning] Failed to dispatch next stage {next_stage_name}: {e}")
 
     return {
         "status": "confirmed",

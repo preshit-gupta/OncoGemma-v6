@@ -15,7 +15,7 @@ class StageExecution(Base):
     id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
     case_id: Mapped[uuid.UUID] = mapped_column(GUID, ForeignKey("cases.id", ondelete="CASCADE"), nullable=False)
     
-    stage: Mapped[str] = mapped_column(String, nullable=False) # ingest|preprocess|qc|triage|mitosis|grading|report
+    stage: Mapped[str] = mapped_column(String, nullable=False) # ingest|preprocess|qc|triage|mitosis|grading
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[str] = mapped_column(String, nullable=False, default="queued") # queued|running|awaiting_review|confirmed|rejected|done|failed
     

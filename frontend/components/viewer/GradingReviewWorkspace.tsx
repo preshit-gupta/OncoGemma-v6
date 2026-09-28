@@ -37,7 +37,6 @@ import {
 
 interface GradingReviewWorkspaceProps {
   caseId: string;
-  onAdvanceToReport?: () => void;
   onReopenMitosis?: () => void;
   onLocateOnSlide?: (pointUm: [number, number], zoomMag?: number) => void;
 }
@@ -59,7 +58,6 @@ export const HISTOLOGIC_TYPE_OPTIONS = [
 
 export function GradingReviewWorkspace({
   caseId,
-  onAdvanceToReport,
   onReopenMitosis,
   onLocateOnSlide
 }: GradingReviewWorkspaceProps) {
@@ -494,11 +492,7 @@ export function GradingReviewWorkspace({
         grade: activeGrade
       });
 
-      if (onAdvanceToReport) {
-        onAdvanceToReport();
-      } else {
-        await loadData();
-      }
+      await loadData();
     } catch (err: any) {
       console.error(err);
       setSubmitError(err.message || "Failed to confirm Stage 5 grading");
@@ -597,14 +591,6 @@ export function GradingReviewWorkspace({
               Pathologist review is complete and grade scores are permanently locked.
             </div>
           </div>
-          {onAdvanceToReport && (
-            <button
-              onClick={onAdvanceToReport}
-              className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-semibold flex items-center gap-1 transition"
-            >
-              View CAP Report <ArrowRight className="w-3.5 h-3.5" />
-            </button>
-          )}
         </div>
       )}
 
@@ -1545,12 +1531,9 @@ export function GradingReviewWorkspace({
             </div>
 
             {isConfirmed ? (
-              <button
-                onClick={onAdvanceToReport}
-                className="px-6 py-3 rounded-lg text-xs font-bold flex items-center gap-2 shadow-lg transition bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-950 cursor-pointer"
-              >
-                View CAP Report (Stage 6) <ArrowRight className="w-4 h-4" />
-              </button>
+              <div className="px-6 py-3 rounded-lg text-xs font-bold flex items-center gap-2 bg-emerald-950/80 border border-emerald-500/40 text-emerald-400">
+                <CheckCircle2 className="w-4 h-4" /> Nottingham Grading Confirmed
+              </div>
             ) : (
               <button
                 onClick={handleConfirmFinalStage}

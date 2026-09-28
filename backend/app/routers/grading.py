@@ -27,7 +27,6 @@ from app.models.stage_execution import StageExecution
 from app.models.hpf_site import HpfSite
 from app.models.detection import Detection
 from app.models.grading import Grading
-from app.models.report import Report
 from app.models.audit import AuditEvent
 from pipeline.grading import (
     calculate_nottingham_grade,
@@ -50,25 +49,10 @@ VALID_OVERRIDE_COMPONENTS = {"tubule", "pleo", "mitotic", "patches", "hpfs"}
 ALLOWED_CONFIRM_OVERRIDE_COMPONENTS = {"tubule", "pleo", "mitotic"}
 
 
-def load_cap_histologic_types() -> set[str]:
-    """Load authorized CAP histologic type IDs from configs/cap_elements.yaml."""
-    cap_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../configs/cap_elements.yaml"))
-    if os.path.exists(cap_path):
-        try:
-            with open(cap_path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
-                types = {t["id"] for t in data.get("histologic_types", []) if "id" in t}
-                if types:
-                    return types
-        except Exception:
-            pass
-    return {
-        "IDC-NST", "ILC", "mucinous", "tubular", "papillary",
-        "micropapillary", "metaplastic", "apocrine", "medullary_features", "other"
-    }
-
-
-VALID_HISTOLOGIC_TYPES = load_cap_histologic_types()
+VALID_HISTOLOGIC_TYPES = {
+    "IDC-NST", "ILC", "mucinous", "tubular", "papillary",
+    "micropapillary", "metaplastic", "apocrine", "medullary_features", "other"
+}
 
 class ScoreOverrideItem(BaseModel):
     score: Optional[int] = Field(None, ge=1, le=3)
@@ -166,16 +150,11 @@ def to_uuid(val: Any) -> uuid.UUID:
 
 
 def _get_case_report_status(db: Session, case_uid: uuid.UUID) -> Optional[str]:
-    try:
-        return db.scalar(select(Report.status).where(Report.case_id == case_uid))
-    except Exception:
-        db.rollback()
-        return None
+    return None
 
 
 def _is_case_report_signed(db: Session, case_uid: uuid.UUID) -> bool:
-    status_val = _get_case_report_status(db, case_uid)
-    return status_val in ("signed", "amended") if status_val else False
+    return False
 
 
 
@@ -865,7 +844,7 @@ def confirm_grading_stage(
     6. Mandatory >=10 char override justification for any subscore diverging from server review.
     7. Server-side authoritative recomputation of Nottingham Sum & Grade.
     8. Pure code mathematical invariants validation.
-    Persists final state to DB and queues Stage 6 (Report).
+    Persists final state to DB and marks case done.
     """
     if current_user.role not in ("pathologist", "admin"):
         raise HTTPException(
@@ -905,12 +884,6 @@ def confirm_grading_stage(
             detail="Grading stage is already confirmed."
         )
 
-    if _is_case_report_signed(db, case_uid):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Cannot modify or confirm grading for a signed or amended case report."
-        )
-
     # 1. Mandatory Histologic Type Confirmation Gate
     if payload.histologic_type not in VALID_HISTOLOGIC_TYPES:
         raise HTTPException(
@@ -933,7 +906,7 @@ def confirm_grading_stage(
         else:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Clinical Confirmation Gate: Histologic Type must be explicitly confirmed by the pathologist before proceeding to Report Generation."
+                detail="Clinical Confirmation Gate: Histologic Type must be explicitly confirmed by the pathologist before confirming grading."
             )
     else:
         if payload.histologic_type != grading_record.histologic_type:
@@ -962,14 +935,14 @@ def confirm_grading_stage(
     if not rev_summary["all_patches_reviewed"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Clinical Confirmation Gate: All {rev_summary['total_patches']} image patches must be explicitly reviewed and approved at the patch level before proceeding to Report Generation (currently {rev_summary['approved_patches']}/{rev_summary['total_patches']} approved)."
+            detail=f"Clinical Confirmation Gate: All {rev_summary['total_patches']} image patches must be explicitly reviewed and approved at the patch level before confirming grading (currently {rev_summary['approved_patches']}/{rev_summary['total_patches']} approved)."
         )
 
     # 3. Mandatory HPF-Level Review Gate
     if not rev_summary["all_hpfs_reviewed"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Clinical Confirmation Gate: All {rev_summary['total_hpfs']} High-Power Fields (HPFs) must be explicitly reviewed and approved at the HPF level before proceeding to Report Generation (currently {rev_summary['approved_hpfs']}/{rev_summary['total_hpfs']} approved)."
+            detail=f"Clinical Confirmation Gate: All {rev_summary['total_hpfs']} High-Power Fields (HPFs) must be explicitly reviewed and approved at the HPF level before confirming grading (currently {rev_summary['approved_hpfs']}/{rev_summary['total_hpfs']} approved)."
         )
 
     # 4. Mandatory Justification for Divergent Subscores & Overrides (min 10 chars)
@@ -1080,28 +1053,8 @@ def confirm_grading_stage(
     })
     stage_exec.review_edits = edits
 
-    # 8. Queue Stage 6 (Report Generation) - Guarded against overwriting signed reports
-    next_exec = db.scalars(
-        select(StageExecution).where(
-            (StageExecution.case_id == case_uid) | (StageExecution.case_id == str(case_id)),
-            StageExecution.stage == "report"
-        ).order_by(StageExecution.attempt.desc())
-    ).first()
-
-    if not _is_case_report_signed(db, case_uid):
-        if not next_exec:
-            next_exec = StageExecution(
-                case_id=case_uid,
-                stage="report",
-                attempt=1,
-                status="queued"
-            )
-            db.add(next_exec)
-        elif next_exec.status not in ("confirmed", "done"):
-            next_exec.status = "queued"
-            next_exec.started_at = None
-            next_exec.completed_at = None
-            next_exec.error = None
+    # 8. Mark Case Done
+    case.status = "done"
 
     # 9. Record Audit Events
     audit_confirm = AuditEvent(
@@ -1137,22 +1090,11 @@ def confirm_grading_stage(
 
     db.commit()
 
-    if next_exec:
-        try:
-            from app.core.cloud_tasks import dispatch_stage_task
-            dispatch_stage_task(
-                case_id=str(case_id),
-                stage="report",
-                stage_exec_id=str(next_exec.id)
-            )
-        except Exception as e:
-            print(f"[CloudTasks Warning] Failed to dispatch next stage report: {e}")
-
     return {
         "status": "success",
         "case_id": case_id,
         "stage": "grading",
-        "next_stage": "report",
+        "next_stage": None,
         "grade": computed_grade,
         "nottingham_sum": computed_sum,
         "histologic_type": payload.histologic_type

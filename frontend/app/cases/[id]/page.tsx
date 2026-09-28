@@ -29,11 +29,6 @@ const GradingReviewWorkspace = dynamic(
   { ssr: false }
 );
 
-const ReportWorkspace = dynamic(
-  () => import("@/components/viewer/ReportWorkspace").then((mod) => mod.ReportWorkspace),
-  { ssr: false }
-);
-
 export default function CaseWorkspacePage({ params }: { params: { id: string } }) {
   const caseId = params.id;
 
@@ -86,12 +81,9 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
     const triageStage = getLatestStage(stages, "triage");
     const mitosisStage = getLatestStage(stages, "mitosis");
     const gradingStage = getLatestStage(stages, "grading");
-    const reportStage = getLatestStage(stages, "report");
 
     if (!hasUserNavigated) {
-      if (reportStage && (reportStage.status === "running" || reportStage.status === "done" || reportStage.status === "confirmed" || reportStage.status === "awaiting_review") && gradingStage?.status === "confirmed") {
-        setActiveStage("report");
-      } else if (gradingStage && (gradingStage.status === "running" || gradingStage.status === "done" || gradingStage.status === "confirmed" || gradingStage.status === "awaiting_review") && mitosisStage?.status === "confirmed") {
+      if (gradingStage && (gradingStage.status === "running" || gradingStage.status === "done" || gradingStage.status === "confirmed" || gradingStage.status === "awaiting_review") && mitosisStage?.status === "confirmed") {
         setActiveStage("grading");
       } else if (mitosisStage && (mitosisStage.status === "running" || mitosisStage.status === "done" || mitosisStage.status === "confirmed" || mitosisStage.status === "awaiting_review") && triageStage?.status === "confirmed") {
         setActiveStage("mitosis");
@@ -110,7 +102,6 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
   const triageStage = getLatestStage(caseDetail?.stages, "triage");
   const mitosisStage = getLatestStage(caseDetail?.stages, "mitosis");
   const gradingStage = getLatestStage(caseDetail?.stages, "grading");
-  const reportStage = getLatestStage(caseDetail?.stages, "report");
 
   const hasSlide = Boolean(slide?.gcs_uri_original || slide?.id);
   const isIngestDone = ingestStage?.status === "completed" || ingestStage?.status === "done";
@@ -307,8 +298,8 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
             <div className="flex items-center space-x-2 border-r border-slate-700 pr-3 mr-1">
               <button
                 onClick={() => {
-                  const hasDownstream = triageStage || mitosisStage || gradingStage || reportStage;
-                  if (hasDownstream && !window.confirm("Warning: Re-processing this slide will invalidate downstream triage, mitosis, grading, and report results. Are you sure you want to proceed?")) {
+                  const hasDownstream = triageStage || mitosisStage || gradingStage;
+                  if (hasDownstream && !window.confirm("Warning: Re-processing this slide will invalidate downstream triage, mitosis, and grading results. Are you sure you want to proceed?")) {
                     return;
                   }
                   handleReprocessPreprocess();
@@ -355,8 +346,8 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
             <div className="flex items-center space-x-2 border-r border-slate-700 pr-3 mr-1">
               <button
                 onClick={() => {
-                  const hasDownstream = mitosisStage || gradingStage || reportStage;
-                  if (hasDownstream && !window.confirm("Warning: Re-assessing hotspots will invalidate downstream mitosis, grading, and report results. Are you sure you want to proceed?")) {
+                  const hasDownstream = mitosisStage || gradingStage;
+                  if (hasDownstream && !window.confirm("Warning: Re-assessing hotspots will invalidate downstream mitosis and grading results. Are you sure you want to proceed?")) {
                     return;
                   }
                   handleReprocessTriage();
@@ -393,8 +384,8 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
             <div className="flex items-center space-x-2 border-r border-slate-700 pr-3 mr-1">
               <button
                 onClick={() => {
-                  const hasDownstream = gradingStage || reportStage;
-                  if (hasDownstream && !window.confirm("Warning: Re-counting mitoses will invalidate downstream Nottingham grading and report results. Are you sure you want to proceed?")) {
+                  const hasDownstream = gradingStage;
+                  if (hasDownstream && !window.confirm("Warning: Re-counting mitoses will invalidate downstream Nottingham grading results. Are you sure you want to proceed?")) {
                     return;
                   }
                   handleReprocessMitosis();
@@ -624,22 +615,10 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
                 </button>
               </div>
             </div>
-          ) : activeStage === "report" ? (
-            <ErrorBoundary>
-              <ReportWorkspace
-                caseId={caseId}
-                onRefreshCase={loadData}
-              />
-            </ErrorBoundary>
           ) : activeStage === "grading" ? (
             <ErrorBoundary>
               <GradingReviewWorkspace
                 caseId={caseId}
-                onAdvanceToReport={() => {
-                  setHasUserNavigated(true);
-                  setActiveStage("report");
-                  loadData();
-                }}
                 onReopenMitosis={() => {
                   setHasUserNavigated(true);
                   setActiveStage("mitosis");

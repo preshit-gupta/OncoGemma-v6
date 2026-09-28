@@ -16,7 +16,7 @@ from app.core.config import settings
 from app.core.gcs import ensure_buckets_exist
 from app.core.db import Base, engine
 from app.routers import (
-    cases_router, tiles_router, audit_router, triage_router, mitosis_router, grading_router, report_router, worker_webhook_router
+    cases_router, tiles_router, audit_router, triage_router, mitosis_router, grading_router, worker_webhook_router
 )
 from app.routers.admin import router as admin_router
 
@@ -74,9 +74,6 @@ def ensure_schema_up_to_date():
             "ALTER TABLE detections ADD COLUMN IF NOT EXISTS medgemma_confidence VARCHAR;",
             "ALTER TABLE slides ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'ready';",
             "ALTER TABLE slides ADD COLUMN IF NOT EXISTS gcs_uri_pyramid_norm VARCHAR;",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1;",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS pdf_sha256 VARCHAR;",
-            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS narrative_edited BOOLEAN NOT NULL DEFAULT FALSE;",
             "ALTER TABLE gradings ADD COLUMN IF NOT EXISTS type_confirmed_by VARCHAR DEFAULT 'unconfirmed';",
         ]
         for stmt in col_statements:
@@ -87,31 +84,7 @@ def ensure_schema_up_to_date():
             except Exception as e:
                 logger.warning(f"[Schema DDL Note] {stmt[:40]}...: {e}")
 
-        # 2. Ensure reports primary key is composite (case_id, version)
-        try:
-            with engine.begin() as conn:
-                conn.execute(text("SET LOCAL lock_timeout = '1s';"))
-                conn.execute(text("""
-                    DO $$
-                    BEGIN
-                        IF EXISTS (
-                            SELECT 1 FROM information_schema.table_constraints 
-                            WHERE constraint_name = 'reports_pkey' AND table_name = 'reports'
-                        ) THEN
-                            IF NOT EXISTS (
-                                SELECT 1 FROM information_schema.key_column_usage 
-                                WHERE table_name = 'reports' AND column_name = 'version'
-                            ) THEN
-                                ALTER TABLE reports DROP CONSTRAINT reports_pkey;
-                                ALTER TABLE reports ADD PRIMARY KEY (case_id, version);
-                            END IF;
-                        END IF;
-                    END $$;
-                """))
-        except Exception as pk_err:
-            logger.warning(f"[Schema PK Update Note] {pk_err}")
-
-        # 3. Ensure foreign key constraints on child tables have ON DELETE CASCADE (only if not already CASCADE)
+        # 2. Ensure foreign key constraints on child tables have ON DELETE CASCADE (only if not already CASCADE)
         fk_updates = [
             ("hotspots", "hotspots_stage_execution_id_fkey", "stage_execution_id", "stage_executions(id)"),
             ("hotspots", "hotspots_case_id_fkey", "case_id", "cases(id)"),
@@ -120,7 +93,6 @@ def ensure_schema_up_to_date():
             ("slides", "slides_case_id_fkey", "case_id", "cases(id)"),
             ("stage_executions", "stage_executions_case_id_fkey", "case_id", "cases(id)"),
             ("gradings", "gradings_case_id_fkey", "case_id", "cases(id)"),
-            ("reports", "reports_case_id_fkey", "case_id", "cases(id)"),
         ]
         for tbl, cname, col, target in fk_updates:
             try:
@@ -156,13 +128,6 @@ def ensure_schema_up_to_date():
                     conn.execute(text("ALTER TABLE slides ADD COLUMN status VARCHAR DEFAULT 'ready';"))
                 if cols and "gcs_uri_pyramid_norm" not in cols:
                     conn.execute(text("ALTER TABLE slides ADD COLUMN gcs_uri_pyramid_norm VARCHAR;"))
-                rep_cols = [c[1] for c in conn.execute(text("PRAGMA table_info(reports);")).fetchall()]
-                if rep_cols and "version" not in rep_cols:
-                    conn.execute(text("ALTER TABLE reports ADD COLUMN version INTEGER DEFAULT 1;"))
-                if rep_cols and "pdf_sha256" not in rep_cols:
-                    conn.execute(text("ALTER TABLE reports ADD COLUMN pdf_sha256 VARCHAR;"))
-                if rep_cols and "narrative_edited" not in rep_cols:
-                    conn.execute(text("ALTER TABLE reports ADD COLUMN narrative_edited BOOLEAN DEFAULT 0;"))
                 grad_cols = [c[1] for c in conn.execute(text("PRAGMA table_info(gradings);")).fetchall()]
                 if grad_cols and "type_confirmed_by" not in grad_cols:
                     conn.execute(text("ALTER TABLE gradings ADD COLUMN type_confirmed_by VARCHAR DEFAULT 'unconfirmed';"))
@@ -224,7 +189,6 @@ app.include_router(audit_router)
 app.include_router(triage_router)
 app.include_router(mitosis_router)
 app.include_router(grading_router)
-app.include_router(report_router)
 app.include_router(worker_webhook_router)
 app.include_router(admin_router)
 

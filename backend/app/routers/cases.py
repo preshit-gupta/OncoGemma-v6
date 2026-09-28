@@ -30,7 +30,6 @@ from app.models.hotspot import Hotspot
 from app.models.detection import Detection
 from app.models.hpf_site import HpfSite
 from app.models.grading import Grading
-from app.models.report import Report
 from app.models.audit import AuditEvent
 from app.core.rehydrate import rehydrate_case_from_gcs
 from app.schemas.case import (
@@ -108,9 +107,8 @@ def delete_single_case_data(case_id: uuid.UUID, db: Session):
     # 3. Delete StageExecutions
     db.query(StageExecution).filter(StageExecution.case_id == case_id).delete(synchronize_session=False)
 
-    # 4. Delete Grading and Report
+    # 4. Delete Grading
     db.query(Grading).filter(Grading.case_id == case_id).delete(synchronize_session=False)
-    db.query(Report).filter(Report.case_id == case_id).delete(synchronize_session=False)
 
     # 5. Delete Slide records
     db.query(Slide).filter(Slide.case_id == case_id).delete(synchronize_session=False)
@@ -268,7 +266,7 @@ async def upload_slide_file(
         "attempt": next_attempt
     }
 
-KNOWN_STAGES = ("ingest", "preprocess", "qc", "triage", "mitosis", "grading", "report")
+KNOWN_STAGES = ("ingest", "preprocess", "qc", "triage", "mitosis", "grading")
 
 @router.post("/{case_id}/stages/{stage_name}/retry", status_code=status.HTTP_202_ACCEPTED)
 def retry_case_stage(
@@ -302,18 +300,6 @@ def retry_case_stage(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Stage '{stage_name}' has no previous execution attempt to retry."
-        )
-
-    # Guard against retrying completed cases whose final report is signed
-    report_stage = db.scalars(
-        select(StageExecution)
-        .where(StageExecution.case_id == case_id, StageExecution.stage == "report")
-        .order_by(StageExecution.attempt.desc())
-    ).first()
-    if report_stage and report_stage.status == "confirmed":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Cannot retry stage on a finalized case with a signed diagnostic report. An amendment is required."
         )
 
     if existing_stage.status == "queued":
@@ -514,7 +500,7 @@ def approve_case_stage(
         "qc": "triage",
         "triage": "mitosis",
         "mitosis": "grading",
-        "grading": "report"
+        "grading": None
     }
     next_stage_name = next_stage_map.get(stage_name)
     
@@ -538,7 +524,7 @@ def approve_case_stage(
             )
             db.add(new_stage)
 
-    case_obj.status = "open"
+    case_obj.status = "done" if not next_stage_name else "open"
     
     audit = AuditEvent(
         case_id=str(case_id),

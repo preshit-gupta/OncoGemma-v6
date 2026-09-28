@@ -607,7 +607,14 @@ export interface GradingStageData {
     total_mitoses: number;
     mitotic_score: number;
     evaluated_hpfs: number;
+    area_mm2?: number;
+    mitoses_per_mm2?: number;
+    classic_per_10hpf?: number;
   };
+  slide?: {
+    mpp_x?: number;
+    mpp_y?: number;
+  } | null;
   model_versions: Record<string, any>;
 }
 
@@ -740,12 +747,12 @@ export async function confirmGradingStage(payload: {
   histologic_type: string;
   type_confirmed: boolean;
   overrides: Record<string, any>;
-  tubule_score: number;
-  tubule_percent?: number;
-  pleo_score: number;
-  mitotic_score: number;
-  nottingham_sum: number;
-  grade: number;
+  tubule_score?: number | null;
+  tubule_percent?: number | null;
+  pleo_score?: number | null;
+  mitotic_score?: number | null;
+  nottingham_sum?: number | null;
+  grade?: number | null;
 }): Promise<any> {
   const res = await fetch(`${API_BASE}/api/v1/stages/grading/confirm`, {
     method: "POST",
@@ -762,168 +769,7 @@ export async function confirmGradingStage(payload: {
   return res.json();
 }
 
-// Stage 6: CAP-Compliant Synoptic Reporting Interfaces
-export interface CapReportData {
-  case_id: string;
-  slide_id?: string | null;
-  status: "draft" | "in_review" | "signed" | "amended";
-  stage_status: string;
-  specimen_type: string;
-  procedure: string;
-  laterality: string;
-  tumor_site: string;
-  histologic_type: string;
-  tumor_size_mm: number;
-  lvi_status: "absent" | "present" | "indeterminate";
-  dcis_present: boolean;
-  margins: {
-    status: "negative" | "positive" | "cannot_be_assessed";
-    closest_margin_mm?: number;
-    closest_margin_name?: string;
-    positive_margins?: string[];
-  };
-  lymph_nodes: {
-    examined_count: number;
-    positive_count: number;
-    extranodal_extension: boolean;
-    largest_metastasis_mm?: number;
-  };
-  biomarkers: {
-    er: { status: string; percent: number; allred_score: number };
-    pr: { status: string; percent: number; allred_score: number };
-    her2: { ihc_score: string; fish_status: string; result: string };
-    ki67: { percent: number };
-  };
-  staging: {
-    ajcc_version: string;
-    pt_stage: string;
-    pn_stage: string;
-    pm_stage: string;
-    stage_group: string;
-  };
-  nottingham_grade: {
-    grade: number;
-    tubule_score: number;
-    tubule_percent: number;
-    pleo_score: number;
-    mitotic_score: number;
-    nottingham_sum: number;
-    histologic_type: string;
-    type_confirmed_by: string;
-  };
-  narrative: {
-    diagnosis_line: string;
-    microscopic_findings: string;
-    clinical_correlation: string;
-  };
-  visual_evidence: {
-    has_heatmap: boolean;
-    has_mitotic_hpf: boolean;
-    has_grading_patch: boolean;
-  };
-  pdf_url: string;
-  json_url: string;
-  signed_by?: string | null;
-  npi?: string | null;
-  attestation_statement?: string | null;
-  signed_at?: string | null;
-  integrity_hash?: string | null;
-  amendments: Array<{
-    version: string;
-    amended_by: string;
-    amended_at: string;
-    reason: string;
-    previous_hash?: string;
-    updated_fields?: Record<string, any>;
-  }>;
-  can_sign: boolean;
-}
 
-export async function fetchReportData(caseId: string): Promise<CapReportData> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/report/${caseId}`, {
-    headers: { "X-User-Role": "pathologist" }
-  });
-  if (!res.ok) {
-    const errData = await res.json().catch(() => null);
-    throw new Error(formatApiError(errData, `Failed to fetch CAP report data (Status: ${res.status})`));
-  }
-  return res.json();
-}
-
-export async function updateReportData(payload: Partial<CapReportData> & { case_id: string }): Promise<CapReportData> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/report/${payload.case_id}`, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
-    },
-    body: JSON.stringify(payload)
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(formatApiError(data, "Failed to update report data"));
-  }
-  return res.json();
-}
-
-export async function regenerateReportNarrative(caseId: string): Promise<{ status: string; narrative: any; warnings: string[] }> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/report/${caseId}/regenerate-narrative`, {
-    method: "POST",
-    headers: { "X-User-Role": "pathologist" }
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(formatApiError(data, "Failed to regenerate diagnostic narrative"));
-  }
-  return res.json();
-}
-
-export async function signReport(payload: {
-  case_id: string;
-  signed_by: string;
-  npi?: string;
-  attestation_statement: string;
-  password_or_pin?: string;
-}): Promise<CapReportData> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/report/sign`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
-    },
-    body: JSON.stringify(payload)
-  });
-  if (!res.ok) {
-    const errData = await res.json().catch(() => ({}));
-    const msg = formatApiError(errData, "Failed to sign and finalize report");
-    const err: any = new Error(msg);
-    err.status = res.status;
-    err.detail = errData.detail;
-    throw err;
-  }
-  return res.json();
-}
-
-export async function amendReport(payload: {
-  case_id: string;
-  amended_by: string;
-  amendment_reason: string;
-  updated_fields?: Record<string, any>;
-}): Promise<CapReportData> {
-  const res = await fetch(`${API_BASE}/api/v1/stages/report/amend`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-User-Role": "pathologist"
-    },
-    body: JSON.stringify(payload)
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(formatApiError(data, "Failed to submit report amendment"));
-  }
-  return res.json();
-}
 
 export async function updateSlideMpp(
   caseId: string,
