@@ -87,27 +87,12 @@
   {
     "path": "backend/app/routers/grading.py",
     "rule": "L2",
-    "line_hash": "a80a0f79b49dddfc0a1efbf218a492eee43cbc09"
-  },
-  {
-    "path": "backend/app/routers/grading.py",
-    "rule": "L2",
-    "line_hash": "bcee0c84d1e0363cbca873fbf233a625da81a8b3"
-  },
-  {
-    "path": "backend/app/routers/grading.py",
-    "rule": "L2",
     "line_hash": "c2a0cb43f3d14ef367f3c01f4459f1c030ba35e0"
   },
   {
     "path": "backend/app/routers/grading.py",
     "rule": "L2",
     "line_hash": "d8d47d29c592cbd97f1fec2e0557755be474d905"
-  },
-  {
-    "path": "backend/app/routers/grading.py",
-    "rule": "L2",
-    "line_hash": "dd2067406b3d31f8085cfee42f8f1fe931ea0bbb"
   },
   {
     "path": "backend/app/routers/grading.py",
@@ -267,16 +252,6 @@
   {
     "path": "backend/pipeline/grading.py",
     "rule": "L2",
-    "line_hash": "7221eb05c5c14c37a6293eb1bed6453d5f939b57"
-  },
-  {
-    "path": "backend/pipeline/grading.py",
-    "rule": "L2",
-    "line_hash": "7ea05913cfe708096bd42382d1e2c2a994060aa9"
-  },
-  {
-    "path": "backend/pipeline/grading.py",
-    "rule": "L2",
     "line_hash": "d6c719d411665ead0e889fffa5c1f164601e63ae"
   },
   {
@@ -373,296 +348,6 @@
     "path": "backend/pipeline/hpf.py",
     "rule": "L4",
     "line_hash": "c98174a5cfe0f70c4fc5cc69b670a6180fc299d8"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L1",
-    "line_hash": "de29d0632ee23cd93802dc3dc50b1c4f200360b5"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L1",
-    "line_hash": "de29d0632ee23cd93802dc3dc50b1c4f200360b5"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L2",
-    "line_hash": "0dc3c7e17dd2ffa54427bfca4c20406f7ed273c8"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L2",
-    "line_hash": "6a89356ef52e8abd2c75a49af85adb3423200e70"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L2",
-    "line_hash": "6ece791a815d3b3b09c0016ef9e98b5965eb538e"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L2",
-    "line_hash": "8c90bf5f68d76fab7c896e312a3899417a4e4e6d"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L2",
-    "line_hash": "8c90bf5f68d76fab7c896e312a3899417a4e4e6d"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L2",
-    "line_hash": "9214995a3fb73f32642ecb8bb810fe696f3e7de1"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L2",
-    "line_hash": "a41bb0ffe89a491dc1bbe62ecb6766a73c9aca99"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L2",
-    "line_hash": "a7dcc37bfe5593d4ad6c49bbe4d86f1b9d8261ff"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L2",
-    "line_hash": "cab49a6779702e140157eb6e48cebcedfc0c4c50"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L2",
-    "line_hash": "d75f3ba5e4e321dc9e43f98b340129c0a8f6de76"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L2",
-    "line_hash": "da5c49d651b6958caebf8bf0b5b3695915a1fa00"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L2",
-    "line_hash": "e516814d212f432eeecd1890bee4497e423bfe7b"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "1302ee078f6e54101580413d52c86a10edffcb53"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "1302ee078f6e54101580413d52c86a10edffcb53"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "1302ee078f6e54101580413d52c86a10edffcb53"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "1302ee078f6e54101580413d52c86a10edffcb53"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "1302ee078f6e54101580413d52c86a10edffcb53"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "1302ee078f6e54101580413d52c86a10edffcb53"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "17b70b44d430b5b7df4c16ad3aeaecb52263e9f3"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "17b70b44d430b5b7df4c16ad3aeaecb52263e9f3"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "18cea9ba395d144edd70a9609e465294e5e6b272"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "291b307bda1081846fe06bf0f30414250f65147f"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "291b307bda1081846fe06bf0f30414250f65147f"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "3199030f1b03ce7bef7e0703139a9bc2eaeeb5e3"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "3199030f1b03ce7bef7e0703139a9bc2eaeeb5e3"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "42d2f56022143101e57017e8d4294b18e592aa6f"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "56124aa1155f022c6674860423207d601fc8dce1"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "56124aa1155f022c6674860423207d601fc8dce1"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "7adac3849dd4f7228c8941603a2ea772dee2b2cf"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "7adac3849dd4f7228c8941603a2ea772dee2b2cf"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "7dc65070bbaa2ce2eb90040cd298c281cd96c475"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "7ddf7a189c4d1c6032601677d68d3a26f4fd6686"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "7ddf7a189c4d1c6032601677d68d3a26f4fd6686"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "7ddf7a189c4d1c6032601677d68d3a26f4fd6686"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "7ddf7a189c4d1c6032601677d68d3a26f4fd6686"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "7ddf7a189c4d1c6032601677d68d3a26f4fd6686"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "7ddf7a189c4d1c6032601677d68d3a26f4fd6686"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "91bc9a777813d28b39ad65a916bd75fba7c9e1d4"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "92ae11581aa92642d091ab2da6e6a62966abda76"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "a58bf7262203ae3442e8d9394d57116725b620fd"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "a58bf7262203ae3442e8d9394d57116725b620fd"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "baf74d41d7c13829655f6c836937fd4ef11fb9fd"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "baf74d41d7c13829655f6c836937fd4ef11fb9fd"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "bf5fc61d1b42b0bce584aea71fc4ddffc8d15fa7"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "bf5fc61d1b42b0bce584aea71fc4ddffc8d15fa7"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "bf5fc61d1b42b0bce584aea71fc4ddffc8d15fa7"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "bf5fc61d1b42b0bce584aea71fc4ddffc8d15fa7"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "bf5fc61d1b42b0bce584aea71fc4ddffc8d15fa7"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "bf5fc61d1b42b0bce584aea71fc4ddffc8d15fa7"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "c79ed2f91dfae8e61ea26686b085e9dedd35003b"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "c79ed2f91dfae8e61ea26686b085e9dedd35003b"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "c79ed2f91dfae8e61ea26686b085e9dedd35003b"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "c79ed2f91dfae8e61ea26686b085e9dedd35003b"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "df8a72e47019ef7fb75f2ec05d150e9238346a1e"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "e6aa2bdb2e4d02b6abc235a51ab39ee157ecac1a"
-  },
-  {
-    "path": "backend/pipeline/medgemma.py",
-    "rule": "L4",
-    "line_hash": "f5d5e317e27aff6ac829fe0a828008bac42df0ce"
   },
   {
     "path": "backend/pipeline/qc_checks.py",
@@ -967,37 +652,12 @@
   {
     "path": "backend/worker/grading.py",
     "rule": "L1",
-    "line_hash": "0f3160e3065884536eebd23d119ae9114c6ea6b8"
-  },
-  {
-    "path": "backend/worker/grading.py",
-    "rule": "L1",
-    "line_hash": "6c0e7dc4b63b736a08bdba00328c8b637fda897f"
-  },
-  {
-    "path": "backend/worker/grading.py",
-    "rule": "L1",
     "line_hash": "930710967e2c76759eb67f3b7f6054a39fabd7d5"
   },
   {
     "path": "backend/worker/grading.py",
     "rule": "L1",
     "line_hash": "e8a955ec9a8c1f7aaf58604c2f7da65992c84ed5"
-  },
-  {
-    "path": "backend/worker/grading.py",
-    "rule": "L2",
-    "line_hash": "6967e780af2b2a90aa30dc0f8021e6a2e6823b57"
-  },
-  {
-    "path": "backend/worker/grading.py",
-    "rule": "L2",
-    "line_hash": "d0be388b0f50a67b4c866fbc4cfa11fe30c1245e"
-  },
-  {
-    "path": "backend/worker/grading.py",
-    "rule": "L2",
-    "line_hash": "e0729025431c4a128868210a78b28436dc00bff8"
   },
   {
     "path": "backend/worker/grading.py",
