@@ -1,7 +1,7 @@
 """Stage A of SPEC-06: the detector over a region, at its input resolution, with tile ownership.
 
-The region is swept in square tiles on a grid at the detector's resolution (``cfg.mpp``);
-a slide at another resolution is resampled window by window. Consecutive tiles overlap by
+The region is swept in square tiles on a grid at the detector's resolution (``cfg.mpp``),
+read through the caller's ``read_tile`` (SlideReader resamples). Consecutive tiles overlap by
 ``cfg.overlap_px``, and each tile *owns* the half of every overlap nearest to it (for the
 regular 512/448 grid, ``[32, 480)`` px), extended to the region's edges. Owned areas
 partition the region, so a detection is kept once, by the tile that owns its centre
@@ -11,10 +11,12 @@ detector; thresholds are applied by the caller.
 Used by the mitosis worker and by the evaluation baseline (eval/mitosis_baseline.py), so
 the baseline measures the production code path.
 """
+import io
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
+import numpy as np
 from PIL import Image
 
 from app.core.pipeline_config import MitosisDetectorConfig
@@ -47,8 +49,8 @@ class StageAPoint:
 
 # (patch PNGs at cfg.mpp, their ids) -> per patch: ([(x_px, y_px, prob)], DecisionRecord id)
 DetectBatch = Callable[[Sequence[bytes], Sequence[str]], Sequence[tuple[Sequence[tuple[float, float, float]], str]]]
-# (x_px, y_px, width_px, height_px) at level 0 -> RGB image of that size
-ReadNative = Callable[[int, int, int, int], Image.Image]
+# (x_um, y_um) of a tile's top-left corner -> its RGB pixels, tile_size_px square at cfg.mpp
+ReadTile = Callable[[float, float], np.ndarray]
 # (x0_um, y0_um, x1_um, y1_um) of a tile -> whether to sweep it (tissue, hotspot polygon)
 IncludeTile = Callable[[float, float, float, float], bool]
 
@@ -84,22 +86,18 @@ def plan_tiles(width_px: int, height_px: int, tile_px: int, stride_px: int) -> l
     ]
 
 
-def _png(image: Image.Image) -> bytes:
-    import io
-
+def _png(rgb: np.ndarray) -> bytes:
     buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
+    Image.fromarray(rgb).save(buffer, format="PNG")
     return buffer.getvalue()
 
 
 def detect_region(
-    read_native: ReadNative,
+    read_tile: ReadTile,
     region_um: tuple[float, float, float, float],
-    slide_mpp: tuple[float, float],
     cfg: MitosisDetectorConfig,
     detect_batch: DetectBatch,
     *,
-    mpp_tolerance: float,
     batch_size: int,
     threads: int,
     include_tile: Optional[IncludeTile] = None,
@@ -107,33 +105,30 @@ def detect_region(
 ) -> list[StageAPoint]:
     """Raw Stage-A points (µm, level-0 frame) in ``region_um`` = (x0, y0, x1, y1).
 
-    The slide's own pixels are sent when both axes are within ``mpp_tolerance`` (relative,
-    the detector contract's) of ``cfg.mpp``; otherwise each tile is resampled from level 0.
+    ``read_tile(x_um, y_um)`` returns the ``cfg.tile_size_px`` square at ``cfg.mpp`` whose
+    top-left corner is at (x_um, y_um); resampling is the reader's (SlideReader, SPEC-04).
     """
     x0_um, y0_um, x1_um, y1_um = region_um
     if x1_um <= x0_um or y1_um <= y0_um:
         raise ValueError(f"empty detection region {region_um}")
-    mpp_x, mpp_y = slide_mpp
     tile_px, work_mpp = cfg.tile_size_px, cfg.mpp
     width_px = int(round((x1_um - x0_um) / work_mpp))
     height_px = int(round((y1_um - y0_um) / work_mpp))
-    resample = abs(mpp_x - work_mpp) / work_mpp > mpp_tolerance or abs(mpp_y - work_mpp) / work_mpp > mpp_tolerance
+
+    def origin_um(tile: Tile) -> tuple[float, float]:
+        return x0_um + tile.x * work_mpp, y0_um + tile.y * work_mpp
 
     tiles = []
     for tile in plan_tiles(width_px, height_px, tile_px, cfg.stride_px):
-        tx_um, ty_um = x0_um + tile.x * work_mpp, y0_um + tile.y * work_mpp
+        tx_um, ty_um = origin_um(tile)
         if include_tile is None or include_tile(tx_um, ty_um, tx_um + tile_px * work_mpp, ty_um + tile_px * work_mpp):
             tiles.append(tile)
 
     def read(tile: Tile) -> bytes:
-        tx_um, ty_um = x0_um + tile.x * work_mpp, y0_um + tile.y * work_mpp
-        if not resample:
-            return _png(read_native(int(round(tx_um / mpp_x)), int(round(ty_um / mpp_y)), tile_px, tile_px))
-        # Level-0 window covering the tile's physical extent, resampled to tile_px.
-        w = int(round(tile_px * work_mpp / mpp_x))
-        h = int(round(tile_px * work_mpp / mpp_y))
-        window = read_native(int(round(tx_um / mpp_x)), int(round(ty_um / mpp_y)), w, h)
-        return _png(window.resize((tile_px, tile_px), Image.LANCZOS))
+        rgb = read_tile(*origin_um(tile))
+        if rgb.shape[:2] != (tile_px, tile_px):
+            raise ValueError(f"a tile read at {work_mpp} um/px came out {rgb.shape[:2]}, not {tile_px} px square")
+        return _png(rgb)
 
     def sweep(group: list[Tile]) -> list[StageAPoint]:
         ids = [f"{tile_prefix}_{t.x}_{t.y}" for t in group]
@@ -142,15 +137,10 @@ def detect_region(
             raise ValueError(f"detector returned {len(results)} results for {len(group)} tiles")
         kept = []
         for tile, tile_id, (found, record_id) in zip(group, ids, results):
+            tx_um, ty_um = origin_um(tile)
             for x, y, prob in found:
                 if tile.own_x0 <= x < tile.own_x1 and tile.own_y0 <= y < tile.own_y1:
-                    kept.append(StageAPoint(
-                        x0_um + (tile.x + x) * work_mpp,
-                        y0_um + (tile.y + y) * work_mpp,
-                        float(prob),
-                        tile_id,
-                        record_id,
-                    ))
+                    kept.append(StageAPoint(tx_um + x * work_mpp, ty_um + y * work_mpp, float(prob), tile_id, record_id))
         return kept
 
     groups = [tiles[start:start + batch_size] for start in range(0, len(tiles), batch_size)]

@@ -1,5 +1,15 @@
+"""
+Stage 2 (preprocess): the registered tissue mask, the slide's stain profile and the normalised
+pyramid (SPEC-04 §3.4, §3.6).
+
+Everything that later stages assume about colour and tissue is decided here, once:
+1. The case's specimen type picks the profile (an unknown specimen is refused).
+2. The tissue mask is computed over the full slide extent at the profile's resolution.
+3. The stain profile is fitted on patches sampled over that mask and persisted.
+4. The normalised DeepZoom pyramid is rendered from the persisted profile.
+Every pixel is read through ``read_region_at_mpp``; a read that fails fails the stage.
+"""
 import os
-import io
 import json
 import math
 import shutil
@@ -20,96 +30,77 @@ from app.core.gcs import (
     download_blob_to_filename,
     resolve_slide_raw_uri
 )
+from app.core.pipeline_config import NormPyramidConfig
+from app.core.stain_profiles import save_stain_profile, transform_of_profile
+from app.core.tissue_mask_store import save_tissue_mask
+from app.models.case import Case
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
 from app.models.audit import AuditEvent
-from pipeline.stain import fit_macenko_stain
+from pipeline.slide_io import (
+    DZI_TILE_PX,
+    SlideReader,
+    dzi_level_dimensions,
+    dzi_max_level,
+    read_dzi_tile,
+    require_mpp,
+    seed_from_checksum,
+)
+from pipeline.stain import FITTER_VERSION, StainTransform, fit_stain_profile
+from pipeline.tissue_mask import MASK_ALGORITHM_VERSION, compute_tissue_mask
 from worker.runtime import StageRuntime
 
-def generate_norm_dzi_pyramid(slide_obj, normalizer, local_slide_path: str, scratch_dir: str) -> str:
+# Concurrent tile uploads.
+UPLOAD_THREADS = 16
+
+
+def norm_pyramid_levels(width_px: int, height_px: int, mpp_x: float, cfg: NormPyramidConfig) -> list[dict]:
+    """DeepZoom levels the normalised pyramid covers: the coarsest ones, down to ``cfg.max_mpp``.
+
+    Level z shows the slide shrunk by ``2 ** (max_level - z)``, as OpenSlide's DeepZoomGenerator does.
+    Levels are added from the coarsest while the cumulative tile count stays within ``cfg.max_tiles``.
     """
-    Generate complete normalized DZI pyramid and stream directly to GCS pyramids bucket.
-    Applies read_region_srgb ICC-correction funnel and Macenko stain normalization up to 10x level (~1.0 um/px).
-    Fails fast if tile uploads fail (Issue #42, #429).
+    max_level = dzi_max_level(width_px, height_px)
+    downsample = max(1.0, cfg.max_mpp / mpp_x)
+    finest = max(0, round(max_level - math.log2(downsample)))
+    levels = []
+    cumulative = 0
+    for z in range(0, min(max_level, finest) + 1):
+        scale = 1 << (max_level - z)
+        level_w, level_h = dzi_level_dimensions(width_px, height_px, z)
+        cols, rows = -(-level_w // DZI_TILE_PX), -(-level_h // DZI_TILE_PX)
+        if cumulative + cols * rows > cfg.max_tiles and z > 0:
+            break
+        cumulative += cols * rows
+        levels.append({"z": z, "scale": scale, "width_px": level_w, "height_px": level_h, "cols": cols, "rows": rows})
+    return levels
+
+
+def generate_norm_dzi_pyramid(
+    reader: SlideReader, slide_id: str, stain: StainTransform, cfg: NormPyramidConfig, scratch_dir: str
+) -> str:
     """
-    slide_id = str(slide_obj.id)
+    Render the stain-normalised DeepZoom pyramid with the slide's persisted stain transform and
+    stream it to the GCS pyramids bucket. Fails if a tile cannot be read or uploaded.
+    """
     norm_pyramid_dir = os.path.join(scratch_dir, "norm_pyramid")
     os.makedirs(norm_pyramid_dir, exist_ok=True)
 
-    # 1. OpenSlide DeepZoomGenerator with read_region_srgb color pipeline
-    try:
-        import openslide
-        from openslide.deepzoom import DeepZoomGenerator
-        
-        slide = openslide.OpenSlide(local_slide_path)
-        dz = DeepZoomGenerator(slide, tile_size=256, overlap=0, limit_bounds=False)
-        
-        # Color management: check and build ICC transform if profile exists (Issue #429)
-        from pipeline.tiles import check_icc_profile, get_icc_transform
-        from PIL import ImageCms
-        icc_bytes, has_icc = check_icc_profile(slide)
-        icc_transform = get_icc_transform(icc_bytes) if (has_icc and icc_bytes) else None
+    for level in norm_pyramid_levels(*reader.dimensions, reader.mpp_x, cfg):
+        norm_level_dir = os.path.join(norm_pyramid_dir, str(level["z"]))
+        os.makedirs(norm_level_dir, exist_ok=True)
+        for c in range(level["cols"]):
+            for r in range(level["rows"]):
+                tile = Image.fromarray(read_dzi_tile(reader, level["z"], c, r, color="normalized", stain=stain).rgb)
+                tile.save(os.path.join(norm_level_dir, f"{c}_{r}.png"), "PNG")
+                tile.save(os.path.join(norm_level_dir, f"{c}_{r}.jpg"), "JPEG", quality=85)
 
-        # Calculate 10x max level (~1.0 um/px) per PRD §2.3
-        mpp_x = float(slide_obj.mpp_x or 0.25)
-        mpp_y = float(slide_obj.mpp_y or mpp_x or 0.25)
-        ds_10x = max(1.0, 1.0 / mpp_x)
-        cap_10x_level = max(0, int(round((dz.level_count - 1) - math.log2(ds_10x))))
-        max_level_to_generate = min(dz.level_count, cap_10x_level + 1)
-
-        # Pregenerate levels up to 10x bounded by max_pregen_tiles (Issue #635)
-        max_pregen_tiles = 1500
-        cumulative_tiles = 0
-        for level in range(0, max_level_to_generate):
-            cols, rows = dz.level_tiles[level]
-            lvl_tiles = cols * rows
-            if cumulative_tiles + lvl_tiles > max_pregen_tiles and level > 0:
-                max_level_to_generate = level
-                break
-            cumulative_tiles += lvl_tiles
-
-        for level in range(0, max_level_to_generate):
-            norm_level_dir = os.path.join(norm_pyramid_dir, str(level))
-            os.makedirs(norm_level_dir, exist_ok=True)
-            cols, rows = dz.level_tiles[level]
-
-            for c in range(cols):
-                for r in range(rows):
-                    png_path = os.path.join(norm_level_dir, f"{c}_{r}.png")
-                    jpg_path = os.path.join(norm_level_dir, f"{c}_{r}.jpg")
-                    
-                    try:
-                        tile = dz.get_tile(level, (c, r))
-                        if tile.mode != "RGB":
-                            tile = tile.convert("RGB")
-                    except Exception:
-                        tile = Image.new("RGB", (256, 256), color=(245, 240, 245))
-
-                    # Apply ICC color profile transform to guarantee sRGB color space (Issue #429)
-                    if icc_transform is not None:
-                        try:
-                            tile = ImageCms.applyTransform(tile, icc_transform)
-                        except Exception as pe:
-                            print(f"[ICC Transform Note] {pe}")
-
-                    raw_arr = np.array(tile, dtype=np.uint8)
-                    try:
-                        norm_arr = normalizer.transform(raw_arr)
-                    except Exception:
-                        norm_arr = raw_arr
-                    norm_tile = Image.fromarray(norm_arr)
-                    norm_tile.save(png_path, "PNG")
-                    norm_tile.save(jpg_path, "JPEG", quality=85)
-        slide.close()
-    except Exception as dz_err:
-        print(f"[Preprocess Worker Note] Direct norm DeepZoom generation note: {dz_err}")
-
-    # 2. Stream normalized tiles directly to GCS Cloud Storage pyramid bucket
+    # Stream normalized tiles directly to GCS Cloud Storage pyramid bucket
     client = get_gcs_client()
     bucket = client.bucket(settings.GCS_PYRAMIDS_BUCKET)
     norm_files = glob.glob(os.path.join(norm_pyramid_dir, "**", "*.*"), recursive=True)
     norm_files = [f for f in norm_files if f.lower().endswith((".jpg", ".jpeg", ".png"))]
-    
+
     def upload_single_norm_tile(local_path):
         rel_path = os.path.relpath(local_path, norm_pyramid_dir)
         parts = rel_path.split(os.sep)
@@ -131,7 +122,7 @@ def generate_norm_dzi_pyramid(slide_obj, normalizer, local_slide_path: str, scra
                 time.sleep(0.05 * (2 ** attempt))
         return f"{blob_path}: {last_err}"
 
-    with ThreadPoolExecutor(max_workers=16) as executor:
+    with ThreadPoolExecutor(max_workers=UPLOAD_THREADS) as executor:
         results = list(executor.map(upload_single_norm_tile, norm_files))
 
     failures = [r for r in results if r is not None]
@@ -144,11 +135,12 @@ def generate_norm_dzi_pyramid(slide_obj, normalizer, local_slide_path: str, scra
 def run_preprocess(stage_execution: StageExecution, session: Session, runtime: StageRuntime) -> tuple[str, dict]:
     """
     Preprocess worker handler:
-    1. Downloads raw slide directly from GCS.
-    2. Fits Macenko stain normalizer on tissue patches.
-    3. Extracts 1-bit tissue mask PNG and stain parameters.
-    4. Assembles normalized DZI pyramid and uploads to GCS.
-    5. Persists preprocess artifacts directly to GCS & queues next stage ('qc').
+    1. Refuses a slide without MPP and a case without a specimen type.
+    2. Downloads raw slide directly from GCS.
+    3. Computes the registered tissue mask and persists it (PNG + JSON).
+    4. Fits the slide's stain profile on tissue patches and persists it.
+    5. Renders the normalized DZI pyramid with that profile and uploads it to GCS.
+    6. Persists preprocess/output.json & queues the next stage ('qc').
     """
     input_ref = stage_execution.input_ref or {}
     slide_id = input_ref.get("slide_id")
@@ -170,18 +162,23 @@ def run_preprocess(stage_execution: StageExecution, session: Session, runtime: S
         raise ValueError(f"Slide object {slide_id} not found in database")
 
     # Halt preprocess stage if MPP is missing per PRD 01-stage-v4.0 §2.3 step 4
-    if not getattr(slide_obj, "mpp_x", None) or slide_obj.mpp_x <= 0 or not getattr(slide_obj, "mpp_y", None) or slide_obj.mpp_y <= 0:
-        raise ValueError(f"Slide {slide_id} is missing valid MPP (status='needs_mpp'). Cannot execute preprocess stage.")
+    require_mpp(slide_obj)
 
-    mpp_x = float(slide_obj.mpp_x)
-    mpp_y = float(slide_obj.mpp_y)
+    config = runtime.config
+    case_obj = session.get(Case, case_id)
+    if not case_obj:
+        raise ValueError(f"Case {case_id} not found in database")
+    specimen_type = case_obj.specimen_type
+    profile = config.specimen_profiles.for_type(specimen_type)  # SpecimenTypeRequired for 'unknown'
+    seed = seed_from_checksum(slide_obj.checksum_sha256)
 
     scratch_dir = tempfile.mkdtemp(prefix="og_preprocess_")
+    reader = None
 
     try:
         gcs_uri_original = resolve_slide_raw_uri(case_id, slide_obj) or slide_obj.gcs_uri_original or f"gs://{settings.GCS_RAW_BUCKET}/cases/{case_id}/{slide_id}.svs"
         raw_bucket_name, blob_name = parse_gcs_uri(gcs_uri_original)
-        
+
         ext = os.path.splitext(blob_name)[1] or ".svs"
         local_slide_path = os.path.join(scratch_dir, f"slide{ext}")
 
@@ -190,73 +187,46 @@ def run_preprocess(stage_execution: StageExecution, session: Session, runtime: S
 
         if not os.path.exists(local_slide_path):
             raise FileNotFoundError(f"Raw slide file not found in GCS for preprocess stage in case {case_id}")
-        checksum = getattr(slide_obj, "checksum_sha256", "default_checksum") or "default_checksum"
 
-        try:
-            import openslide
-            slide = openslide.OpenSlide(local_slide_path)
-        except Exception:
-            slide = Image.open(local_slide_path)
+        reader = SlideReader.from_slide_row(local_slide_path, slide_obj)
 
-        # Fit STAINS Macenko Normalizer & Extract Tissue Mask
-        normalizer, stain_params, tissue_mask_1bit = fit_macenko_stain(
-            slide,
-            checksum_sha256=checksum,
-            ref_image_path="configs/stain_reference.png",
-            mpp_x=mpp_x,
-            mpp_y=mpp_y
+        # 1. Registered tissue mask over the full slide extent
+        mask = compute_tissue_mask(reader, profile.tissue_mask, config.qc.pen_marks, specimen_type)
+        tissue_mask_uri, tissue_mask_meta_uri = save_tissue_mask(
+            case_id, mask, params=profile.tissue_mask.model_dump(mode="json")
         )
 
-        slide_w_px = float(getattr(slide_obj, "width_px", 2048) or 2048)
-        slide_h_px = float(getattr(slide_obj, "height_px", 2048) or 2048)
-        if hasattr(slide, "dimensions"):
-            slide_w_px, slide_h_px = float(slide.dimensions[0]), float(slide.dimensions[1])
-        thumb_w_um = min(50000.0, slide_w_px * mpp_x)
-        thumb_h_um = min(50000.0, slide_h_px * mpp_y)
-        px_area_mm2 = (thumb_w_um / 512.0) * (thumb_h_um / 512.0) * 1e-6
-        tissue_area_mm2 = float(np.count_nonzero(tissue_mask_1bit) * px_area_mm2)
-
-        from pipeline.tiles import check_icc_profile, get_icc_transform
-        icc_bytes, has_icc = check_icc_profile(slide)
-        icc_applied = bool(has_icc and get_icc_transform(icc_bytes) is not None)
-
-        if hasattr(slide, "close"):
-            slide.close()
-
-        # Save artifacts directly to GCS artifacts bucket
-        stain_params_uri = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/preprocess/stain_params.json"
-        tissue_mask_uri = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/preprocess/tissue_mask.png"
-        thumbnail_uri = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/preprocess/thumbnail.png"
-
-        upload_blob_from_bytes(
-            settings.GCS_ARTIFACTS_BUCKET,
-            f"cases/{case_id}/preprocess/stain_params.json",
-            json.dumps(stain_params, indent=2).encode("utf-8"),
-            "application/json"
+        # 2. Stain profile, fitted once on patches sampled over the mask, then persisted
+        origins = mask.sample_origins_um(
+            profile.stain_fit.n_candidates, profile.stain_fit.patch_um, np.random.default_rng(seed)
         )
+        reference = config.stain_refs[profile.stain_target.ref]
+        fit = fit_stain_profile(reader, origins, profile.stain_fit, reference)
+        stain_row = save_stain_profile(session, slide_obj.id, fit)
 
-        mask_img = Image.fromarray((tissue_mask_1bit * 255).astype(np.uint8))
-        mask_buf = io.BytesIO()
-        mask_img.save(mask_buf, format="PNG")
-        upload_blob_from_bytes(
-            settings.GCS_ARTIFACTS_BUCKET,
-            f"cases/{case_id}/preprocess/tissue_mask.png",
-            mask_buf.getvalue(),
-            "image/png"
-        )
+        # 3. Normalized DZI pyramid from the persisted profile. A degenerate profile cannot normalise anything.
+        norm_pyramid_uri = None
+        if fit.fit_status != "degenerate":
+            stain = transform_of_profile(stain_row, od_beta=profile.stain_fit.od_beta)
+            norm_pyramid_uri = generate_norm_dzi_pyramid(reader, str(slide_obj.id), stain, profile.norm_pyramid, scratch_dir)
 
-        # Assemble Normalized DZI Pyramid directly to GCS
-        norm_pyramid_uri = generate_norm_dzi_pyramid(slide_obj, normalizer, local_slide_path, scratch_dir)
+        icc_applied = reader.has_icc_profile
+        native_mpp = reader.native_mpp
 
         # Save preprocess/output.json directly to GCS
         preprocess_output = {
+            "specimen_type": specimen_type,
             "icc_applied": icc_applied,
-            "stain_params_uri": stain_params_uri,
+            "native_mpp": native_mpp,
+            "stain_profile_id": str(stain_row.id),
+            "stain_fit_status": fit.fit_status,
+            "stain_patches": fit.n_patches,
+            "stain_reference": fit.reference_id,
             "norm_pyramid_uri": norm_pyramid_uri,
-            "thumbnail_uri": thumbnail_uri,
             "tissue_mask_uri": tissue_mask_uri,
-            "tissue_area_mm2": round(tissue_area_mm2, 2),
-            "model_versions": {"stain_normalizer": normalizer.__class__.__name__}
+            "tissue_mask_meta_uri": tissue_mask_meta_uri,
+            "tissue_area_mm2": round(mask.area_mm2, 2),
+            "model_versions": {"stain_fitter": FITTER_VERSION, "tissue_mask": MASK_ALGORITHM_VERSION}
         }
 
         output_ref = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/preprocess/output.json"
@@ -277,8 +247,10 @@ def run_preprocess(stage_execution: StageExecution, session: Session, runtime: S
             event_type="stage_output",
             stage="preprocess",
             payload={
+                "specimen_type": specimen_type,
                 "icc_applied": icc_applied,
-                "tissue_area_mm2": tissue_area_mm2,
+                "tissue_area_mm2": mask.area_mm2,
+                "stain_fit_status": fit.fit_status,
                 "norm_pyramid_uri": norm_pyramid_uri
             }
         )
@@ -315,7 +287,9 @@ def run_preprocess(stage_execution: StageExecution, session: Session, runtime: S
             payload={"slide_id": str(slide_id), "preprocess_output_ref": output_ref}
         )
 
-        return output_ref, {"tiatoolbox": "1.6.0"}
+        return output_ref, preprocess_output["model_versions"]
 
     finally:
+        if reader is not None:
+            reader.close()
         shutil.rmtree(scratch_dir, ignore_errors=True)

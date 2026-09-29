@@ -15,13 +15,14 @@ from app.core.db import Base, get_db
 from app.core.pipeline_config import (
     MitoticThresholds,
     NottinghamGradingConfig,
-    QcConfig,
+    SpecimenQcConfig,
     get_config_hash,
     get_pipeline_config,
 )
 from app.main import app
 from pipeline.grading import aggregate_grading_findings, calculate_nottingham_grade, calculate_tubule_score
-from pipeline.qc_checks import check_tissue_coverage, run_all_qc_checks
+from pipeline.qc_checks import check_tissue_coverage
+from pipeline.tissue_mask import TissueMask
 from pipeline.scoring import compute_nottingham_mitotic_score
 from worker.execution import STAGE_HANDLERS
 
@@ -79,20 +80,13 @@ def test_an_unknown_confidence_fails_instead_of_weighing_as_medium():
         aggregate_grading_findings(tubule, pleo, mitotic_score=1, cfg=scoring)
 
 
-def test_qc_uses_the_injected_thresholds_and_stamps_the_pipeline_hash():
-    base = get_pipeline_config().qc
-    mask = np.zeros((100, 100), dtype=bool)
-    mask[:, :4] = True  # 4% tissue
-    assert check_tissue_coverage(mask, base)["status"] == "warn"
-    data = base.model_dump()
-    data["tissue_coverage"] = {"fail_threshold": 0.01, "warn_threshold": 0.03}
-    assert check_tissue_coverage(mask, QcConfig.model_validate(data))["status"] == "pass"
-
-    from PIL import Image
-
-    slide = Image.new("RGB", (512, 512), color=(240, 230, 240))
-    result = run_all_qc_checks(slide, mask, stain_params={}, config=base, config_hash=get_config_hash())
-    assert result["config_hash"] == get_config_hash()
+def test_qc_uses_the_injected_thresholds():
+    profile = get_pipeline_config().specimen_profiles.profiles["resection"].qc
+    mask = TissueMask(np.ones((100, 100), dtype=bool), 10.0)  # 1 mm² of tissue
+    assert check_tissue_coverage(mask, profile)["status"] == "fail"
+    data = profile.model_dump()
+    data.update(tissue_area_fail_mm2=0.5, tissue_area_warn_mm2=0.9)
+    assert check_tissue_coverage(mask, SpecimenQcConfig.model_validate(data))["status"] == "pass"
 
 
 @pytest.mark.parametrize("stage", sorted(STAGE_HANDLERS))

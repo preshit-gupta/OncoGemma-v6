@@ -27,7 +27,6 @@ from sqlalchemy.pool import StaticPool
 
 from app.main import app
 from app.core.db import Base, get_db
-from app.core.openslide_lock import OPENSLIDE_GLOBAL_LOCK
 from app.core.pipeline_config import get_pipeline_config
 from app.models.case import Case
 from app.models.slide import Slide
@@ -38,10 +37,6 @@ from pipeline.grading import (
     validate_grading_invariants,
     aggregate_grading_findings,
     calculate_tubule_score,
-)
-from worker.grading import (
-    select_max_density_hotspot_patches,
-    extract_10x_patch,
 )
 
 # ---------------------------------------------------------------------------
@@ -75,21 +70,6 @@ def db_session():
     yield session
     session.close()
     app.dependency_overrides.pop(get_db, None)
-
-
-# ---------------------------------------------------------------------------
-# 1. OpenSlide Lock Reentrancy
-# ---------------------------------------------------------------------------
-
-def test_openslide_lock_reentrancy():
-    """Verify OPENSLIDE_GLOBAL_LOCK is reentrant (RLock) and does not deadlock."""
-    # Must be able to re-acquire on the same thread without hanging
-    acquired_nested = False
-    with OPENSLIDE_GLOBAL_LOCK:
-        with OPENSLIDE_GLOBAL_LOCK:
-            with OPENSLIDE_GLOBAL_LOCK:
-                acquired_nested = True
-    assert acquired_nested is True
 
 
 # ---------------------------------------------------------------------------

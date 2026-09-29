@@ -266,7 +266,7 @@ def evidence_unreadable(db_session, monkeypatch, tmp_path):
     assert not hasattr(triage_router, "generate_synthetic_microscopic_patch")
     with patch("app.routers.triage.download_blob_as_bytes", side_effect=download), \
          patch("pipeline.tiles.extract_patch_from_pyramid", return_value=None), \
-         patch("app.routers.triage.download_blob_to_filename", side_effect=FileNotFoundError("gs://raw/missing.svs")), \
+         patch("app.core.slide_access.download_blob_to_filename", side_effect=FileNotFoundError("gs://raw/missing.svs")), \
          patch("app.routers.triage.upload_blob_from_bytes") as upload:
         try:
             triage_router.get_hotspot_thumbnail(

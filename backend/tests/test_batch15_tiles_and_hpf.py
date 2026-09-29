@@ -19,11 +19,7 @@ from pipeline.hpf import (
     generate_mitosis_density_map,
     create_circular_disk_mask
 )
-from pipeline.tiles import (
-    check_icc_profile,
-    read_region_srgb,
-    extract_patch_from_pyramid
-)
+from pipeline.tiles import extract_patch_from_pyramid
 from pipeline.probe import l2_normalize
 from app.core.config import settings
 from app.core.gcs import (
@@ -146,68 +142,6 @@ def test_generate_mitosis_density_map_confidence_filtering():
 # ---------------------------------------------------------------------------
 # 2. WSI Color & Region Reading Tests (#53, #554, #54, #730)
 # ---------------------------------------------------------------------------
-
-def test_check_icc_profile_variations():
-    """Issue #53: Robust ICC profile detection across color_profile, properties, and info."""
-    # 1. OpenSlide >= 1.3 color_profile object
-    class SlideWithColorProfile:
-        class ColorProf:
-            def tobytes(self):
-                return b"ICC_PROFILE_BYTES"
-        color_profile = ColorProf()
-
-    icc_bytes, has_icc = check_icc_profile(SlideWithColorProfile())
-    assert has_icc is True
-    assert icc_bytes == b"ICC_PROFILE_BYTES"
-
-    # 2. Slide with properties dict
-    class SlideWithProps:
-        properties = {"openslide.icc-profile": b"PROP_ICC_BYTES"}
-
-    icc_bytes2, has_icc2 = check_icc_profile(SlideWithProps())
-    assert has_icc2 is True
-    assert icc_bytes2 == b"PROP_ICC_BYTES"
-
-    # 3. Slide with PIL info
-    class SlideWithInfo:
-        info = {"icc_profile": b"INFO_ICC_BYTES"}
-
-    icc_bytes3, has_icc3 = check_icc_profile(SlideWithInfo())
-    assert has_icc3 is True
-    assert icc_bytes3 == b"INFO_ICC_BYTES"
-
-    # 4. Slide with no profile
-    class SlideEmpty:
-        pass
-
-    icc_bytes4, has_icc4 = check_icc_profile(SlideEmpty())
-    assert has_icc4 is False
-    assert icc_bytes4 is None
-
-
-def test_read_region_srgb_rgba_compositing():
-    """Issue #554: RGBA transparent border pixels must be composited over white, not black."""
-    # Create an RGBA image where left half is pure transparent (alpha=0) and right half is red
-    img = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
-    red_half = Image.new("RGBA", (50, 100), (255, 0, 0, 255))
-    img.paste(red_half, (50, 0))
-
-    tile_arr, _ = read_region_srgb(
-        img,
-        x_um=0.0,
-        y_um=0.0,
-        w_um=25.0,
-        h_um=25.0,
-        out_px=(100, 100),
-        mpp_x=0.25,
-        mpp_y=0.25
-    )
-
-    # Left half was alpha=0. With white compositing, it should be (255, 255, 255), NOT (0, 0, 0)!
-    assert tuple(tile_arr[50, 10]) == (255, 255, 255)
-    # Right half was red
-    assert tuple(tile_arr[50, 80]) == (255, 0, 0)
-
 
 def test_extract_patch_from_pyramid_coverage_guard():
     """Issue #730: Return None if pyramid tiles are missing or coverage < 75%."""

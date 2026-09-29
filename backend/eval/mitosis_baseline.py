@@ -38,6 +38,7 @@ from eval.datasets.midogpp import MIDOGppAdapter, image_mpp
 from eval.metrics import CaseMitosis, RegionPoints, mcnemar_exact, match_points, mitosis_f1, mitosis_pr_curve
 from pipeline.detect import apply_global_nms
 from pipeline.mitosis_detect import detect_region, make_detect_batch
+from pipeline.slide_io import SlideReader, read_region_at_mpp
 from pipeline.verify import mitosis_referee_images
 
 Image.MAX_IMAGE_PIXELS = None
@@ -47,18 +48,21 @@ RECALL_TARGET = 0.95             # SPEC-06 §5.2 τ_A
 THREADS = 4
 
 
-class ImageSlide:
-    """An in-memory image behind the OpenSlide calls the pipeline makes (level 0 only)."""
+def openslide_copy(image_path: Path, work: Path) -> Path:
+    """A tiled TIFF of the same pixels that OpenSlide reads (MIDOG++ TIFFs are stripped).
 
-    def __init__(self, image: Image.Image):
-        self.image = image
-        self.dimensions = image.size
+    The worker reads slides through SlideReader (OpenSlide); so does the baseline. Needs tifffile.
+    """
+    import tifffile
 
-    def read_region(self, location, level, size):
-        if level != 0:
-            raise ValueError("ImageSlide has level 0 only")
-        x, y = location
-        return self.image.crop((x, y, x + size[0], y + size[1])).convert("RGBA")
+    target = work / f"{image_path.stem}_tiled.tiff"
+    if not target.is_file():
+        with Image.open(image_path) as source:
+            tags = source.tag_v2
+            rgb = np.asarray(source.convert("RGB"))
+        tifffile.imwrite(target, rgb, tile=(256, 256), photometric="rgb", compression="zlib",
+                         resolution=(float(tags[282]), float(tags[283])), resolutionunit=int(tags[296]))
+    return target
 
 
 def sha256_file(path: Path) -> str:
@@ -109,23 +113,18 @@ def stage_a(image_path: Path, work: Path, config, gateway, ctx) -> tuple[list[di
     if cache.is_file():
         return json.loads(cache.read_text(encoding="utf-8"))["points"], mpp_x, image_sha
 
-    image = Image.open(image_path).convert("RGB")
-
-    def read_native(x, y, width, height):
-        return image.crop((x, y, x + width, y + height))
-
     started = time.time()
-    points = detect_region(
-        read_native,
-        (0.0, 0.0, image.width * mpp_x, image.height * mpp_y),
-        (mpp_x, mpp_y),
-        det_cfg,
-        make_detect_batch(gateway, ctx, det_cfg, entry),
-        mpp_tolerance=entry.input.mpp_tolerance,
-        batch_size=entry.limits.max_batch,
-        threads=THREADS,
-        tile_prefix=image_path.stem,
-    )
+    with SlideReader(str(openslide_copy(image_path, work)), mpp_x, mpp_y, "generic-tiff") as reader:
+        tile_um = det_cfg.tile_size_um
+        points = detect_region(
+            lambda x_um, y_um: read_region_at_mpp(reader, x_um, y_um, tile_um, tile_um, det_cfg.mpp).rgb,
+            (0.0, 0.0, *reader.extent_um()),
+            det_cfg,
+            make_detect_batch(gateway, ctx, det_cfg, entry),
+            batch_size=entry.limits.max_batch,
+            threads=THREADS,
+            tile_prefix=image_path.stem,
+        )
     rows = [{"x_um": p.x_um, "y_um": p.y_um, "prob": p.prob, "tile_id": p.tile_id, "record_id": p.record_id} for p in points]
     cache.write_text(json.dumps({
         "image": image_path.name, "image_sha256": image_sha, "mpp": [mpp_x, mpp_y],
@@ -135,19 +134,23 @@ def stage_a(image_path: Path, work: Path, config, gateway, ctx) -> tuple[list[di
     return rows, mpp_x, image_sha
 
 
-def referee(candidates: list[dict], image_path: Path, mpp: float, config, gateway, ctx) -> dict[str, str]:
-    """The production referee's verdict per candidate id."""
+def referee(candidates: list[dict], image_path: Path, work: Path, config, gateway, ctx) -> dict[str, str]:
+    """The production referee's verdict per candidate id (same images as worker/mitosis.py)."""
     ref_cfg = config.mitosis.referee
-    slide = ImageSlide(Image.open(image_path).convert("RGB"))
-    inputs = {
-        c["id"]: mitosis_referee_images(slide, int(c["centroid_um"][0] / mpp), int(c["centroid_um"][1] / mpp), mpp,
-                                        ref_cfg.focus_px, ref_cfg.context_um, ref_cfg.context_px)
-        for c in candidates
-    }
+    if ref_cfg.color != "raw":
+        raise SystemExit(f"the referee is configured for {ref_cfg.color} colour, which needs the slide's stain "
+                         "profile; a MIDOG++ image has none")
+    mpp_x, mpp_y = image_mpp(image_path)
+    with SlideReader(str(openslide_copy(image_path, work)), mpp_x, mpp_y, "generic-tiff") as reader:
+        inputs = {
+            c["id"]: mitosis_referee_images(reader, c["centroid_um"][0], c["centroid_um"][1], ref_cfg, None)
+            for c in candidates
+        }
 
     def judge(cand):
+        images = inputs[cand["id"]]
         result = gateway.invoke(
-            Task.MITOSIS_REFEREE, ref_cfg.producer, ModelInputs(images=inputs[cand["id"]], prompt_id=ref_cfg.prompt),
+            Task.MITOSIS_REFEREE, ref_cfg.producer, ModelInputs(images=(images.focus, images.context), prompt_id=ref_cfg.prompt),
             ctx, EntityRef(EntityType.CANDIDATE, cand["id"]), MitosisVerdict,
         )
         return cand["id"], result.output.verdict
@@ -220,7 +223,7 @@ def main() -> int:
     if args.referee:
         a1 = apply_global_nms(as_candidates(points, best["tau"]), nms_radius_um=best["radius"])
         pool = apply_global_nms(as_candidates(points, best["tau_recall"]), nms_radius_um=best["radius"])
-        verdicts = referee(pool, args.image, mpp, config, gateway, ctx)
+        verdicts = referee(pool, args.image, args.work, config, gateway, ctx)
         a2 = [c for c in pool if verdicts[c["id"]] == "MITOTIC_FIGURE"]
         s1, s2 = score(mf, a1, args.image.stem), score(mf, a2, args.image.stem)
         counts = {v: sum(1 for x in verdicts.values() if x == v) for v in ("MITOTIC_FIGURE", "NOT_MITOTIC_FIGURE", "EQUIVOCAL")}

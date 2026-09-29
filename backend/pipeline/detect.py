@@ -3,8 +3,14 @@ OncoGemma Stage 4 - hotspot tiling and physical micrometer cross-tile NMS.
 The detector itself runs through the model gateway (worker/mitosis.py).
 """
 import math
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Tuple, Dict, Any
 import numpy as np
+from shapely.geometry import Polygon, box
+
+from pipeline.tissue_mask import TissueMask
+
+# A polygon has at least three vertices.
+MIN_POLYGON_VERTICES = 3
 
 
 def apply_global_nms(
@@ -46,122 +52,64 @@ def apply_global_nms(
 
 def enumerate_hotspot_tiles(
     hotspot_polygon_um: List[List[float]],
-    tile_size_px: int = 1024,
-    mpp: float | None = None,
-    stride_px: int = 960,
-    tissue_mask: Optional[np.ndarray] = None,
-    slide_dimensions_um: Optional[Tuple[float, float]] = None,
-    min_tissue_ratio: float = 0.20
+    *,
+    tile_um: float,
+    stride_um: float,
+    tissue: TissueMask,
+    min_tissue_fraction: float,
 ) -> List[Dict[str, Any]]:
     """
-    Generates 40x tile coordinates covering a hotspot polygon.
-    Filters out tiles with less than min_tissue_ratio tissue coverage when tissue_mask is provided.
-    Returns list of dicts with tile bounding box in pixels and base micrometers.
+    Tiles of side ``tile_um`` on a ``stride_um`` grid that starts at the hotspot's bounding box,
+    keeping those that touch the hotspot polygon and are at least ``min_tissue_fraction`` tissue
+    according to the registered tissue mask. A tile may overhang the slide edge (it is read with
+    white padding). Returns dicts with the tile's ``origin_um`` and ``size_um``.
     """
-    if not hotspot_polygon_um:
+    if len(hotspot_polygon_um) < MIN_POLYGON_VERTICES:
+        raise ValueError(f"a hotspot polygon needs at least {MIN_POLYGON_VERTICES} vertices, got {len(hotspot_polygon_um)}")
+    if not tile_um > 0 or not stride_um > 0:
+        raise ValueError(f"tile_um and stride_um must be positive, got {tile_um} and {stride_um}")
+
+    polygon = Polygon(hotspot_polygon_um)
+    if not polygon.is_valid:
+        polygon = polygon.buffer(0)
+
+    min_x_um, min_y_um, max_x_um, max_y_um = polygon.bounds
+    slide_w_um, slide_h_um = tissue.extent_um
+    xs = np.arange(max(0.0, min_x_um), max_x_um + 0.0, stride_um)
+    ys = np.arange(max(0.0, min_y_um), max_y_um + 0.0, stride_um)
+    xs = xs[xs < slide_w_um]
+    ys = ys[ys < slide_h_um]
+    if xs.size == 0 or ys.size == 0:
         return []
-
-    if mpp is None or mpp <= 0:
-        raise ValueError(f"Valid positive MPP is required for tile enumeration, got: {mpp}")
-
-    xs = [p[0] for p in hotspot_polygon_um]
-    ys = [p[1] for p in hotspot_polygon_um]
-    min_x_um, max_x_um = min(xs), max(xs)
-    min_y_um, max_y_um = min(ys), max(ys)
-
-    tile_size_um = tile_size_px * mpp
-    stride_um = stride_px * mpp
-
-    mh, mw = (tissue_mask.shape if tissue_mask is not None else (0, 0))
-    slide_w_um, slide_h_um = (slide_dimensions_um if slide_dimensions_um is not None else (float("inf"), float("inf")))
-
-    # Prepare polygon geometry for intersection testing (#121)
-    poly_geom = None
-    if len(hotspot_polygon_um) >= 3:
-        try:
-            from shapely.geometry import Polygon, box
-            poly_geom = Polygon(hotspot_polygon_um)
-            if not poly_geom.is_valid:
-                poly_geom = poly_geom.buffer(0)
-        except Exception:
-            poly_geom = None
+    grid_x, grid_y = np.meshgrid(xs, ys)
+    grid_x, grid_y = grid_x.ravel(), grid_y.ravel()
+    fractions = tissue.fractions_of_boxes_um(grid_x, grid_y, grid_x + tile_um, grid_y + tile_um)
 
     tiles = []
-    curr_y = max(0.0, min_y_um)
-    while curr_y <= max_y_um and curr_y < slide_h_um:
-        curr_x = max(0.0, min_x_um)
-        while curr_x <= max_x_um and curr_x < slide_w_um:
-            # Check tile intersection with hotspot polygon (#121)
-            if poly_geom is not None:
-                from shapely.geometry import box
-                tile_box = box(curr_x, curr_y, curr_x + tile_size_um, curr_y + tile_size_um)
-                if not poly_geom.intersects(tile_box):
-                    curr_x += stride_um
-                    continue
-
-            # Check tissue coverage if tissue_mask is available
-            include_tile = True
-            if tissue_mask is not None and mh > 0 and mw > 0 and slide_dimensions_um is not None:
-                mx0 = max(0, min(mw - 1, int(round(curr_x / max(slide_w_um, 1.0) * (mw - 1)))))
-                mx1 = max(0, min(mw - 1, int(round((curr_x + tile_size_um) / max(slide_w_um, 1.0) * (mw - 1)))))
-                my0 = max(0, min(mh - 1, int(round(curr_y / max(slide_h_um, 1.0) * (mh - 1)))))
-                my1 = max(0, min(mh - 1, int(round((curr_y + tile_size_um) / max(slide_h_um, 1.0) * (mh - 1)))))
-                sub = tissue_mask[min(my0, my1):max(my0, my1) + 1, min(mx0, mx1):max(mx0, mx1) + 1]
-                if sub.size > 0:
-                    cov = (sub > 0).sum() / sub.size
-                    if cov < min_tissue_ratio:
-                        include_tile = False
-
-            if include_tile:
-                tiles.append({
-                    "origin_um": [float(curr_x), float(curr_y)],
-                    "size_um": [float(tile_size_um), float(tile_size_um)],
-                    "origin_px": [int(curr_x / mpp), int(curr_y / mpp)],
-                    "size_px": [tile_size_px, tile_size_px],
-                })
-            curr_x += stride_um
-        curr_y += stride_um
-
+    for x, y, fraction in zip(grid_x, grid_y, fractions):
+        if fraction < min_tissue_fraction:
+            continue
+        if not polygon.intersects(box(x, y, x + tile_um, y + tile_um)):
+            continue
+        tiles.append({
+            "origin_um": [float(x), float(y)],
+            "size_um": [float(tile_um), float(tile_um)],
+        })
     return tiles
-
-
-
-# A polygon has at least three vertices (geometry, not a tunable).
-POLYGON_MIN_VERTICES = 3
 
 
 def hotspot_geometry(hotspot_polygon_um: List[List[float]]):
     """The hotspot polygon as a valid shapely geometry (SPEC-06 §5.1 sweep region)."""
-    from shapely.geometry import Polygon
-
-    if len(hotspot_polygon_um) < POLYGON_MIN_VERTICES:
-        raise ValueError(f"a hotspot polygon needs at least {POLYGON_MIN_VERTICES} points, got {len(hotspot_polygon_um)}")
+    if len(hotspot_polygon_um) < MIN_POLYGON_VERTICES:
+        raise ValueError(f"a hotspot polygon needs at least {MIN_POLYGON_VERTICES} vertices, got {len(hotspot_polygon_um)}")
     polygon = Polygon(hotspot_polygon_um)
     return polygon if polygon.is_valid else polygon.buffer(0)
 
 
 def hotspot_region_um(
-    geometry, margin_um: float, slide_dimensions_um: Tuple[float, float]
+    geometry, margin_um: float, extent_um: Tuple[float, float]
 ) -> Tuple[float, float, float, float]:
     """The hotspot's bounding box grown by ``margin_um`` and clipped to the slide: (x0, y0, x1, y1)."""
     x0, y0, x1, y1 = geometry.bounds
-    width_um, height_um = slide_dimensions_um
-    return (
-        max(0.0, x0 - margin_um),
-        max(0.0, y0 - margin_um),
-        min(width_um, x1 + margin_um),
-        min(height_um, y1 + margin_um),
-    )
-
-
-def tissue_fraction(
-    tissue_mask: np.ndarray, slide_dimensions_um: Tuple[float, float], box_um: Tuple[float, float, float, float]
-) -> float:
-    """Fraction of tissue-mask pixels inside a slide box given in µm."""
-    mask_h, mask_w = tissue_mask.shape
-    width_um, height_um = slide_dimensions_um
-    x0, y0, x1, y1 = box_um
-    cols = sorted(min(mask_w - 1, max(0, int(round(v / width_um * (mask_w - 1))))) for v in (x0, x1))
-    rows = sorted(min(mask_h - 1, max(0, int(round(v / height_um * (mask_h - 1))))) for v in (y0, y1))
-    window = tissue_mask[rows[0]:rows[1] + 1, cols[0]:cols[1] + 1]
-    return float((window > 0).sum() / window.size)
+    width_um, height_um = extent_um
+    return max(0.0, x0 - margin_um), max(0.0, y0 - margin_um), min(width_um, x1 + margin_um), min(height_um, y1 + margin_um)

@@ -24,14 +24,17 @@ from app.core.config_types import (
     NonEmptyStr,
     NonNegativeFloat,
     NonNegativeInt,
+    OverviewMpp,
     Percent,
     PositiveFloat,
     PositiveInt,
     RegistryKey,
+    Sha256Hex,
     StrictModel,
 )
 from app.core.fallbacks import FallbackPolicy
 from app.core.model_registry import ModelRegistry
+from pipeline.errors import SpecimenTypeRequired
 
 # Settings fields that configs/models.yaml may reference as ${NAME}. Anything
 # else is refused, so a secret can never be interpolated into the hashed config.
@@ -55,6 +58,13 @@ Channel8 = Annotated[int, Field(ge=0, le=255)]
 NottinghamSum = Annotated[int, Field(ge=NOTTINGHAM_MIN_SUM, le=NOTTINGHAM_MAX_SUM)]
 PromptFileName = Annotated[str, Field(pattern=r"^[a-z0-9_]+@v[0-9]+\.md$")]
 PromptText = Annotated[str, Field(min_length=1)]
+# Which colour a model is shown: the slide as scanned, or through its persisted stain transform (SPEC-04 §3.5).
+ColorPolicy = Literal["raw", "normalized"]
+# A colour reference is named <name>@v<version>, and its file is configs/stain_refs/<name>@v<version>.json.
+StainRefId = Annotated[str, Field(pattern=r"^[a-z0-9_]+@v[0-9]+$")]
+SpecimenType = Literal["resection", "core_biopsy"]
+# Stain vectors are unit rows; stored floats may differ from 1 by their rounding.
+UNIT_VECTOR_TOLERANCE = 1e-6
 
 
 class ConfigLoadError(RuntimeError):
@@ -72,26 +82,31 @@ def _require(condition: bool, message: str) -> None:
 
 # --- qc.yaml ----------------------------------------------------------------
 
-class TissueCoverageQC(StrictModel):
-    fail_threshold: Fraction
-    warn_threshold: Fraction
+class OverviewQC(StrictModel):
+    """The pen-mark and fold checks look at the whole slide at this resolution."""
 
-    @model_validator(mode="after")
-    def _ordered(self) -> "TissueCoverageQC":
-        _require(self.fail_threshold <= self.warn_threshold, "fail_threshold must not exceed warn_threshold")
-        return self
+    mpp: OverviewMpp
 
 
 class FocusQC(StrictModel):
-    vol_threshold: PositiveFloat
+    """Which tiles the focus check reads; its thresholds are per specimen type (specimen_profiles.yaml)."""
+
+    mpp: Mpp
     tile_size_px: PositiveInt
     sample_max_tiles: PositiveInt
-    fail_blurry_ratio: Fraction
-    warn_blurry_ratio: Fraction
+    # A tile is sampled only when at least this fraction of its area is tissue.
+    min_tissue_fraction: Fraction
+
+
+class ResolutionQC(StrictModel):
+    """Native resolution of the slide, in µm/px (SPEC-04 §3.7)."""
+
+    warn_native_mpp: PositiveFloat
+    fail_native_mpp: PositiveFloat
 
     @model_validator(mode="after")
-    def _ordered(self) -> "FocusQC":
-        _require(self.warn_blurry_ratio <= self.fail_blurry_ratio, "warn_blurry_ratio must not exceed fail_blurry_ratio")
+    def _ordered(self) -> "ResolutionQC":
+        _require(self.warn_native_mpp < self.fail_native_mpp, "warn_native_mpp must be below fail_native_mpp")
         return self
 
 
@@ -141,8 +156,9 @@ class StainSanityQC(StrictModel):
 
 
 class QcConfig(StrictModel):
-    tissue_coverage: TissueCoverageQC
+    overview: OverviewQC
     focus: FocusQC
+    resolution: ResolutionQC
     pen_marks: PenMarksQC
     folds: FoldsQC
     stain_sanity: StainSanityQC
@@ -165,8 +181,9 @@ class MitosisDetectorConfig(StrictModel):
     # Applied by the pipeline to the raw candidates.
     det_threshold: Fraction
     nms_radius_um: PositiveFloat
-    # Sweep region: each hotspot's bounding box grown by this margin; tiles with less tissue skipped.
+    # Sweep region: each hotspot's bounding box grown by this margin (SPEC-06 §5.1).
     region_margin_um: NonNegativeFloat
+    # A sweep tile is read only when at least this fraction of it is tissue (registered mask).
     min_tissue_fraction: Fraction
 
     @model_validator(mode="after")
@@ -189,16 +206,21 @@ class MitosisRefereeConfig(StrictModel):
     enabled: bool
     producer: RegistryKey
     prompt: PromptFileName
-    # Image 1: a focus_px square at the slide's own resolution around the candidate.
+    # Image 1: a focus_px square at focus_mpp around the candidate, so its field of view is the same on every scanner.
     focus_px: PositiveInt
+    focus_mpp: Mpp
     # Image 2: a context_um square around it, resampled to context_px.
     context_um: PositiveFloat
     context_px: PositiveInt
+    color: ColorPolicy
 
 
 class MitosisHpfConfig(StrictModel):
     radius_um: PositiveFloat
     count: PositiveInt
+    # The review image of each field: review_field_um wide, review_px square (it fits the viewer's reticle).
+    review_field_um: PositiveFloat
+    review_px: PositiveInt
     density_grid_res_um: PositiveFloat
     min_separation_um: PositiveFloat
     relaxed_min_separation_um: PositiveFloat
@@ -285,6 +307,7 @@ class GradingEstimatorsConfig(StrictModel):
     pleo_prompt: PromptFileName
     histotype_prompt: PromptFileName
     histotype_images: PositiveInt
+    color: ColorPolicy
 
 
 class GradingSamplingConfig(StrictModel):
@@ -327,6 +350,7 @@ class TumorRefereeConfig(StrictModel):
     # Each candidate is shown as a square field_um wide, resampled to size_px (the prompt states both).
     field_um: PositiveFloat
     size_px: PositiveInt
+    color: ColorPolicy
 
 
 class HotspotExtractionConfig(StrictModel):
@@ -358,6 +382,146 @@ class TriageConfig(StrictModel):
         return self
 
 
+# --- specimen_profiles.yaml ---------------------------------------------------
+
+class StainFitConfig(StrictModel):
+    """How Stage 2 fits a slide's stain profile (SPEC-04 §3.2, §3.4)."""
+
+    n_patches: PositiveInt
+    # Tissue positions offered to the fitter; it stops at n_patches valid ones.
+    n_candidates: PositiveInt
+    patch_um: PositiveFloat
+    fit_mpp: Mpp
+    # A patch whose mean HSV saturation is below this is glass or fat, not stained tissue.
+    min_sat_mean: Fraction
+    # Fewer valid patches than this leave the fit 'sparse'.
+    sparse_below: PositiveInt
+    # A pixel is stained tissue when one of its optical densities reaches od_beta; the stain
+    # transform passes every other pixel through unchanged.
+    od_beta: PositiveFloat
+    # Macenko: percentile of the angles in the stain plane that gives each stain vector.
+    angle_percentile: Annotated[float, Field(gt=0, lt=50)]
+    # Percentile of the concentrations that gives each stain's maximum.
+    conc_percentile: Annotated[float, Field(gt=50, lt=100)]
+    # The tissue pixels must span at least this angle (rad) in the stain plane, or two stains
+    # cannot be told apart and the fit is degenerate.
+    min_angle_spread_rad: PositiveFloat
+    min_tissue_pixels: PositiveInt
+
+    @model_validator(mode="after")
+    def _ordered(self) -> "StainFitConfig":
+        _require(self.sparse_below <= self.n_patches, "sparse_below must not exceed n_patches")
+        _require(self.n_patches <= self.n_candidates, "n_patches must not exceed n_candidates")
+        return self
+
+
+class StainTargetConfig(StrictModel):
+    """The colour standard a slide's stain is mapped to: a file in configs/stain_refs."""
+
+    ref: StainRefId
+
+
+class TissueMaskConfig(StrictModel):
+    """How Stage 2 computes the registered tissue mask (SPEC-04 §3.6)."""
+
+    mpp: OverviewMpp
+    # The Otsu threshold on the grey image is clipped to this range (0-255).
+    otsu_clip: list[Channel8]
+    # A pixel with HSV saturation (0-255) above this is tissue however light it is.
+    sat_min: Channel8
+    open_radius_um: NonNegativeFloat
+    min_component_um2: PositiveFloat
+    fill_holes_max_um2: NonNegativeFloat
+
+    @model_validator(mode="after")
+    def _ordered(self) -> "TissueMaskConfig":
+        _require(len(self.otsu_clip) == 2 and self.otsu_clip[0] <= self.otsu_clip[1], "otsu_clip must be [low, high] with low <= high")
+        return self
+
+
+class SpecimenQcConfig(StrictModel):
+    """QC thresholds that depend on the specimen type (SPEC-04 §3.2, §3.7)."""
+
+    # Absolute tissue area: what matters for grading is how much tissue there is, not how full the glass is.
+    tissue_area_fail_mm2: PositiveFloat
+    tissue_area_warn_mm2: PositiveFloat
+    # A tile whose variance of the Laplacian is below this is blurry.
+    focus_vol_threshold: PositiveFloat
+    focus_fail_ratio: Fraction
+    focus_warn_ratio: Fraction
+
+    @model_validator(mode="after")
+    def _ordered(self) -> "SpecimenQcConfig":
+        _require(self.tissue_area_fail_mm2 <= self.tissue_area_warn_mm2, "tissue_area_fail_mm2 must not exceed tissue_area_warn_mm2")
+        _require(self.focus_warn_ratio <= self.focus_fail_ratio, "focus_warn_ratio must not exceed focus_fail_ratio")
+        return self
+
+
+class NormPyramidConfig(StrictModel):
+    """The stain-normalised DeepZoom pyramid the viewer shows (SPEC-04 §3.4): coarse levels only."""
+
+    # The pyramid extends down to this resolution; finer levels are served from the raw pyramid.
+    max_mpp: Mpp
+    # Levels are generated from the coarsest until this many tiles are reached.
+    max_tiles: PositiveInt
+
+
+class SpecimenProfile(StrictModel):
+    tissue_mask: TissueMaskConfig
+    stain_fit: StainFitConfig
+    stain_target: StainTargetConfig
+    norm_pyramid: NormPyramidConfig
+    qc: SpecimenQcConfig
+
+
+class SpecimenProfilesConfig(StrictModel):
+    schema_version: Literal[1]
+    profiles: dict[SpecimenType, SpecimenProfile]
+
+    @model_validator(mode="after")
+    def _every_specimen_type(self) -> "SpecimenProfilesConfig":
+        missing = {"resection", "core_biopsy"} - set(self.profiles)
+        _require(not missing, f"specimen_profiles.yaml has no profile for {sorted(missing)}")
+        return self
+
+    def for_type(self, specimen_type: str) -> SpecimenProfile:
+        """The profile of a case's specimen type. An 'unknown' specimen has none: SpecimenTypeRequired."""
+        profile = self.profiles.get(specimen_type)
+        if profile is None:
+            raise SpecimenTypeRequired(
+                f"the case's specimen type is {specimen_type!r}; set it to resection or core_biopsy before preprocessing"
+            )
+        return profile
+
+
+# --- stain_refs/*.json --------------------------------------------------------
+
+class StainReference(StrictModel):
+    """A colour standard: unit stain vectors and maximum concentrations (SPEC-04 §3.3)."""
+
+    reference_id: StainRefId
+    w_tgt: list[list[float]]
+    maxc_tgt: list[float]
+    fitter_version: NonEmptyStr
+    # Slides the reference is the median of; 0 for a reference fitted on a single patch.
+    n_slides: NonNegativeInt
+    slide_ids_sha256: Sha256Hex | None
+    source: NonEmptyStr
+
+    @model_validator(mode="after")
+    def _well_formed(self) -> "StainReference":
+        _require(
+            len(self.w_tgt) == 2 and all(len(row) == 3 for row in self.w_tgt),
+            "w_tgt must be two stain vectors of three values",
+        )
+        _require(
+            all(abs(math.hypot(*row) - 1.0) <= UNIT_VECTOR_TOLERANCE for row in self.w_tgt),
+            "w_tgt rows must be unit vectors",
+        )
+        _require(len(self.maxc_tgt) == 2 and all(c > 0 for c in self.maxc_tgt), "maxc_tgt must be two positive values")
+        return self
+
+
 # --- pricing.yaml -----------------------------------------------------------
 
 class PatchPricing(StrictModel):
@@ -379,8 +543,10 @@ class PipelineConfig(StrictModel):
     pricing: PricingConfig
     qc: QcConfig
     scoring: ScoringConfig
+    specimen_profiles: SpecimenProfilesConfig
     triage: TriageConfig
     prompts: dict[PromptFileName, PromptText]
+    stain_refs: dict[StainRefId, StainReference]
 
     @model_validator(mode="after")
     def _files_agree(self) -> "PipelineConfig":
@@ -397,7 +563,21 @@ class PipelineConfig(StrictModel):
         self._triage_models_exist()
         self._mitosis_models_exist()
         self._grading_models_exist()
+        self._stain_targets_exist()
         return self
+
+    def _stain_targets_exist(self) -> None:
+        for reference_id, reference in self.stain_refs.items():
+            _require(
+                reference.reference_id == reference_id,
+                f"configs/stain_refs/{reference_id}.json names itself {reference.reference_id!r}",
+            )
+        for specimen_type, profile in self.specimen_profiles.profiles.items():
+            _require(
+                profile.stain_target.ref in self.stain_refs,
+                f"specimen_profiles.yaml {specimen_type}.stain_target.ref {profile.stain_target.ref!r} "
+                "is not in configs/stain_refs",
+            )
 
     def _grading_models_exist(self) -> None:
         estimators = self.scoring.grading.estimators
@@ -511,6 +691,28 @@ def _read_yaml(path: Path) -> dict:
     return data
 
 
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict:
+    keys = [key for key, _ in pairs]
+    duplicated = sorted({key for key in keys if keys.count(key) > 1})
+    if duplicated:
+        raise ValueError(f"duplicate key {duplicated[0]!r}")
+    return dict(pairs)
+
+
+def _read_stain_refs(refs_dir: Path) -> dict[str, Any]:
+    if not refs_dir.is_dir():
+        raise ConfigLoadError(f"{refs_dir}: stain reference directory not found")
+    refs = {}
+    for path in sorted(refs_dir.iterdir()):
+        if not path.is_file() or path.suffix != ".json":
+            raise ConfigLoadError(f"{path}: only <name>@v<version>.json stain references are allowed in {refs_dir}")
+        try:
+            refs[path.stem] = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_keys)
+        except (OSError, ValueError) as exc:
+            raise ConfigLoadError(f"{path}: {exc}") from exc
+    return refs
+
+
 def _interpolate(node: Any, variables: Mapping[str, Any], where: str) -> Any:
     """Replace whole-string ``${NAME}`` values. An unset or empty variable becomes None."""
     if isinstance(node, dict):
@@ -550,7 +752,7 @@ def load_pipeline_config(configs_dir: Path, variables: Mapping[str, Any]) -> Pip
     if not configs_dir.is_dir():
         raise ConfigLoadError(f"{configs_dir}: configs directory not found")
 
-    file_sections = set(PipelineConfig.model_fields) - {"prompts"}
+    file_sections = set(PipelineConfig.model_fields) - {"prompts", "stain_refs"}
     sections: dict[str, Any] = {}
     for path in sorted(configs_dir.glob("*.yaml")):
         if path.stem not in file_sections:
@@ -560,6 +762,7 @@ def load_pipeline_config(configs_dir: Path, variables: Mapping[str, Any]) -> Pip
             data = _interpolate(data, variables, "models")
         sections[path.stem] = data
     sections["prompts"] = _read_prompts(configs_dir / "prompts")
+    sections["stain_refs"] = _read_stain_refs(configs_dir / "stain_refs")
 
     try:
         return PipelineConfig.model_validate(sections)

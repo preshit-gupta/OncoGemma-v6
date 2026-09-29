@@ -36,6 +36,8 @@ from app.models.detection import Detection
 from app.models.hpf_site import HpfSite
 from app.models.stage_execution import StageExecution
 from app.models.audit import AuditEvent
+from pipeline.errors import TissueMaskMissingError
+from pipeline.tissue_mask import TissueMask
 from worker.grading import select_max_density_hotspot_patches, run_grading
 from tests.fakes.runtime import make_runtime
 
@@ -108,20 +110,20 @@ def _create_approved_grading_data():
 
 def test_select_max_density_hotspot_patches_empty_hotspots_raises():
     """select_max_density_hotspot_patches must raise ValueError when hotspots list is empty."""
-    mask = np.ones((100, 100), dtype=bool)
+    tissue = TissueMask(np.ones((100, 100), dtype=bool), 100.0)  # 10 x 10 mm
     with pytest.raises(ValueError, match="No confirmed tumor hotspots provided"):
-        select_max_density_hotspot_patches([], mask, (10000.0, 10000.0), 0.25, "case_test")
+        select_max_density_hotspot_patches([], tissue, 0.25, "case_test")
 
 
 def test_select_max_density_hotspot_patches_invalid_polygons_raises():
     """Polygons with fewer than 3 vertices must be rejected, not replaced with fake 5000,5000 coordinates."""
-    mask = np.ones((100, 100), dtype=bool)
+    tissue = TissueMask(np.ones((100, 100), dtype=bool), 100.0)  # 10 x 10 mm
     invalid_hotspots = [
         {"id": "h1", "polygon": [[100, 100]], "density": 0.9},
         {"id": "h2", "polygon": [[100, 100], [200, 200]], "density": 0.8}
     ]
     with pytest.raises(ValueError, match="No valid tumor tissue patches could be sampled"):
-        select_max_density_hotspot_patches(invalid_hotspots, mask, (10000.0, 10000.0), 0.25, "case_test")
+        select_max_density_hotspot_patches(invalid_hotspots, tissue, 0.25, "case_test")
 
 
 def test_run_grading_worker_fails_fast_on_zero_hotspots():
@@ -176,13 +178,9 @@ def test_run_grading_worker_queries_detections_without_name_error():
     db.add_all([case, slide, stage_exec, hotspot, det, hpf])
     db.commit()
 
-    with mock.patch("worker.grading.download_blob_to_filename"), \
-         mock.patch("os.path.exists", return_value=True), \
-         mock.patch("openslide.OpenSlide") as mock_os:
-        # Halt execution right after the Stage 4 mitotic score retrieval step
-        mock_os.side_effect = RuntimeError("OpenSlide stopped after detection query")
-        with pytest.raises(RuntimeError, match="OpenSlide stopped after detection query"):
-            run_grading(stage_exec, db, make_runtime(stage_exec))
+    # The Stage 4 detection and HPF queries run first; the case has no registered tissue mask, so the stage stops there.
+    with pytest.raises(TissueMaskMissingError, match="run the preprocess stage"):
+        run_grading(stage_exec, db, make_runtime(stage_exec))
     db.close()
 
 

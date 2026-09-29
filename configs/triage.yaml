@@ -15,6 +15,7 @@ tumor_referee:
   candidates: 20
   field_um: 512.0 # 512 x 512 µm field ...
   size_px: 512 # ... at ~1.0 µm/px, as the prompt states
+  color: raw # the v5 input; SPEC-05 decides the tumour referee's colour
 
 hotspot_extraction:
   sigma: 1.0 # Gaussian filter smoothing (~100 µm radius)

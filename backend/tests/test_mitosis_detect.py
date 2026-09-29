@@ -55,8 +55,8 @@ def fake_detector(objects_um, work_mpp, region_origin_um, prob=0.9):
     return detect_batch, calls
 
 
-def white(x_px, y_px, width, height):
-    return Image.new("RGB", (width, height), (240, 240, 240))
+def white(x_um, y_um):
+    return np.full((TILE, TILE, 3), 240, dtype=np.uint8)
 
 
 def test_an_object_seen_by_every_overlapping_tile_is_kept_once():
@@ -69,28 +69,29 @@ def test_an_object_seen_by_every_overlapping_tile_is_kept_once():
     cfg = detector_cfg()
     detect_batch, calls = fake_detector(objects, cfg.mpp, region[:2])
 
-    points = detect_region(white, region, (0.25, 0.25), cfg, detect_batch, mpp_tolerance=0.01, batch_size=4, threads=2)
+    points = detect_region(white, region, cfg, detect_batch, batch_size=4, threads=2)
 
     assert len(calls) > 1
     found = sorted((round(p.x_um, 6), round(p.y_um, 6)) for p in points)
     assert found == sorted((round(x, 6), round(y, 6)) for x, y in objects)
 
 
-def test_a_20x_slide_is_read_in_windows_and_resampled():
-    reads = []
+def test_tiles_are_read_at_their_micrometre_origins_and_must_be_detector_sized():
+    """Resampling is the reader's (SlideReader, SPEC-04); detect_region asks for µm origins on the 0.25 grid."""
+    origins = []
 
-    def read(x_px, y_px, width, height):
-        reads.append((x_px, y_px, width, height))
-        return Image.new("RGB", (width, height), (230, 200, 220))
+    def read(x_um, y_um):
+        origins.append((x_um, y_um))
+        return np.zeros((TILE, TILE, 3), dtype=np.uint8)
 
-    objects = [(150.0, 90.0)]
     cfg = detector_cfg()
-    detect_batch, _ = fake_detector(objects, cfg.mpp, (0.0, 0.0))
-    points = detect_region(read, (0.0, 0.0, 300.0, 200.0), (0.5, 0.5), cfg, detect_batch, mpp_tolerance=0.01, batch_size=1, threads=1)
+    detect_batch, _ = fake_detector([], cfg.mpp, (100.0, 50.0))
+    detect_region(read, (100.0, 50.0, 400.0, 250.0), cfg, detect_batch, batch_size=4, threads=1)
+    assert sorted(origins) == sorted((100.0 + x * 0.25, 50.0 + y * 0.25) for x in (0, 448, 688) for y in (0, 288))
 
-    # A 512 px tile at 0.25 µm/px is 128 µm: a 256 px window of the 0.5 µm/px slide.
-    assert reads and all((w, h) == (256, 256) for *_, w, h in reads)
-    assert [(p.x_um, p.y_um) for p in points] == objects
+    with pytest.raises(ValueError, match="not 512 px square"):
+        detect_region(lambda x, y: np.zeros((256, 256, 3), dtype=np.uint8), (0.0, 0.0, 300.0, 300.0), cfg,
+                      detect_batch, batch_size=1, threads=1)
 
 
 def test_tiles_outside_the_sweep_are_not_sent_and_their_objects_not_kept():
@@ -101,8 +102,8 @@ def test_tiles_outside_the_sweep_are_not_sent_and_their_objects_not_kept():
     def left_half_only(x0, y0, x1, y1):
         return x0 < 150.0 and y0 < 150.0
 
-    points = detect_region(white, (0.0, 0.0, 300.0, 300.0), (0.25, 0.25), cfg, detect_batch,
-                           mpp_tolerance=0.01, batch_size=4, threads=1, include_tile=left_half_only)
+    points = detect_region(white, (0.0, 0.0, 300.0, 300.0), cfg, detect_batch,
+                           batch_size=4, threads=1, include_tile=left_half_only)
     assert [(p.x_um, p.y_um) for p in points] == [(10.0, 10.0)]
     assert all(math.isfinite(p.prob) for p in points)
 
@@ -114,4 +115,4 @@ def test_a_detector_answering_for_fewer_tiles_is_an_error():
         return [([], "rec")] * (len(patches) - 1)
 
     with pytest.raises(ValueError, match="results for"):
-        detect_region(white, (0.0, 0.0, 300.0, 300.0), (0.25, 0.25), cfg, short, mpp_tolerance=0.01, batch_size=4, threads=1)
+        detect_region(white, (0.0, 0.0, 300.0, 300.0), cfg, short, batch_size=4, threads=1)

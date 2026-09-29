@@ -1,9 +1,6 @@
-import os
 import io
 import json
 import uuid
-import tempfile
-import shutil
 from datetime import datetime, timezone
 from typing import Any, Optional, Literal
 import numpy as np
@@ -17,19 +14,22 @@ from app.core.config import settings
 from app.core.gcs import (
     parse_gcs_uri,
     download_blob_as_bytes,
-    download_blob_as_text,
-    download_blob_to_filename,
-    upload_blob_from_bytes,
-    resolve_slide_raw_uri
+    upload_blob_from_bytes
 )
 from app.core.db import get_db
-from app.core.openslide_lock import OPENSLIDE_GLOBAL_LOCK
+from app.core.slide_access import PRECONDITION_ERRORS, open_case_slide, slide_stain_transform
 from app.models.case import Case
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
 from app.models.hotspot import Hotspot
 from app.models.audit import AuditEvent
 from app.core.rehydrate import rehydrate_case_from_gcs
+from google.api_core.exceptions import NotFound
+from pipeline.errors import SlideReadError
+from pipeline.slide_io import centered_origin_um, read_region_at_mpp
+
+# Edge of the hotspot review patches, in pixels.
+PATCH_PX = 512
 
 router = APIRouter(prefix="/api/v1/stages/triage", tags=["triage"])
 
@@ -355,9 +355,6 @@ def get_hotspot_thumbnail(
             except Exception:
                 pass
 
-    cx_px = int(cx_um / mpp_x)
-    cy_px = int(cy_um / mpp_y)
-
     field_um = 512.0
     if mag == "20x":
         field_um = 256.0
@@ -390,60 +387,24 @@ def get_hotspot_thumbnail(
             patch_img.save(buf, format="PNG")
             extracted_bytes = buf.getvalue()
 
-    # 2. Fallback: OpenSlide raw WSI extraction if pyramid tiles are incomplete
+    # 2. Fallback: read the raw WSI if pyramid tiles are incomplete. The normalised variant is the raw region
+    # through the slide's persisted stain profile; a slide without a usable one answers 409, not a raw image.
     if extracted_bytes is None and slide_obj:
-        scratch_dir = tempfile.mkdtemp(prefix="og_hs_thumb_")
         try:
-            gcs_uri_original = resolve_slide_raw_uri(case_id, slide_obj) or getattr(slide_obj, "gcs_uri_original", None) or f"gs://{settings.GCS_RAW_BUCKET}/cases/{case_id}/{getattr(slide_obj, 'id', 'slide')}.svs"
-            raw_bucket_name, blob_name = parse_gcs_uri(gcs_uri_original)
-            ext = os.path.splitext(blob_name)[1] or ".svs"
-            local_slide_path = os.path.join(scratch_dir, f"slide{ext}")
-
-            try:
-                download_blob_to_filename(raw_bucket_name, blob_name, local_slide_path)
-            except Exception as dl_e:
-                print(f"[Thumbnail Slide Download Note] {dl_e}")
-
-            if os.path.exists(local_slide_path):
-                with OPENSLIDE_GLOBAL_LOCK:
-                    import openslide
-                    os_slide = None
-                    try:
-                        os_slide = openslide.OpenSlide(local_slide_path)
-                        dim_w, dim_h = getattr(os_slide, "dimensions", (100000, 100000))
-                        crop_w_px = max(1, int(round(field_um / mpp_x)))
-                        crop_h_px = max(1, int(round(field_um / mpp_y)))
-
-                        x0 = max(0, min(dim_w - crop_w_px, cx_px - crop_w_px // 2))
-                        y0 = max(0, min(dim_h - crop_h_px, cy_px - crop_h_px // 2))
-
-                        patch_raw = os_slide.read_region((x0, y0), 0, (crop_w_px, crop_h_px)).convert("RGB")
-                    finally:
-                        if os_slide and hasattr(os_slide, "close"):
-                            os_slide.close()
-
-                if stain == "norm":
-                    try:
-                        from pipeline.stain import PureNumpyMacenkoNormalizer
-                        sp_text = download_blob_as_text(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_id}/preprocess/stain_params.json")
-                        sp_data = json.loads(sp_text)
-                        if "stain_matrix" in sp_data and "max_concentrations" in sp_data:
-                            norm_obj = PureNumpyMacenkoNormalizer()
-                            norm_obj.stain_matrix_target = np.array(sp_data["stain_matrix"], dtype=float)
-                            norm_obj.max_conc_target = np.array(sp_data["max_concentrations"], dtype=float)
-                            norm_arr = norm_obj.transform(np.array(patch_raw))
-                            patch_raw = Image.fromarray(norm_arr)
-                    except Exception as se:
-                        print(f"[Thumbnail Normalization Note] {se}")
-
-                patch_final = patch_raw.resize((512, 512), Image.Resampling.BILINEAR)
-                buf = io.BytesIO()
-                patch_final.save(buf, format="PNG")
-                extracted_bytes = buf.getvalue()
-        except Exception as e:
-            print(f"[Thumbnail Dynamic Extraction Note] {e}")
-        finally:
-            shutil.rmtree(scratch_dir, ignore_errors=True)
+            stain_transform = slide_stain_transform(db, slide_obj, case_obj) if stain == "norm" else None
+            with open_case_slide(case_id, slide_obj) as reader:
+                x_um, y_um = centered_origin_um(reader, cx_um, cy_um, field_um, field_um)
+                region = read_region_at_mpp(
+                    reader, x_um, y_um, field_um, field_um, field_um / PATCH_PX,
+                    color="raw" if stain_transform is None else "normalized", stain=stain_transform,
+                )
+            buf = io.BytesIO()
+            Image.fromarray(region.rgb).save(buf, format="PNG")
+            extracted_bytes = buf.getvalue()
+        except PRECONDITION_ERRORS as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (SlideReadError, NotFound, OSError) as exc:
+            print(f"[Thumbnail Dynamic Extraction Note] {exc}")
 
     # Nothing is drawn in place of a patch that cannot be read (SPEC-01 §3.9).
     if extracted_bytes is None:

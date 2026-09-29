@@ -5,69 +5,73 @@ The v5 morphometric "HoVer-Net" verifier moved to pipeline/heuristics/morph_veri
 is no longer part of the stage (SPEC-06 §9). SPEC-06 §5.4 (WP-7.5) replaces this geometry.
 """
 import io
+from dataclasses import dataclass
 
-import openslide
 from PIL import Image
 
-from app.core.openslide_lock import OPENSLIDE_GLOBAL_LOCK
+from app.core.pipeline_config import MitosisRefereeConfig
 from app.inference.gateway import ImageInput, InputSpec
-from pipeline.errors import SlideReadError
+from pipeline.slide_io import Region, SlideReader, StainApplier, normalize_region, read_region_at_mpp
 
 # JPEG quality of the context image, as v5 sent it.
 CONTEXT_JPEG_QUALITY = 85
 
 
-def _read(slide_obj, location, level, size) -> Image.Image:
-    try:
-        with OPENSLIDE_GLOBAL_LOCK:
-            return slide_obj.read_region(location, level, size).convert("RGB")
-    except openslide.OpenSlideError as exc:
-        raise SlideReadError(f"could not read {size} px at {location} (level {level}): {exc}") from exc
+@dataclass(frozen=True)
+class RefereeImages:
+    focus: ImageInput
+    context: ImageInput
+    # The focus crop as scanned, for the review UI, whichever colour the referee was shown.
+    focus_raw_png: bytes
+
+
+def _png(rgb) -> bytes:
+    buffer = io.BytesIO()
+    Image.fromarray(rgb).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _jpeg(rgb, quality: int) -> bytes:
+    buffer = io.BytesIO()
+    Image.fromarray(rgb).save(buffer, format="JPEG", quality=quality)
+    return buffer.getvalue()
+
+
+def _spec(region: Region, image_format: str) -> InputSpec:
+    height_px, width_px = region.rgb.shape[:2]
+    return InputSpec(mpp=region.target_mpp, size_px=(width_px, height_px), color=region.color, format=image_format)
 
 
 def mitosis_referee_images(
-    slide_obj,
-    center_x: int,
-    center_y: int,
-    mpp_x: float,
-    focus_px: int,
-    context_um: float,
-    context_px: int,
-) -> tuple[ImageInput, ImageInput]:
+    reader: SlideReader,
+    center_x_um: float,
+    center_y_um: float,
+    cfg: MitosisRefereeConfig,
+    stain: StainApplier | None,
+) -> RefereeImages:
     """
-    Two views of the candidate at level-0 pixel (center_x, center_y):
-    1. Focus: focus_px x focus_px at the slide's own resolution (PNG).
-    2. Context: context_um x context_um around it, resampled to context_px (JPEG).
-    Each ImageInput's spec states the resolution actually sent.
+    Two views of the candidate at (center_x_um, center_y_um), in the colour ``cfg.color`` (PNG focus, JPEG context):
+    1. Focus: ``cfg.focus_px`` square at ``cfg.focus_mpp``.
+    2. Context: ``cfg.context_um`` square around it, resampled to ``cfg.context_px``.
+    A view overhanging the slide edge is padded with white, so the candidate stays centred.
+    ``stain`` is the slide's persisted stain transform; it is required for ``color="normalized"``.
     """
-    x0 = max(0, int(center_x - focus_px // 2))
-    y0 = max(0, int(center_y - focus_px // 2))
-    focus = _read(slide_obj, (x0, y0), 0, (focus_px, focus_px))
-    buf_focus = io.BytesIO()
-    focus.save(buf_focus, format="PNG")
-    focus_image = ImageInput(
-        buf_focus.getvalue(),
-        InputSpec(mpp=mpp_x, size_px=(focus_px, focus_px), color="raw", format="png"),
-    )
+    normalized = cfg.color == "normalized"
+    if normalized and stain is None:
+        raise ValueError("the referee is configured for normalized colour but no stain transform was given")
 
-    downsample = context_um / context_px / mpp_x
-    l0_side = int(context_um / mpp_x)
-    cx0 = max(0, int(center_x - l0_side // 2))
-    cy0 = max(0, int(center_y - l0_side // 2))
-    level, read_side = 0, l0_side
-    if hasattr(slide_obj, "get_best_level_for_downsample"):
-        # Read from a pyramid level no coarser than the target, when one exists.
-        candidate = slide_obj.get_best_level_for_downsample(downsample)
-        candidate_downsample = slide_obj.level_downsamples[candidate]
-        if candidate_downsample <= downsample * 1.25:
-            level, read_side = candidate, max(1, int(round(l0_side / candidate_downsample)))
-    context = _read(slide_obj, (cx0, cy0), level, (read_side, read_side)).resize(
-        (context_px, context_px), Image.Resampling.BILINEAR
+    focus_um = cfg.focus_px * cfg.focus_mpp
+    focus_raw = read_region_at_mpp(
+        reader, center_x_um - focus_um / 2, center_y_um - focus_um / 2, focus_um, focus_um, cfg.focus_mpp
     )
-    buf_context = io.BytesIO()
-    context.save(buf_context, format="JPEG", quality=CONTEXT_JPEG_QUALITY)
-    context_image = ImageInput(
-        buf_context.getvalue(),
-        InputSpec(mpp=l0_side * mpp_x / context_px, size_px=(context_px, context_px), color="raw", format="jpeg"),
+    focus = normalize_region(focus_raw, stain) if normalized else focus_raw
+
+    context = read_region_at_mpp(
+        reader, center_x_um - cfg.context_um / 2, center_y_um - cfg.context_um / 2, cfg.context_um, cfg.context_um,
+        cfg.context_um / cfg.context_px, color=cfg.color, stain=stain if normalized else None,
     )
-    return focus_image, context_image
+    return RefereeImages(
+        focus=ImageInput(_png(focus.rgb), _spec(focus, "png")),
+        context=ImageInput(_jpeg(context.rgb, CONTEXT_JPEG_QUALITY), _spec(context, "jpeg")),
+        focus_raw_png=_png(focus_raw.rgb),
+    )

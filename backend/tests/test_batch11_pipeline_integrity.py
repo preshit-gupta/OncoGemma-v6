@@ -19,7 +19,6 @@ from app.models.audit import AuditEvent
 from worker.ingest import upload_dzi_tree_to_gcs, run_ingest
 from worker.qc import run_qc
 from tests.fakes.runtime import make_runtime
-from worker.preprocess import generate_norm_dzi_pyramid
 
 client = TestClient(app)
 
@@ -135,31 +134,42 @@ def test_tile_bounds_check_immediate_404():
 def test_qc_pass_auto_chains_triage():
     """Verify QC 'pass' sets status='done' and auto-enqueues triage stage (Issue #47)."""
     from app.core.db import SessionLocal, Base, engine
+    from app.core.stain_profiles import save_stain_profile
+    from app.core.tissue_mask_store import save_tissue_mask
+    from pipeline.stain import StainFit
+    from pipeline.tissue_mask import TissueMask
+    from tests.fakes.tiff import tissue_rgb, write_pyramid_tiff
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
-        case = Case(status="open", created_by="pathologist_test")
+        case = Case(status="open", created_by="pathologist_test", specimen_type="resection")
         db.add(case)
         db.flush()
 
         slide = Slide(
             case_id=case.id,
-            gcs_uri_original=f"gs://{settings.GCS_RAW_BUCKET}/cases/{case.id}/slide.svs",
+            gcs_uri_original=f"gs://{settings.GCS_RAW_BUCKET}/cases/{case.id}/slide.tif",
             mpp_x=0.25,
             mpp_y=0.25,
             width_px=2048,
-            height_px=2048
+            height_px=1024,
+            checksum_sha256="ab" * 32
         )
         db.add(slide)
         db.flush()
 
-        # Create synthetic slide image in GCS
-        import io
-        slide_img = Image.new("RGB", (2048, 2048), color=(220, 180, 210))
-        buf = io.BytesIO()
-        slide_img.save(buf, format="PNG")
-        upload_blob_from_bytes(settings.GCS_RAW_BUCKET, f"cases/{case.id}/slide.png", buf.getvalue(), "image/png")
-        slide.gcs_uri_original = f"gs://{settings.GCS_RAW_BUCKET}/cases/{case.id}/slide.png"
+        # A small real pyramidal TIFF in GCS, the tissue mask and the stain profile Stage 2 leaves behind
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tiff_path = write_pyramid_tiff(
+                __import__("pathlib").Path(tmpdir) / "slide.tif", tissue_rgb(2048, 1024, 0.25), 0.25
+            )
+            upload_blob_from_bytes(settings.GCS_RAW_BUCKET, f"cases/{case.id}/slide.tif", tiff_path.read_bytes(), "image/tiff")
+        save_tissue_mask(case.id, TissueMask(np.ones((32, 64), dtype=bool), 8.0))
+        save_stain_profile(db, slide.id, StainFit(
+            fitter_version="test", reference_id="test@v1", w_src=[[0.65, 0.70, 0.29], [0.07, 0.99, 0.11]],
+            maxc_src=[1.0, 0.8], w_tgt=[[0.65, 0.70, 0.29], [0.07, 0.99, 0.11]], maxc_tgt=[1.0, 0.8],
+            fit_status="fitted", n_patches=30, mosaic_sha256="0" * 64,
+        ))
 
         qc_stage = StageExecution(
             case_id=case.id,
@@ -177,8 +187,8 @@ def test_qc_pass_auto_chains_triage():
         worker.qc.run_all_qc_checks = lambda *args, **kwargs: {
             "verdict": "pass",
             "checks": [
-                {"name": "tissue_coverage", "status": "pass", "metric": 0.85, "message": "Adequate coverage"},
-                {"name": "focus", "status": "pass", "metric": 120.0, "message": "Sharp focus"}
+                {"name": "tissue_coverage", "status": "pass", "metric": 12.0, "message": "Adequate coverage"},
+                {"name": "focus", "status": "pass", "metric": 0.0, "message": "Sharp focus"}
             ],
             "config_hash": "testhash123"
         }
@@ -365,56 +375,3 @@ def test_upload_dzi_tree_error_propagation_mock():
             assert "Pyramid upload failed" in str(exc_info.value)
         finally:
             worker.ingest.get_gcs_client = orig_get_gcs
-
-
-def test_read_region_srgb_huge_coordinates_memory_safety():
-    """Verify read_region_srgb safely clamps massive micrometer bounding boxes without OOM (Issue #429)."""
-    from pipeline.tiles import read_region_srgb
-    # Create a 512x512 test image
-    img = Image.new("RGB", (512, 512), color=(180, 50, 120))
-    
-    # Request a massive 17-meter bounding box spanning millions of pixels
-    tile_arr, icc_applied = read_region_srgb(
-        slide=img,
-        x_um=0.0,
-        y_um=0.0,
-        w_um=17784381.0,
-        h_um=17784381.0,
-        out_px=(256, 256),
-        mpp_x=0.265,
-        mpp_y=0.265
-    )
-    assert tile_arr.shape == (256, 256, 3)
-    assert tile_arr.dtype == np.uint8
-
-
-def test_generate_norm_dzi_pyramid_preserves_10x_cap_and_icc():
-    """Verify generate_norm_dzi_pyramid caps levels at 10x (~1.0 um/px) and runs safely without OOM."""
-    from pipeline.stain import PureNumpyMacenkoNormalizer
-    normalizer = PureNumpyMacenkoNormalizer()
-    normalizer.stain_matrix_target = np.array([[0.65, 0.70, 0.29], [0.07, 0.99, 0.11]])
-    normalizer.max_conc_target = np.array([1.95, 1.10])
-
-    class MockSlide:
-        id = uuid.uuid4()
-        mpp_x = 0.265018
-        mpp_y = 0.265018
-        width_px = 2048
-        height_px = 2048
-
-    # Create dummy slide image
-    with tempfile.TemporaryDirectory() as tmpdir:
-        slide_path = os.path.join(tmpdir, "test_slide.png")
-        img = Image.new("RGB", (2048, 2048), color=(220, 150, 200))
-        img.save(slide_path)
-
-        # Mock GCS upload
-        with patch("worker.preprocess.get_gcs_client") as mock_gcs:
-            mock_bucket = mock_gcs.return_value.bucket.return_value
-            mock_blob = mock_bucket.blob.return_value
-            mock_blob.upload_from_filename.return_value = None
-
-            gcs_uri = generate_norm_dzi_pyramid(MockSlide(), normalizer, slide_path, tmpdir)
-            assert "norm/" in gcs_uri
-
-

@@ -32,6 +32,15 @@ Paired on the 82 labelled figures (exact McNemar on found/missed): p = 0.000.
 
 DecisionRecords this run: 186 (186 cache hits), all status ['ok'].
 
+## A1 again through the M3 read path (SlideReader, 2026-09-30)
+
+After merging M3 (WP-3.1–3.4), tiles are read with `pipeline.slide_io.read_region_at_mpp` from an
+OpenSlide-readable (tiled, pixel-identical) copy of 094: 111 raw points; AP 0.806; best F1 0.860
+(τ 0.867, NMS 5–12.5 µm); **production setting τ 0.75 / NMS 7.5 µm: P 0.804, R 0.902, F1 0.851**
+(TP 74, FP 18, FN 8). The curve is flat between τ 0.75 and 0.87, so τ stays at 0.75 rather than
+being tuned to one image. A2 above was measured with the pre-M3 referee inputs (raw colour);
+the M3 referee sees stain-normalised crops, which a MIDOG++ image cannot provide (no stain profile).
+
 ## A0: production before 2026-09-29 (recorded, not re-runnable)
 
 Measured on the same image and endpoint before MIDOG-microservice #2 fixed the coordinates

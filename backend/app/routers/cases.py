@@ -1,6 +1,4 @@
 import uuid
-import os
-import tempfile
 from io import BytesIO
 from datetime import datetime, timezone
 from PIL import Image
@@ -13,7 +11,6 @@ from app.core.auth import get_current_user, CurrentUser
 from app.core.config import settings
 from app.core.gcs import (
     upload_blob_from_file,
-    download_blob_to_filename,
     generate_signed_upload_url,
     get_gcs_tile_template_url,
     parse_gcs_uri,
@@ -21,8 +18,11 @@ from app.core.gcs import (
     ALLOWED_WSI_EXTS
 )
 from starlette.concurrency import run_in_threadpool
-from app.core.openslide_lock import OPENSLIDE_GLOBAL_LOCK
+from google.api_core.exceptions import NotFound
+from app.core.slide_access import open_case_slide
 from app.core.cloud_tasks import dispatch_stage_task
+from pipeline.errors import MissingMppError, SlideReadError
+from pipeline.slide_io import read_region_at_mpp
 from app.models.case import Case
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
@@ -33,7 +33,9 @@ from app.models.grading import Grading
 from app.models.audit import AuditEvent
 from app.core.rehydrate import rehydrate_case_from_gcs
 from app.schemas.case import (
+    CaseCreate,
     CaseResponse,
+    SpecimenTypeUpdateRequest,
     SlideUploadUrlRequest,
     SlideUploadUrlResponse,
     SlideFinalizeRequest,
@@ -42,16 +44,21 @@ from app.schemas.case import (
     ApproveStageRequest
 )
 
+# Longer side of the case-list thumbnail, in pixels.
+THUMBNAIL_PX = 256
+
 router = APIRouter(prefix="/api/v1/cases", tags=["cases"])
 
 @router.post("", response_model=CaseResponse, status_code=status.HTTP_201_CREATED)
 def create_case(
+    payload: CaseCreate | None = None,
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(get_current_user)
 ):
     if user.role not in ("admin", "pathologist"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Pathologist or Admin role required to create cases.")
-    case_obj = Case(created_by=user.id)
+    specimen_type = payload.specimen_type if payload and payload.specimen_type else "unknown"
+    case_obj = Case(created_by=user.id, specimen_type=specimen_type)
     db.add(case_obj)
     db.commit()
     db.refresh(case_obj)
@@ -60,7 +67,7 @@ def create_case(
         case_id=str(case_obj.id),
         actor=user.id,
         event_type="case_created",
-        payload={"created_by": user.id}
+        payload={"created_by": user.id, "specimen_type": specimen_type}
     )
     db.add(audit)
     db.commit()
@@ -690,42 +697,20 @@ def get_case_thumbnail(
     if not gcs_uri:
         raise HTTPException(status_code=404, detail="Slide GCS URI not set")
 
-    bucket_name, blob_name = parse_gcs_uri(gcs_uri)
-    ext = os.path.splitext(blob_name)[1] or ".svs"
-
-    temp_file = None
+    # The whole extent at the resolution that puts its longer side at THUMBNAIL_PX. A slide that
+    # cannot be read has no thumbnail; a grey square is never drawn in its place (SPEC-01 §3.9).
     try:
-        temp_fd, temp_path = tempfile.mkstemp(suffix=ext, prefix="thumb_")
-        os.close(temp_fd)
-        temp_file = temp_path
+        with open_case_slide(case_id, slide_obj) as reader:
+            extent_w, extent_h = reader.extent_um()
+            region = read_region_at_mpp(reader, 0.0, 0.0, extent_w, extent_h, max(extent_w, extent_h) / THUMBNAIL_PX)
+    except MissingMppError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except (SlideReadError, NotFound, OSError) as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Slide could not be read: {exc}") from exc
 
-        download_blob_to_filename(bucket_name, blob_name, temp_file)
-
-        try:
-            import openslide
-            with OPENSLIDE_GLOBAL_LOCK:
-                oslide = openslide.OpenSlide(temp_file)
-                thumb = oslide.get_thumbnail((256, 256)).convert("RGB")
-                oslide.close()
-        except Exception:
-            try:
-                with Image.open(temp_file) as pil_img:
-                    thumb = pil_img.copy()
-                    thumb.thumbnail((256, 256))
-                    thumb = thumb.convert("RGB")
-            except Exception:
-                thumb = Image.new("RGB", (256, 256), color=(240, 225, 235))
-
-        buf = BytesIO()
-        thumb.save(buf, format="PNG")
-        buf.seek(0)
-        return Response(content=buf.getvalue(), media_type="image/png")
-    finally:
-        if temp_file and os.path.exists(temp_file):
-            try:
-                os.remove(temp_file)
-            except Exception:
-                pass
+    buf = BytesIO()
+    Image.fromarray(region.rgb).save(buf, format="PNG")
+    return Response(content=buf.getvalue(), media_type="image/png")
 
 
 @router.get("/{case_id}", response_model=CaseDetailResponse)
@@ -789,12 +774,43 @@ def get_case_detail(
         id=case_obj.id,
         created_by=case_obj.created_by,
         status=case_obj.status,
+        specimen_type=case_obj.specimen_type,
         created_at=case_obj.created_at,
         slides=slides_data,
         stages=stages_data,
         tile_url_template=tile_template,
         cdn_base_url=settings.CDN_BASE_URL
     )
+
+
+@router.patch("/{case_id}/specimen-type", status_code=status.HTTP_200_OK)
+def update_case_specimen_type(
+    case_id: uuid.UUID,
+    req: SpecimenTypeUpdateRequest,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user)
+):
+    """
+    State whether the case's specimen is a resection or a core biopsy (SPEC-04 §3.2).
+    Preprocess refuses an 'unknown' specimen; retry it (stages/preprocess/retry) after setting this.
+    """
+    if user.role not in ("admin", "pathologist"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Pathologist or Admin role required.")
+
+    case_obj = db.get(Case, case_id)
+    if not case_obj:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+
+    previous = case_obj.specimen_type
+    case_obj.specimen_type = req.specimen_type
+    db.add(AuditEvent(
+        case_id=str(case_id),
+        actor=user.id,
+        event_type="specimen_type_set",
+        payload={"from": previous, "to": req.specimen_type}
+    ))
+    db.commit()
+    return {"case_id": str(case_id), "specimen_type": case_obj.specimen_type}
 
 
 @router.patch("/{case_id}/slides/{slide_id}/mpp", status_code=status.HTTP_200_OK)
@@ -824,6 +840,8 @@ def update_slide_mpp(
 
     slide.mpp_x = float(req.mpp_x)
     slide.mpp_y = float(req.mpp_y) if req.mpp_y is not None else float(req.mpp_x)
+    slide.mpp_source = "manual"
+    slide.native_mpp = max(slide.mpp_x, slide.mpp_y)
     slide.status = "ready"
     db.flush()
 

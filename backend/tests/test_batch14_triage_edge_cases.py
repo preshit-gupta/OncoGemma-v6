@@ -315,7 +315,7 @@ def test_unreadable_hotspot_patch_is_404_never_synthesised(db_session):
 
     with patch("app.routers.triage.download_blob_as_bytes", side_effect=download), \
          patch("pipeline.tiles.extract_patch_from_pyramid", return_value=None), \
-         patch("app.routers.triage.download_blob_to_filename", side_effect=FileNotFoundError("gs://raw/missing.svs")), \
+         patch("app.core.slide_access.download_blob_to_filename", side_effect=FileNotFoundError("gs://raw/missing.svs")), \
          patch("app.routers.triage.upload_blob_from_bytes") as upload:
         with pytest.raises(HTTPException) as exc:
             get_hotspot_thumbnail(case_id=case_id, hotspot_id="hs_01", mag="40x", stain="orig", db=db_session)

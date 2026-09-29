@@ -25,6 +25,7 @@ from pipeline.errors import SlideReadError
 from tests.fakes.gateway import FakeAdapter, json_text
 from tests.fakes.runtime import make_runtime
 from tests.fakes.slide import FakeOpenSlide, install_fake_slide
+from tests.fakes.stage2 import seed_stage2
 from worker.grading import run_grading
 
 SIDE_PX, MPP = 16000, 0.25
@@ -88,6 +89,7 @@ def seed(db_session, with_hpfs=True):
         ]
     db_session.add_all(rows)
     db_session.commit()
+    seed_stage2(db_session, case_id, slide_id, SIDE_PX * MPP, SIDE_PX * MPP)
     return stage, raw_uri
 
 
