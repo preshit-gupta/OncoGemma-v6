@@ -1,0 +1,23 @@
+{
+  "fitter_version": "macenko_np_v2",
+  "maxc_tgt": [
+    1.0195598577179599,
+    0.29158879842701957
+  ],
+  "n_slides": 0,
+  "reference_id": "v5_patch@v1",
+  "slide_ids_sha256": null,
+  "source": "configs/stain_reference.png (single patch)",
+  "w_tgt": [
+    [
+      0.5822383249962313,
+      0.7388753695587358,
+      0.33920748984216803
+    ],
+    [
+      0.25413088883420737,
+      0.8408148033173616,
+      0.47796229753268465
+    ]
+  ]
+}

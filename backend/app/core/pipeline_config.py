@@ -28,6 +28,7 @@ from app.core.config_types import (
     PositiveFloat,
     PositiveInt,
     RegistryKey,
+    Sha256Hex,
     StrictModel,
 )
 from app.core.fallbacks import FallbackPolicy
@@ -55,6 +56,11 @@ Channel8 = Annotated[int, Field(ge=0, le=255)]
 NottinghamSum = Annotated[int, Field(ge=NOTTINGHAM_MIN_SUM, le=NOTTINGHAM_MAX_SUM)]
 PromptFileName = Annotated[str, Field(pattern=r"^[a-z0-9_]+@v[0-9]+\.md$")]
 PromptText = Annotated[str, Field(min_length=1)]
+# A colour reference is named <name>@v<version>, and its file is configs/stain_refs/<name>@v<version>.json.
+StainRefId = Annotated[str, Field(pattern=r"^[a-z0-9_]+@v[0-9]+$")]
+SpecimenType = Literal["resection", "core_biopsy"]
+# Stain vectors are unit rows; stored floats may differ from 1 by their rounding.
+UNIT_VECTOR_TOLERANCE = 1e-6
 
 
 class ConfigLoadError(RuntimeError):
@@ -345,6 +351,86 @@ class TriageConfig(StrictModel):
         return self
 
 
+# --- specimen_profiles.yaml ---------------------------------------------------
+
+class StainFitConfig(StrictModel):
+    """How Stage 2 fits a slide's stain profile (SPEC-04 §3.2, §3.4)."""
+
+    n_patches: PositiveInt
+    patch_um: PositiveFloat
+    fit_mpp: Mpp
+    # A patch whose mean HSV saturation is below this is glass or fat, not stained tissue.
+    min_sat_mean: Fraction
+    # Fewer valid patches than this leave the fit 'sparse'.
+    sparse_below: PositiveInt
+    # A pixel is stained tissue when one of its optical densities reaches od_beta; the stain
+    # transform passes every other pixel through unchanged.
+    od_beta: PositiveFloat
+    # Macenko: percentile of the angles in the stain plane that gives each stain vector.
+    angle_percentile: Annotated[float, Field(gt=0, lt=50)]
+    # Percentile of the concentrations that gives each stain's maximum.
+    conc_percentile: Annotated[float, Field(gt=50, lt=100)]
+    # The tissue pixels must span at least this angle (rad) in the stain plane, or two stains
+    # cannot be told apart and the fit is degenerate.
+    min_angle_spread_rad: PositiveFloat
+    min_tissue_pixels: PositiveInt
+
+    @model_validator(mode="after")
+    def _ordered(self) -> "StainFitConfig":
+        _require(self.sparse_below <= self.n_patches, "sparse_below must not exceed n_patches")
+        return self
+
+
+class StainTargetConfig(StrictModel):
+    """The colour standard a slide's stain is mapped to: a file in configs/stain_refs."""
+
+    ref: StainRefId
+
+
+class SpecimenProfile(StrictModel):
+    stain_fit: StainFitConfig
+    stain_target: StainTargetConfig
+
+
+class SpecimenProfilesConfig(StrictModel):
+    schema_version: Literal[1]
+    profiles: dict[SpecimenType, SpecimenProfile]
+
+    @model_validator(mode="after")
+    def _every_specimen_type(self) -> "SpecimenProfilesConfig":
+        missing = {"resection", "core_biopsy"} - set(self.profiles)
+        _require(not missing, f"specimen_profiles.yaml has no profile for {sorted(missing)}")
+        return self
+
+
+# --- stain_refs/*.json --------------------------------------------------------
+
+class StainReference(StrictModel):
+    """A colour standard: unit stain vectors and maximum concentrations (SPEC-04 §3.3)."""
+
+    reference_id: StainRefId
+    w_tgt: list[list[float]]
+    maxc_tgt: list[float]
+    fitter_version: NonEmptyStr
+    # Slides the reference is the median of; 0 for a reference fitted on a single patch.
+    n_slides: NonNegativeInt
+    slide_ids_sha256: Sha256Hex | None
+    source: NonEmptyStr
+
+    @model_validator(mode="after")
+    def _well_formed(self) -> "StainReference":
+        _require(
+            len(self.w_tgt) == 2 and all(len(row) == 3 for row in self.w_tgt),
+            "w_tgt must be two stain vectors of three values",
+        )
+        _require(
+            all(abs(math.hypot(*row) - 1.0) <= UNIT_VECTOR_TOLERANCE for row in self.w_tgt),
+            "w_tgt rows must be unit vectors",
+        )
+        _require(len(self.maxc_tgt) == 2 and all(c > 0 for c in self.maxc_tgt), "maxc_tgt must be two positive values")
+        return self
+
+
 # --- pricing.yaml -----------------------------------------------------------
 
 class PatchPricing(StrictModel):
@@ -366,8 +452,10 @@ class PipelineConfig(StrictModel):
     pricing: PricingConfig
     qc: QcConfig
     scoring: ScoringConfig
+    specimen_profiles: SpecimenProfilesConfig
     triage: TriageConfig
     prompts: dict[PromptFileName, PromptText]
+    stain_refs: dict[StainRefId, StainReference]
 
     @model_validator(mode="after")
     def _files_agree(self) -> "PipelineConfig":
@@ -384,7 +472,21 @@ class PipelineConfig(StrictModel):
         self._triage_models_exist()
         self._mitosis_models_exist()
         self._grading_models_exist()
+        self._stain_targets_exist()
         return self
+
+    def _stain_targets_exist(self) -> None:
+        for reference_id, reference in self.stain_refs.items():
+            _require(
+                reference.reference_id == reference_id,
+                f"configs/stain_refs/{reference_id}.json names itself {reference.reference_id!r}",
+            )
+        for specimen_type, profile in self.specimen_profiles.profiles.items():
+            _require(
+                profile.stain_target.ref in self.stain_refs,
+                f"specimen_profiles.yaml {specimen_type}.stain_target.ref {profile.stain_target.ref!r} "
+                "is not in configs/stain_refs",
+            )
 
     def _grading_models_exist(self) -> None:
         estimators = self.scoring.grading.estimators
@@ -498,6 +600,28 @@ def _read_yaml(path: Path) -> dict:
     return data
 
 
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict:
+    keys = [key for key, _ in pairs]
+    duplicated = sorted({key for key in keys if keys.count(key) > 1})
+    if duplicated:
+        raise ValueError(f"duplicate key {duplicated[0]!r}")
+    return dict(pairs)
+
+
+def _read_stain_refs(refs_dir: Path) -> dict[str, Any]:
+    if not refs_dir.is_dir():
+        raise ConfigLoadError(f"{refs_dir}: stain reference directory not found")
+    refs = {}
+    for path in sorted(refs_dir.iterdir()):
+        if not path.is_file() or path.suffix != ".json":
+            raise ConfigLoadError(f"{path}: only <name>@v<version>.json stain references are allowed in {refs_dir}")
+        try:
+            refs[path.stem] = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_keys)
+        except (OSError, ValueError) as exc:
+            raise ConfigLoadError(f"{path}: {exc}") from exc
+    return refs
+
+
 def _interpolate(node: Any, variables: Mapping[str, Any], where: str) -> Any:
     """Replace whole-string ``${NAME}`` values. An unset or empty variable becomes None."""
     if isinstance(node, dict):
@@ -537,7 +661,7 @@ def load_pipeline_config(configs_dir: Path, variables: Mapping[str, Any]) -> Pip
     if not configs_dir.is_dir():
         raise ConfigLoadError(f"{configs_dir}: configs directory not found")
 
-    file_sections = set(PipelineConfig.model_fields) - {"prompts"}
+    file_sections = set(PipelineConfig.model_fields) - {"prompts", "stain_refs"}
     sections: dict[str, Any] = {}
     for path in sorted(configs_dir.glob("*.yaml")):
         if path.stem not in file_sections:
@@ -547,6 +671,7 @@ def load_pipeline_config(configs_dir: Path, variables: Mapping[str, Any]) -> Pip
             data = _interpolate(data, variables, "models")
         sections[path.stem] = data
     sections["prompts"] = _read_prompts(configs_dir / "prompts")
+    sections["stain_refs"] = _read_stain_refs(configs_dir / "stain_refs")
 
     try:
         return PipelineConfig.model_validate(sections)
