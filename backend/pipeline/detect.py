@@ -96,3 +96,20 @@ def enumerate_hotspot_tiles(
             "size_um": [float(tile_um), float(tile_um)],
         })
     return tiles
+
+
+def hotspot_geometry(hotspot_polygon_um: List[List[float]]):
+    """The hotspot polygon as a valid shapely geometry (SPEC-06 §5.1 sweep region)."""
+    if len(hotspot_polygon_um) < MIN_POLYGON_VERTICES:
+        raise ValueError(f"a hotspot polygon needs at least {MIN_POLYGON_VERTICES} vertices, got {len(hotspot_polygon_um)}")
+    polygon = Polygon(hotspot_polygon_um)
+    return polygon if polygon.is_valid else polygon.buffer(0)
+
+
+def hotspot_region_um(
+    geometry, margin_um: float, extent_um: Tuple[float, float]
+) -> Tuple[float, float, float, float]:
+    """The hotspot's bounding box grown by ``margin_um`` and clipped to the slide: (x0, y0, x1, y1)."""
+    x0, y0, x1, y1 = geometry.bounds
+    width_um, height_um = extent_um
+    return max(0.0, x0 - margin_um), max(0.0, y0 - margin_um), min(width_um, x1 + margin_um), min(height_um, y1 + margin_um)

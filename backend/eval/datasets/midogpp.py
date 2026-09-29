@@ -2,111 +2,133 @@
 MIDOG++ dataset adapter: COCO JSON parsing, point conversion in µm, GeoJSON ground truth,
 and manifest generation for breast and other tumor sets.
 SPEC-02 §3.3 and WP-5.2.
+
+Checked against the published ``MIDOG++.json`` (figshare 6615571, article 23531121) and
+image ``094.tiff`` on 2026-09-29:
+- ``bbox`` is ``[x0, y0, x1, y1]`` in image pixels (e.g. ``[1311, 903, 1361, 953]``);
+- the categories are "mitotic figure" and "not mitotic figure";
+- images carry no scanner or resolution field; each TIFF's resolution tags give it
+  (094: 110508 px/inch = 0.2298 µm/px).
+Nothing is defaulted: an unknown category, a missing image or missing resolution tags raise.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
+
 import pandas as pd
+from PIL import Image
 
 from .base import DatasetAdapter, FetchedFile, load_config
 from .manifest import empty_manifest, validate_manifest
 from .storage import Storage
+
+# TIFF tags (baseline): XResolution, YResolution, ResolutionUnit; unit 2 = inch, 3 = cm.
+TIFF_X_RESOLUTION, TIFF_Y_RESOLUTION, TIFF_RESOLUTION_UNIT = 282, 283, 296
+MICRONS_PER_RESOLUTION_UNIT = {2: 25400.0, 3: 10000.0}
+
+
+class MIDOGppError(ValueError):
+    """The MIDOG++ data does not have the shape this adapter was checked against."""
+
+
+def image_mpp(path: Path) -> tuple[float, float]:
+    """(mpp_x, mpp_y) in µm/px from a TIFF's resolution tags."""
+    with Image.open(path) as image:
+        tags = getattr(image, "tag_v2", None)
+        if tags is None or not all(t in tags for t in (TIFF_X_RESOLUTION, TIFF_Y_RESOLUTION, TIFF_RESOLUTION_UNIT)):
+            raise MIDOGppError(f"{path} has no TIFF resolution tags")
+        unit = MICRONS_PER_RESOLUTION_UNIT.get(int(tags[TIFF_RESOLUTION_UNIT]))
+        if unit is None:
+            raise MIDOGppError(f"{path}: unsupported TIFF resolution unit {tags[TIFF_RESOLUTION_UNIT]}")
+        return unit / float(tags[TIFF_X_RESOLUTION]), unit / float(tags[TIFF_Y_RESOLUTION])
+
+
+def bbox_centre(bbox: list[float]) -> tuple[float, float]:
+    """Centre of a MIDOG++ ``[x0, y0, x1, y1]`` box."""
+    if len(bbox) != 4:
+        raise MIDOGppError(f"bbox {bbox!r} is not [x0, y0, x1, y1]")
+    x0, y0, x1, y1 = (float(v) for v in bbox)
+    if not (x1 > x0 and y1 > y0):
+        raise MIDOGppError(f"bbox {bbox!r} is not [x0, y0, x1, y1] with x1 > x0 and y1 > y0")
+    return (x0 + x1) / 2.0, (y0 + y1) / 2.0
 
 
 class MIDOGppAdapter(DatasetAdapter):
     def __init__(self, key: str = "midogpp_breast", config: dict[str, Any] | None = None) -> None:
         self.key = key
         self.config = config or load_config().get("midogpp", {})
-        self.scanner_mpp: dict[str, float] = self.config.get(
-            "scanner_mpp",
-            {
-                "Hamamatsu XR": 0.23,
-                "Hamamatsu S360": 0.23,
-                "Leica CS2": 0.25,
-                "XR": 0.23,
-                "S360": 0.23,
-                "CS2": 0.25,
-            },
-        )
-        self.category_map: dict[str, str] = self.config.get(
-            "categories",
-            {
-                "mitotic figure": "MF",
-                "non-mitotic figure": "imposter",
-                "hard negative": "imposter",
-            },
-        )
+        categories = self.config.get("categories")
+        if not categories:
+            raise MIDOGppError("eval/datasets/config.yaml midogpp.categories is missing")
+        self.category_map: dict[str, str] = {name.lower(): target for name, target in categories.items()}
 
-    def get_scanner_mpp(self, scanner_name: str | None) -> float:
-        """Resolve scanner MPP from configuration or default to 0.25."""
-        if not scanner_name:
-            return 0.25
-        scanner_clean = str(scanner_name).strip()
-        for k, mpp in self.scanner_mpp.items():
-            if k.lower() in scanner_clean.lower():
-                return float(mpp)
-        return 0.25
+    def target_class(self, category_name: str) -> str:
+        target = self.category_map.get(category_name.lower())
+        if target is None:
+            raise MIDOGppError(f"unknown MIDOG++ category {category_name!r}; known: {sorted(self.category_map)}")
+        return target
 
-    def discover_from_coco(self, coco_data: dict[str, Any]) -> tuple[pd.DataFrame, dict[int, list[dict[str, Any]]], dict[int, str]]:
+    def discover_from_coco(
+        self, coco_data: dict[str, Any], images_dir: Path
+    ) -> tuple[pd.DataFrame, dict[int, list[dict[str, Any]]], dict[int, str]]:
         """
-        Parse COCO JSON dictionary into images DataFrame, annotations grouped by image_id,
-        and category lookup map.
+        Parse COCO JSON into an images DataFrame (resolution read from each image file),
+        annotations grouped by image_id, and the category lookup map.
         """
         categories = {cat["id"]: cat["name"] for cat in coco_data.get("categories", [])}
-
+        for name in categories.values():
+            self.target_class(name)
         annotations_by_image: dict[int, list[dict[str, Any]]] = {}
         for ann in coco_data.get("annotations", []):
-            img_id = ann["image_id"]
-            annotations_by_image.setdefault(img_id, []).append(ann)
+            annotations_by_image.setdefault(ann["image_id"], []).append(ann)
 
         rows = []
         for img in coco_data.get("images", []):
-            img_id = img["id"]
-            file_name = img.get("file_name", f"{img_id}.png")
-            scanner = img.get("scanner", "Hamamatsu XR")
-            mpp = self.get_scanner_mpp(scanner)
-            tumor_type = str(img.get("tumor_type", "breast")).strip().lower()
-
-            # Filter breast vs other
-            is_breast = "breast" in tumor_type
-            if self.key == "midogpp_breast" and not is_breast:
+            is_breast = "breast" in str(img["tumor_type"]).lower()
+            if (self.key == "midogpp_breast") != is_breast:
                 continue
-            if self.key == "midogpp_other" and is_breast:
-                continue
-
-            patient_id = str(img.get("patient_id") or img.get("case_id") or f"case_{img_id:04d}")
-
+            path = Path(images_dir) / img["file_name"]
+            if not path.is_file():
+                raise FileNotFoundError(f"MIDOG++ image {path} is not downloaded")
+            mpp_x, mpp_y = image_mpp(path)
             rows.append({
-                "image_id": img_id,
-                "file_name": file_name,
-                "scanner": scanner,
-                "mpp": mpp,
-                "tumor_type": tumor_type,
-                "patient_id": patient_id,
+                "image_id": img["id"],
+                "file_name": img["file_name"],
+                "path": str(path),
+                "scanner": img.get("scanner"),
+                "mpp": mpp_x,
+                "mpp_y": mpp_y,
+                "tumor_type": str(img["tumor_type"]).strip().lower(),
+                # MIDOG++ has one image per case and no patient identifier.
+                "patient_id": str(img.get("patient_id") or f"midogpp_{img['id']:04d}"),
                 "width": img.get("width"),
                 "height": img.get("height"),
             })
+        return pd.DataFrame(rows), annotations_by_image, categories
 
-        df = pd.DataFrame(rows)
-        return df, annotations_by_image, categories
-
-    def discover(self, coco_path_or_data: str | Path | dict[str, Any] | None = None) -> pd.DataFrame:
-        """
-        Discover images from COCO format annotations.
-        """
-        if coco_path_or_data is None:
-            return pd.DataFrame(columns=["image_id", "file_name", "scanner", "mpp", "tumor_type", "patient_id"])
-
+    def discover(self, coco_path_or_data: str | Path | dict[str, Any], images_dir: Path) -> pd.DataFrame:
+        """Images of this subset that are present in ``images_dir``."""
         if isinstance(coco_path_or_data, (str, Path)):
             with open(coco_path_or_data, "r", encoding="utf-8") as f:
                 coco_data = json.load(f)
         else:
             coco_data = coco_path_or_data
-
-        df, _, _ = self.discover_from_coco(coco_data)
+        df, _, _ = self.discover_from_coco(coco_data, images_dir)
         return df
+
+    def ground_truth_points(
+        self, annotations: list[dict[str, Any]], category_names: dict[int, str], mpp: float
+    ) -> dict[str, list[tuple[float, float]]]:
+        """Box centres in µm, by target class ("MF", "imposter")."""
+        points: dict[str, list[tuple[float, float]]] = {}
+        for ann in annotations:
+            x_px, y_px = bbox_centre(ann["bbox"])
+            target = self.target_class(category_names[ann["category_id"]])
+            points.setdefault(target, []).append((x_px * mpp, y_px * mpp))
+        return points
 
     def create_ground_truth_geojson(
         self,
@@ -114,47 +136,23 @@ class MIDOGppAdapter(DatasetAdapter):
         annotations: list[dict[str, Any]],
         category_names: dict[int, str],
     ) -> dict[str, Any]:
-        """
-        Convert bounding-box centers to point coordinates in µm and format as GeoJSON.
-        Categories are mapped to 'MF' or 'imposter'.
-        """
-        scanner = image_row.get("scanner")
-        mpp = float(image_row.get("mpp") or self.get_scanner_mpp(scanner))
-
+        """Box centres as GeoJSON points in µm, classed "MF" or "imposter"."""
+        mpp = float(image_row["mpp"])
         features = []
         for ann in annotations:
-            bbox = ann.get("bbox", [0, 0, 0, 0])  # [x, y, w, h]
-            center_x_px = bbox[0] + (bbox[2] / 2.0)
-            center_y_px = bbox[1] + (bbox[3] / 2.0)
-
-            x_um = round(center_x_px * mpp, 4)
-            y_um = round(center_y_px * mpp, 4)
-
-            cat_id = ann.get("category_id")
-            cat_name = category_names.get(cat_id, "mitotic figure")
-            target_class = self.category_map.get(cat_name.lower())
-            if target_class is None:
-                target_class = "MF" if ("mitotic" in cat_name.lower() and "non" not in cat_name.lower()) else "imposter"
-
-            feature = {
+            x_px, y_px = bbox_centre(ann["bbox"])
+            cat_name = category_names[ann["category_id"]]
+            features.append({
                 "type": "Feature",
-                "geometry": {
-                    "type": "Point",
-                    "coordinates": [x_um, y_um],
-                },
+                "geometry": {"type": "Point", "coordinates": [round(x_px * mpp, 4), round(y_px * mpp, 4)]},
                 "properties": {
-                    "class": target_class,
-                    "category_id": cat_id,
+                    "class": self.target_class(cat_name),
+                    "category_id": ann["category_id"],
                     "category_name": cat_name,
-                    "bbox_pixels": bbox,
+                    "bbox_pixels": ann["bbox"],
                 },
-            }
-            features.append(feature)
-
-        return {
-            "type": "FeatureCollection",
-            "features": features,
-        }
+            })
+        return {"type": "FeatureCollection", "features": features}
 
     def write_geojson(self, slide_id: str, geojson_obj: dict[str, Any], dest: Storage) -> str:
         """Serialize ground-truth GeoJSON to destination storage and return its URI."""
@@ -165,19 +163,15 @@ class MIDOGppAdapter(DatasetAdapter):
         return dest.uri(relpath)
 
     def fetch(self, row: pd.Series, dest: Storage) -> FetchedFile:
-        """
-        Fetch / record MIDOG++ ROI image payload.
-        """
-        slide_id = str(row.get("image_id", row.get("file_name")))
-        relpath = f"midogpp/images/{row.get('file_name', f'{slide_id}.png')}"
-        uri = dest.uri(relpath)
-        sha256 = row.get("sha256", "0" * 64)
+        """Record a downloaded image with its real hashes; nothing is downloaded here."""
+        path = Path(row["path"])
+        data = path.read_bytes()
         return FetchedFile(
-            slide_id=slide_id,
-            uri=uri,
-            sha256=sha256,
-            md5=None,
-            size_bytes=int(row.get("size_bytes", 0)),
+            slide_id=str(row["image_id"]),
+            uri=path.resolve().as_uri(),
+            sha256=hashlib.sha256(data).hexdigest(),
+            md5=hashlib.md5(data).hexdigest(),
+            size_bytes=len(data),
         )
 
     def labels(self) -> pd.DataFrame:
@@ -201,21 +195,18 @@ class MIDOGppAdapter(DatasetAdapter):
             slide_id = str(row["image_id"])
             if slide_id not in fetched:
                 continue
-
             fetched_file = fetched[slide_id]
-            mpp = float(row.get("mpp", self.get_scanner_mpp(row.get("scanner"))))
-
-            manifest_row = {
+            rows.append({
                 "dataset": self.key,
                 "patient_id": str(row["patient_id"]),
                 "slide_id": slide_id,
                 "uri": fetched_file.uri,
                 "sha256": fetched_file.sha256,
                 "specimen_type": "resection",
-                "mpp_override": mpp,
-                "mpp_source": "dataset_doc",
-                "native_mag": 40.0,
-                "scanner": str(row.get("scanner", "Hamamatsu XR")),
+                "mpp_override": float(row["mpp"]),
+                "mpp_source": "file",
+                "native_mag": None,
+                "scanner": None if pd.isna(row.get("scanner")) else str(row["scanner"]),
                 "tss": None,
                 "split": None,
                 "gt_grade": None,
@@ -227,8 +218,7 @@ class MIDOGppAdapter(DatasetAdapter):
                 "gt_label_source": "consensus",
                 "gt_label_confidence": "high",
                 "regions_uri": regions.get(slide_id),
-            }
-            rows.append(manifest_row)
+            })
 
         manifest_df = pd.DataFrame(rows)
         validate_manifest(manifest_df)

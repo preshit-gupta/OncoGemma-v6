@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Tuple
 import numpy as np
 from PIL import Image
+from shapely.geometry import box
 from sqlalchemy import select, delete, not_
 from sqlalchemy.orm import Session
 
@@ -34,9 +35,7 @@ from app.core.gcs import (
 from app.core.stain_profiles import usable_stain_transform
 from app.core.tasks import EntityType, Task
 from app.core.tissue_mask_store import load_tissue_mask
-from app.inference.batching import plan_batches
-from app.inference.gateway import EntityRef, FallbackResult, ImageInput, InputSpec, ModelInputs
-from app.inference.outputs import DetectionList
+from app.inference.gateway import EntityRef, FallbackResult, ModelInputs
 from app.inference.schemas import MitosisVerdict
 from app.models.case import Case
 from app.models.slide import Slide
@@ -44,7 +43,8 @@ from app.models.hotspot import Hotspot
 from app.models.detection import Detection
 from app.models.hpf_site import HpfSite
 from app.models.audit import AuditEvent
-from pipeline.detect import apply_global_nms, enumerate_hotspot_tiles
+from pipeline.detect import apply_global_nms, hotspot_geometry, hotspot_region_um
+from pipeline.mitosis_detect import detect_region, make_detect_batch
 from pipeline.errors import DegenerateStainProfileError, SlideReadError
 from pipeline.verify import mitosis_referee_images
 from pipeline.hpf import generate_mitosis_density_map, greedy_place_hpfs
@@ -108,10 +108,7 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
     width_px = int(slide_obj.width_px)
     height_px = int(slide_obj.height_px)
 
-    tile_size_px = det_cfg.tile_size_px
     tile_um = det_cfg.tile_size_um
-    stride_um = det_cfg.stride_px * det_cfg.mpp
-    patch_px = detector_entry.input.size_px[0]
     radius_um = hpf_cfg.radius_um
     hpf_count = hpf_cfg.count
 
@@ -173,84 +170,71 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
                 f"the mitosis referee is configured for normalized colour but slide {slide_id}'s stain fit is degenerate"
             )
 
-        # Enumerate all candidate tiles across confirmed hotspots, skipping empty glass
-        all_tiles_to_sweep = []
+        # Stage A (SPEC-06 §5.1-5.2): each hotspot's region in detector-sized tiles at the detector's
+        # resolution (SlideReader resamples; a 20x scan is upsampled and the output says so), with
+        # ownership; raw candidates down to min_prob, thresholded here.
+        detect_batch = make_detect_batch(gateway, ctx, det_cfg, detector_entry)
+
+        def read_tile(x_um, y_um):
+            return read_region_at_mpp(reader, x_um, y_um, tile_um, tile_um, det_cfg.mpp).rgb
+
+        stage_a = []
         for hs in hotspots:
-            hs_tiles = enumerate_hotspot_tiles(
-                hs["polygon_um"],
-                tile_um=tile_um,
-                stride_um=stride_um,
-                tissue=tissue,
-                min_tissue_fraction=det_cfg.min_tissue_fraction,
-            )
-            for t in hs_tiles:
-                t["hotspot_id"] = hs["id"]
-            all_tiles_to_sweep.extend(hs_tiles)
+            geometry = hotspot_geometry(hs["polygon_um"])
 
-        print(f"[Worker:Mitosis] Sweeping {len(all_tiles_to_sweep)} tiles across {len(hotspots)} hotspots with {MODEL_CALL_THREADS} workers...")
-
-        # Tiles are resampled to the detector's resolution (a 20x scan is upsampled, and the output says so);
-        # the gateway refuses anything outside the detector's input contract (SPEC-01 AC5).
-        patch_spec = InputSpec(mpp=det_cfg.mpp, size_px=(patch_px, patch_px), color="raw", format="png")
-        limits = detector_entry.limits
-
-        def _sweep_single_tile(n_tile_and_tile):
-            n_tile, tile = n_tile_and_tile
-            tx_um, ty_um = tile["origin_um"]
-            tile_img = read_region_at_mpp(reader, tx_um, ty_um, tile_um, tile_um, det_cfg.mpp).rgb
-            if tile_img.shape[:2] != (tile_size_px, tile_size_px):
-                raise ValueError(f"a {tile_um} um tile at {det_cfg.mpp} um/px came out {tile_img.shape[:2]}, not {tile_size_px} px square")
-            offsets = [(ox, oy) for oy in range(0, tile_size_px, patch_px) for ox in range(0, tile_size_px, patch_px)]
-            patches = [
-                ImageInput(_png(tile_img[oy:oy + patch_px, ox:ox + patch_px]), patch_spec)
-                for ox, oy in offsets
-            ]
-            patch_ids = [f"t{n_tile:04d}_{ox}_{oy}" for ox, oy in offsets]
-            found = []
-            for batch in plan_batches([len(p.data) for p in patches], limits.max_batch, limits.max_request_bytes):
-                result = gateway.invoke(
-                    Task.MITOSIS_DETECT,
-                    det_cfg.producer,
-                    ModelInputs(images=tuple(patches[i] for i in batch)),
-                    ctx,
-                    EntityRef(EntityType.TILE_BATCH, f"{patch_ids[batch[0]]}_b{len(batch)}", ids=tuple(patch_ids[i] for i in batch)),
-                    DetectionList,
-                    params={"min_prob": det_cfg.det_threshold},
+            def include_tile(x0_um, y0_um, x1_um, y1_um, geometry=geometry):
+                if not geometry.intersects(box(x0_um, y0_um, x1_um, y1_um)):
+                    return False
+                (fraction,) = tissue.fractions_of_boxes_um(
+                    np.array([x0_um]), np.array([y0_um]), np.array([x1_um]), np.array([y1_um])
                 )
-                if len(result.output.detections) != len(batch):
-                    raise ValueError(f"{det_cfg.producer} returned {len(result.output.detections)} point lists for {len(batch)} patches")
-                for i, points in zip(batch, result.output.detections):
-                    ox, oy = offsets[i]
-                    for point in points:
-                        if point.prob < det_cfg.det_threshold:
-                            continue
-                        found.append((
-                            tx_um + (ox + point.x) * det_cfg.mpp,
-                            ty_um + (oy + point.y) * det_cfg.mpp,
-                            float(point.prob),
-                            tile["hotspot_id"],
-                            str(result.record_id),
-                        ))
-            return found
+                return fraction >= det_cfg.min_tissue_fraction
 
-        with ThreadPoolExecutor(max_workers=MODEL_CALL_THREADS) as pool:
-            sweep_results = list(pool.map(_sweep_single_tile, enumerate(all_tiles_to_sweep)))
+            points = detect_region(
+                read_tile,
+                hotspot_region_um(geometry, det_cfg.region_margin_um, tissue.extent_um),
+                det_cfg,
+                detect_batch,
+                batch_size=detector_entry.limits.max_batch,
+                threads=MODEL_CALL_THREADS,
+                include_tile=include_tile,
+                tile_prefix=hs["id"],
+            )
+            stage_a += [(hs["id"], p) for p in points]
+        print(f"[Worker:Mitosis] Stage A: {len(stage_a)} raw candidates >= {det_cfg.min_prob} across {len(hotspots)} hotspots.")
+
+        # Raw Stage-A candidates are kept so thresholds can be swept offline (SPEC-06 §5.2).
+        upload_blob_from_bytes(
+            settings.GCS_ARTIFACTS_BUCKET,
+            f"cases/{case_id}/mitosis/stage_a.json",
+            json.dumps({
+                "detector": det_cfg.producer,
+                "detector_version": detector_entry.version,
+                "weights_sha256": detector_entry.weights_sha256,
+                "min_prob": det_cfg.min_prob,
+                "points": [
+                    {"hotspot_id": hs_id, "x_um": p.x_um, "y_um": p.y_um, "prob": p.prob,
+                     "tile_id": p.tile_id, "record_id": p.record_id}
+                    for hs_id, p in stage_a
+                ],
+            }).encode("utf-8"),
+            "application/json",
+        )
 
         raw_candidates = []
-        cand_seq = 1
-        for tile_cands in sweep_results:
-            for cand_cx_um, cand_cy_um, det_conf, hs_id, record_id in tile_cands:
-                raw_candidates.append({
-                    "id": f"m_{cand_seq:04d}",
-                    "hotspot_id": hs_id,
-                    "centroid_um": [float(cand_cx_um), float(cand_cy_um)],
-                    "det_conf": float(det_conf),
-                    "det_record_id": record_id,
-                    "ver_conf": None,
-                    "label": "unreviewed",
-                    "label_source": "model"
-                })
-                cand_seq += 1
+        for hs_id, point in stage_a:
+            if point.prob < det_cfg.det_threshold:
+                continue
+            raw_candidates.append({
+                "id": f"m_{len(raw_candidates) + 1:04d}",
+                "hotspot_id": hs_id,
+                "centroid_um": [point.x_um, point.y_um],
+                "det_conf": point.prob,
+                "det_record_id": point.record_id,
+                "ver_conf": None,
+                "label": "unreviewed",
+                "label_source": "model"
+            })
 
         # Cross-tile Global Physical NMS
         candidates = apply_global_nms(raw_candidates, nms_radius_um=det_cfg.nms_radius_um)
@@ -292,10 +276,18 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
                 cand["medgemma_rationale"] = verdict.rationale
             cand["medgemma_confidence"] = None
 
-        if candidates:
+        if referee_cfg.enabled:
             print(f"[Worker:Mitosis] Adjudicating {len(candidates)} candidates via {referee_cfg.producer} with {MODEL_CALL_THREADS} worker threads...")
             with ThreadPoolExecutor(max_workers=MODEL_CALL_THREADS) as pool:
                 list(pool.map(_adjudicate, candidates))
+        else:
+            # SPEC-06 arm A1: the detector at det_threshold decides; no VLM call is made.
+            for cand in candidates:
+                cand.update({
+                    "label": "mitosis", "label_source": f"detector:{det_cfg.producer}", "needs_human": False,
+                    "referee_record_id": None, "vlm": None,
+                    "medgemma_verdict": None, "medgemma_rationale": None, "medgemma_confidence": None,
+                })
 
         # Post-referee physical NMS to eliminate any residual coinciding/overlapping detections
         candidates = apply_global_nms(candidates, nms_radius_um=det_cfg.nms_radius_um)
@@ -466,7 +458,8 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
             )
             db.add(hpf_row)
 
-        model_versions = {key: registry.version_of(key) for key in (det_cfg.producer, referee_cfg.producer)}
+        producers = (det_cfg.producer, referee_cfg.producer) if referee_cfg.enabled else (det_cfg.producer,)
+        model_versions = {key: registry.version_of(key) for key in producers}
 
         output_payload = {
             "case_id": case_id,

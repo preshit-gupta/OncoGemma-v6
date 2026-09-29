@@ -143,7 +143,7 @@ def test_shadow_decisions_are_recorded_as_shadow():
 def test_structured_predictions_are_validated_with_the_output_model():
     adapter = FakeAdapter(RawResponse(data={"detections": [[10.0, 20.0, 0.9]]}, endpoint="projects/p/endpoints/1234"))
     log = DecisionLog()
-    gateway = make_gateway(detector_config(), {"vertex_endpoint_predict": adapter}, log=log)
+    gateway = make_gateway(detector_config(), {"vertex_endpoint_raw_predict": adapter}, log=log)
     result = gateway.invoke(
         Task.MITOSIS_DETECT, "kongnet_det_midog_1",
         ModelInputs(images=(png_image((512, 512), 0.25),)), decision_context(), EntityRef(EntityType.TILE, "t_0001"),
@@ -167,7 +167,7 @@ def test_prompt_variables_are_rendered_and_hashed():
 def detector_call(image, **input_overrides):
     adapter = FakeAdapter(RawResponse(data={"detections": []}))
     log = DecisionLog()
-    gateway = make_gateway(detector_config(), {"vertex_endpoint_predict": adapter}, log=log)
+    gateway = make_gateway(detector_config(), {"vertex_endpoint_raw_predict": adapter}, log=log)
     inputs = ModelInputs(images=(image,), **input_overrides)
     return gateway, adapter, log, lambda: gateway.invoke(
         Task.MITOSIS_DETECT, "kongnet_det_midog_1", inputs, decision_context(), EntityRef(EntityType.TILE, "t_1"),
@@ -252,7 +252,7 @@ def test_unknown_prompt_and_bad_variables_are_contract_errors():
 
 
 def test_output_model_must_match_the_registry():
-    gateway = make_gateway(detector_config(), {"vertex_endpoint_predict": FakeAdapter()})
+    gateway = make_gateway(detector_config(), {"vertex_endpoint_raw_predict": FakeAdapter()})
     with pytest.raises(InputContractError, match="output_schema is DetectionList"):
         gateway.invoke(
             Task.MITOSIS_DETECT, "kongnet_det_midog_1", ModelInputs(images=(png_image((512, 512), 0.25),)),
@@ -304,7 +304,7 @@ def test_unconfigured_endpoint_is_unavailable_without_a_call():
     assert config.models.models["kongnet_det_midog_1"].endpoint_id is None
     adapter = FakeAdapter()
     log = DecisionLog()
-    gateway = make_gateway(config, {"vertex_endpoint_predict": adapter}, log=log)
+    gateway = make_gateway(config, {"vertex_endpoint_raw_predict": adapter}, log=log)
     with pytest.raises(ModelUnavailableError, match="endpoint_id is not configured"):
         gateway.invoke(
             Task.MITOSIS_DETECT, "kongnet_det_midog_1", ModelInputs(images=(png_image((512, 512), 0.25),)),

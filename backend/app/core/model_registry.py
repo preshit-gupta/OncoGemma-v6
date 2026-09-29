@@ -86,6 +86,9 @@ class VertexEndpointModel(StrictModel):
     endpoint_id: NonEmptyStr | None
     region: NonEmptyStr
     version: NonEmptyStr
+    # SHA-256 of the weights the serving container must report (``model_sha256`` in each
+    # raw-predict response). A response naming other weights, or none, is refused.
+    weights_sha256: Sha256Hex | None = None
     requires_image: bool
     input: ImageInputContract | None = None
     output_schema: NonEmptyStr | None = None
@@ -103,6 +106,8 @@ class VertexEndpointModel(StrictModel):
             raise ValueError("params is required for kind: vlm and allowed only for it")
         if self.schema_retries and not is_vlm:
             raise ValueError("schema_retries is allowed only for kind: vlm")
+        if self.weights_sha256 is not None and self.provider != "vertex_endpoint_raw_predict":
+            raise ValueError("weights_sha256 needs provider vertex_endpoint_raw_predict (predict drops model_sha256)")
         return self
 
 

@@ -40,14 +40,36 @@ def detector_entry(**changes):
     return entry.model_copy(update={"endpoint_id": "456", **changes})
 
 
+def v1_entry():
+    """The legacy v5 contract, kept for rollback: predict, boxes, no weights hash."""
+    return detector_entry(provider="vertex_endpoint_predict", wire_format="kongnet_midog_v1", weights_sha256=None)
+
+
+def registry_weights():
+    return get_pipeline_config().models.models["kongnet_det_midog_1"].weights_sha256
+
+
 class RecordingEndpoint:
-    def __init__(self, predictions):
+    """predict (v1) and raw_predict (v2) over canned predictions; v2 answers name ``weights``."""
+
+    def __init__(self, predictions, weights="registry"):
         self.predictions = predictions
+        self.weights = weights
         self.calls = []
 
     def predict(self, instances, parameters=None, timeout=None):
         self.calls.append({"instances": instances, "parameters": parameters, "timeout": timeout})
         return SimpleNamespace(predictions=self.predictions)
+
+    def raw_predict(self, body, headers=None, timeout=None):
+        import json
+
+        sent = json.loads(body)
+        self.calls.append({"instances": sent["instances"], "parameters": sent.get("parameters"), "timeout": timeout})
+        payload = {"predictions": self.predictions}
+        if self.weights is not None:
+            payload["model_sha256"] = registry_weights() if self.weights == "registry" else self.weights
+        return SimpleNamespace(status_code=200, json=lambda: payload, text=str(payload))
 
 
 def adapter_for(endpoint):
@@ -59,9 +81,9 @@ def request(n=4, min_prob=0.35):
     return AdapterRequest("kongnet_det_midog_1", images=images, parameters={"min_prob": min_prob})
 
 
-def test_v1_request_is_what_the_deployed_service_reads():
+def test_v1_request_is_what_the_legacy_service_reads():
     endpoint = RecordingEndpoint([{"boxes": []}] * 4)
-    adapter_for(endpoint).call(detector_entry(), request(), 60.0)
+    adapter_for(endpoint).call(v1_entry(), request(), 60.0)
     (call,) = endpoint.calls
     assert len(call["instances"]) == 4 and call["parameters"] is None and call["timeout"] == 60.0
     first = call["instances"][0]
@@ -78,7 +100,7 @@ def test_v1_boxes_become_points_per_patch_in_request_order():
         {"boxes": []},
         {"boxes": [{"cx": 50.0, "cy": 60.0, "width": 48.0, "height": 48.0, "confidence": 0.92}]},
     ])
-    raw = adapter_for(endpoint).call(detector_entry(), request(), 60.0)
+    raw = adapter_for(endpoint).call(v1_entry(), request(), 60.0)
     assert raw.data == {"detections": [
         [{"x": 100.0, "y": 120.0, "prob": 0.88}], [], [], [{"x": 50.0, "y": 60.0, "prob": 0.92}],
     ]}
@@ -98,12 +120,18 @@ def test_v1_boxes_become_points_per_patch_in_request_order():
 )
 def test_v1_malformed_answers_are_rejected_not_substituted(predictions, message):
     with pytest.raises(CallRejected, match=message):
-        adapter_for(RecordingEndpoint(predictions)).call(detector_entry(), request(), 60.0)
+        adapter_for(RecordingEndpoint(predictions)).call(v1_entry(), request(), 60.0)
+
+
+def test_the_registry_serves_kongnet_through_v2_raw_predict_with_pinned_weights():
+    entry = detector_entry()
+    assert (entry.provider, entry.wire_format) == ("vertex_endpoint_raw_predict", "kongnet_midog_v2")
+    assert entry.weights_sha256 is not None and entry.input.mpp == 0.25
 
 
 def test_v2_request_and_points():
     endpoint = RecordingEndpoint([{"points": [{"x": 10.5, "y": 20.0, "prob": 0.41}], "error": None}, {"points": [], "error": None}])
-    raw = adapter_for(endpoint).call(detector_entry(wire_format="kongnet_midog_v2"), request(n=2, min_prob=0.01), 60.0)
+    raw = adapter_for(endpoint).call(detector_entry(), request(n=2, min_prob=0.01), 60.0)
     (call,) = endpoint.calls
     assert call["parameters"] == {"min_prob": 0.01}
     assert call["instances"][0]["mpp"] == 0.25 and set(call["instances"][0]) == {"image_png_b64", "mpp"}
@@ -113,7 +141,14 @@ def test_v2_request_and_points():
 def test_v2_service_errors_are_rejected():
     endpoint = RecordingEndpoint([{"points": [], "error": "mpp_mismatch: expected 0.25, got 0.5"}])
     with pytest.raises(CallRejected, match="mpp_mismatch"):
-        adapter_for(endpoint).call(detector_entry(wire_format="kongnet_midog_v2"), request(n=1), 60.0)
+        adapter_for(endpoint).call(detector_entry(), request(n=1), 60.0)
+
+
+@pytest.mark.parametrize("weights", ["0" * 64, None])
+def test_an_answer_from_other_or_unnamed_weights_is_rejected(weights):
+    endpoint = RecordingEndpoint([{"points": [], "error": None}], weights=weights)
+    with pytest.raises(CallRejected, match="the registry pins"):
+        adapter_for(endpoint).call(detector_entry(), request(n=1), 60.0)
 
 
 def test_empty_detections_are_trusted_and_recorded_through_the_gateway():
@@ -122,8 +157,8 @@ def test_empty_detections_are_trusted_and_recorded_through_the_gateway():
     registry = config.models
     kongnet = registry.models["kongnet_det_midog_1"].model_copy(update={"endpoint_id": "456"})
     config = config.model_copy(update={"models": registry.model_copy(update={"models": {**registry.models, "kongnet_det_midog_1": kongnet}})})
-    endpoint = RecordingEndpoint([{"boxes": []}] * 2)
-    gateway = make_gateway(config, {"vertex_endpoint_predict": adapter_for(endpoint)})
+    endpoint = RecordingEndpoint([{"points": [], "error": None}] * 2)
+    gateway = make_gateway(config, {"vertex_endpoint_raw_predict": adapter_for(endpoint)})
     dark = png_image((512, 512), 0.25, rgb=(30, 180, 200))
     result = gateway.invoke(
         Task.MITOSIS_DETECT, "kongnet_det_midog_1", ModelInputs(images=(dark, dark)), decision_context(),
@@ -138,7 +173,7 @@ def test_error_payload_fails_the_call_through_the_gateway():
     registry = config.models
     kongnet = registry.models["kongnet_det_midog_1"].model_copy(update={"endpoint_id": "456"})
     config = config.model_copy(update={"models": registry.model_copy(update={"models": {**registry.models, "kongnet_det_midog_1": kongnet}})})
-    gateway = make_gateway(config, {"vertex_endpoint_predict": adapter_for(RecordingEndpoint([{"boxes": [], "error": "boom"}]))})
+    gateway = make_gateway(config, {"vertex_endpoint_raw_predict": adapter_for(RecordingEndpoint([{"points": [], "error": "boom"}]))})
     with pytest.raises(ModelCallError, match="boom"):
         gateway.invoke(
             Task.MITOSIS_DETECT, "kongnet_det_midog_1", ModelInputs(images=(png_image((512, 512), 0.25),)),

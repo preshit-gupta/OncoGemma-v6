@@ -19,6 +19,12 @@ Update this file at the end of every session (SPEC plan §3 rule 8). Keep it und
   - 3.3 `TissueMask` (full extent, exact area queries; AC4/AC5), `cases.specimen_type` (`0008`; `unknown` refused, AC8; `PATCH /cases/{id}/specimen-type`), Stage 2 and QC rebuilt (mm² by specimen, focus over the mask, `resolution` check).
   - 3.4 every stage and router reads through `read_region_at_mpp` and normalises with the persisted profile; the v5 normaliser, lock and thumbnail/mask fallbacks are deleted; detector tiles are resampled to 0.25 µm/px (`detector_upsampled` recorded); AC1 is `tests/test_single_authority.py`.
 
+- **Mitosis detector fixed and measured (2026-09-29/30).** Positive control on MIDOG++ image 094 (82 labelled figures, 0.2298 µm/px) against the live endpoint:
+  - tiatoolbox 2.0.1 patch mode returns x/y transposed: every KongNet detection sat at its mirror position (F1 0.12). v1 also reported every confidence as 1.0, and its image carried a silent YOLO fallback. KongNet works at native 40× (F1 0.87); the 0.5 µm/px in its IO config gives 0.27.
+  - MIDOG-microservice #1 and #2: v2 contract, real weights hash, 0.25 µm/px, coordinates fixed; deployed as Vertex model 831662348912558080 (`v2-d788edf`, T4). Acceptance: `scripts/positive_control.py` F1 0.851 (v2), 0.872 (legacy).
+  - WP-7.2 (branch `wp/7.2-detector-client`): shared `pipeline/mitosis_detect.py` (512 px tiles at 0.25 µm/px, resampling, ownership), v2 raw predict with pinned weights, raw Stage A at min_prob 0.01; MIDOG++ adapter fixed (corner boxes, 'not mitotic figure', TIFF resolution); `eval/mitosis_baseline.py`.
+  - Baseline (`reports/baseline/mitosis_midogpp_094.md`): KongNet alone F1 0.862 at τ 0.75, NMS 7.5 µm (old 0.35/20 µm: 0.831). The Gemini referee cuts F1 to 0.676 (rejects 25 true figures), so it is off (`referee.enabled: false`). One image only: generalisation needs more MIDOG++ val images.
+
 ## Ready for delegates now
 
 Lanes are in `docs/tasks/README.md`. **New, blocks deploying M3:** a frontend card for the specimen type (required select on case creation, a prompt for `unknown` cases like `needs_mpp`, `PATCH .../specimen-type` then retry preprocess). Lane E: WP-7.1.
@@ -33,7 +39,6 @@ Lanes are in `docs/tasks/README.md`. **New, blocks deploying M3:** a frontend ca
 - **M3 must not be deployed before the frontend can state a specimen type** (preprocess refuses `unknown`, and today's UI sends none). Existing cases need a specimen type and a preprocess re-run (mask json + stain profile). Slides that need MPP have no case thumbnail (409); the owner accepted that on 2026-09-30.
 - Real-slide checks M3 could not run (synthetic tissue only): AC3 seams on 10 TCGA val slides, AC5 BCNB mask IoU, AC9 raw vs normalised F1, tuning of the mask/QC/stain proposals. The mitosis referee now sees normalised, 0.25 µm/px crops (SPEC-04 §3.5; `color:` in `mitosis.yaml`). The pen rule's departure from SPEC-04's wording is the TODO above.
 - Record in the plan §5: D16, drop the v5 `reports` table (2026-09-28). WP-2.3a: add `tumor_referee` to the SPEC-01 §3.3 task catalogue.
-- **MIDOG v2 is not deployed**: `kongnet_det_midog_1` stays on `kongnet_midog_v1`; after the WP-7.1 `deploy.ps1` run switch `wire_format` to `kongnet_midog_v2` and its `version`/deploy date.
 - `docs/contracts/mitosis_v6.md` types `mitotic_score` as `1 | 2 | 3`; a summary with zero HPFs still reports 1. Proposal: allow `null`.
 - Use one git worktree per agent; tests share the fake-GCS dir under the system temp dir, so concurrent `pytest` runs need private `TMP`. BCNB details (SPEC-02 §3.2). Optional: `Bash(git push:*)` allow rule, TUPAC16.
 - After the worker job's next real execution, confirm its logs show `[DB Core] Using Cloud SQL instance` and no `password authentication failed`. Rotate passwords from the secret (`gcloud secrets versions access latest`), never a separately generated value.

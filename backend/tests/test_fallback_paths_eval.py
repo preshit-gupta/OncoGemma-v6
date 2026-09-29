@@ -131,7 +131,7 @@ def mitosis_with(db_session, monkeypatch, *, endpoint=None, referee_down=False, 
         answers={schemas.MitosisVerdict: mitosis_t.verdict("MITOTIC_FIGURE")},
     )
     adapters = {
-        "vertex_endpoint_predict": VertexEndpointAdapter(
+        "vertex_endpoint_raw_predict": VertexEndpointAdapter(
             "oncogemma-test", endpoint_factory=lambda *args: endpoint or mitosis_t.KongNetEndpoint()
         ),
         "vertex_genai": gemini(models),
