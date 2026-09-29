@@ -65,8 +65,10 @@ steps:
       - '--memory=8Gi'
       - '--no-cpu-throttling'
       - '--min-instances=1'
-      - '--update-env-vars=CLOUD_SQL_CONNECTION_NAME=$PROJECT_ID:$_REGION:oncogemma-dev-psql'
-      - '--set-secrets=DB_PASSWORD=og-db-password:latest'
+      # Sign-in (SPEC-03 §3): the API refuses to start without the OAuth client ID and the session key.
+      # '^|^' makes '|' the separator, so AUTH_ALLOWED_DOMAINS may hold a comma-separated list.
+      - '--update-env-vars=^|^CLOUD_SQL_CONNECTION_NAME=$PROJECT_ID:$_REGION:oncogemma-dev-psql|GOOGLE_OAUTH_CLIENT_ID=$_GOOGLE_OAUTH_CLIENT_ID|AUTH_ALLOWED_DOMAINS=$_AUTH_ALLOWED_DOMAINS|BOOTSTRAP_ADMIN_EMAIL=$_BOOTSTRAP_ADMIN_EMAIL'
+      - '--set-secrets=DB_PASSWORD=og-db-password:latest,SESSION_SIGNING_KEY=og-session-signing-key:latest'
     id: 'deploy-api'
 
   # 6. Deploy Next.js Frontend to Cloud Run
@@ -103,6 +105,10 @@ steps:
 
 substitutions:
   _REGION: 'us-central1'
+  # Sign-in settings for deploy-api; pass with --substitutions. An empty client ID stops the API at startup.
+  _GOOGLE_OAUTH_CLIENT_ID: ''
+  _AUTH_ALLOWED_DOMAINS: ''
+  _BOOTSTRAP_ADMIN_EMAIL: ''
 
 options:
   logging: CLOUD_LOGGING_ONLY

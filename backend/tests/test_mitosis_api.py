@@ -120,7 +120,7 @@ def setup_test_case():
 
 def test_get_mitosis_stage_data(setup_test_case):
     case_id = setup_test_case
-    res = client.get(f"/api/v1/stages/mitosis/{case_id}", headers={"X-User-Role": "pathologist"})
+    res = client.get(f"/api/v1/stages/mitosis/{case_id}", headers={"X-Test-Role": "pathologist"})
     assert res.status_code == 200
     data = res.json()
     assert data["case_id"] == case_id
@@ -147,7 +147,7 @@ def test_recompute_endpoint(setup_test_case):
             "to": "mitosis"
         }
     }
-    res = client.post("/api/v1/stages/mitosis/recompute", json=payload, headers={"X-User-Role": "pathologist"})
+    res = client.post("/api/v1/stages/mitosis/recompute", json=payload, headers={"X-Test-Role": "pathologist"})
     assert res.status_code == 200
     data = res.json()
     assert data["summary"]["count_total"] == 3 # Now 3 confirmed mitoses
@@ -174,7 +174,7 @@ def test_add_candidate_endpoint(setup_test_case):
     try:
         with patch("app.routers.mitosis.get_cached_slide_path", return_value=tmp_slide_path), \
              patch("openslide.OpenSlide", return_value=mock_slide):
-            res = client.post("/api/v1/stages/mitosis/add_candidate", json=payload, headers={"X-User-Role": "pathologist"})
+            res = client.post("/api/v1/stages/mitosis/add_candidate", json=payload, headers={"X-Test-Role": "pathologist"})
             assert res.status_code == 200
             data = res.json()
             assert data["status"] == "success"
@@ -191,7 +191,7 @@ def test_bulk_action_endpoint(setup_test_case):
         "action": "reject_remaining_unreviewed",
         "reviewed_by": "pathologist_01"
     }
-    res = client.post("/api/v1/stages/mitosis/bulk_action", json=payload, headers={"X-User-Role": "pathologist"})
+    res = client.post("/api/v1/stages/mitosis/bulk_action", json=payload, headers={"X-Test-Role": "pathologist"})
     assert res.status_code == 200
     data = res.json()
     # All unreviewed should now be not_mitosis
@@ -221,7 +221,7 @@ def test_confirm_safety_gate_blocking_and_success(setup_test_case):
     res_fail = client.post(
         "/api/v1/stages/mitosis/confirm",
         json={"case_id": case_id, "reviewed_by": "pathologist_01"},
-        headers={"X-User-Role": "pathologist"}
+        headers={"X-Test-Role": "pathologist"}
     )
     assert res_fail.status_code == 400
     assert "Clinical Safety Gate" in res_fail.json()["detail"]
@@ -230,14 +230,14 @@ def test_confirm_safety_gate_blocking_and_success(setup_test_case):
     client.post(
         "/api/v1/stages/mitosis/bulk_action",
         json={"case_id": case_id, "action": "reject_remaining_unreviewed", "reviewed_by": "pathologist_01"},
-        headers={"X-User-Role": "pathologist"}
+        headers={"X-Test-Role": "pathologist"}
     )
 
     # Now confirm should succeed 200 OK and queue Stage 5 (grading)
     res_success = client.post(
         "/api/v1/stages/mitosis/confirm",
         json={"case_id": case_id, "reviewed_by": "pathologist_01"},
-        headers={"X-User-Role": "pathologist"}
+        headers={"X-Test-Role": "pathologist"}
     )
     assert res_success.status_code == 200
     assert res_success.json()["next_stage"] == "grading"
@@ -263,14 +263,14 @@ def test_confirm_mitosis_does_not_clobber_completed_grading(setup_test_case):
     client.post(
         "/api/v1/stages/mitosis/bulk_action",
         json={"case_id": case_id, "action": "reject_remaining_unreviewed", "reviewed_by": "pathologist_01"},
-        headers={"X-User-Role": "pathologist"}
+        headers={"X-Test-Role": "pathologist"}
     )
 
     # Calling confirm should succeed but NOT reset grading stage to queued
     res_confirm = client.post(
         "/api/v1/stages/mitosis/confirm",
         json={"case_id": case_id, "reviewed_by": "pathologist_01"},
-        headers={"X-User-Role": "pathologist"}
+        headers={"X-Test-Role": "pathologist"}
     )
     assert res_confirm.status_code == 200
 

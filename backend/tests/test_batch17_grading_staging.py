@@ -186,7 +186,7 @@ def test_grading_router_409_conflict_when_stage_confirmed(db_session):
     db_session.add(grading)
     db_session.commit()
 
-    headers = {"X-User-Role": "pathologist"}
+    headers = {"X-Test-Role": "pathologist"}
 
     # Attempt patch review
     res_patch = client.post(
@@ -276,7 +276,7 @@ def test_grading_router_mitotic_count_readonly(db_session):
     db_session.add(hpf)
     db_session.commit()
 
-    headers = {"X-User-Role": "pathologist"}
+    headers = {"X-Test-Role": "pathologist"}
 
     # Attempt to change mitotic count in Stage 5
     res = client.post(
@@ -330,7 +330,7 @@ def test_grading_router_cap_histologic_type_validation(db_session):
     db_session.add(grading)
     db_session.commit()
 
-    headers = {"X-User-Role": "pathologist"}
+    headers = {"X-Test-Role": "pathologist"}
 
     # Confirm with invalid type
     res = client.post(
@@ -391,7 +391,7 @@ def test_grading_router_confirm_security_and_consistency(db_session):
     db_session.add(grading)
     db_session.commit()
 
-    headers = {"X-User-Role": "pathologist"}
+    headers = {"X-Test-Role": "pathologist"}
 
     # 1. Reject unauthorized override key ('patches' or 'hpfs')
     res_unauth = client.post(

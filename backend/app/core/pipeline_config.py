@@ -17,6 +17,7 @@ from typing import Annotated, Any, Literal, Mapping
 import yaml
 from pydantic import Field, ValidationError, model_validator
 
+from app.auth.roles import ROLES, Permission, Role
 from app.core.config import settings
 from app.core.config_types import (
     Fraction,
@@ -532,11 +533,49 @@ class PricingConfig(StrictModel):
     path_foundation: PatchPricing
 
 
+# --- auth.yaml ----------------------------------------------------------------
+
+class SessionConfig(StrictModel):
+    absolute_lifetime_min: PositiveInt
+    idle_timeout_min: PositiveInt
+    cache_ttl_s: PositiveInt
+    cache_max_entries: PositiveInt
+
+    @model_validator(mode="after")
+    def _ordered(self) -> "SessionConfig":
+        _require(
+            self.idle_timeout_min <= self.absolute_lifetime_min,
+            "session.idle_timeout_min must not exceed session.absolute_lifetime_min",
+        )
+        _require(
+            self.cache_ttl_s < self.idle_timeout_min * 60,
+            "session.cache_ttl_s must be shorter than session.idle_timeout_min",
+        )
+        return self
+
+
+class AuthConfig(StrictModel):
+    session: SessionConfig
+    roles: dict[Role, list[Permission]]
+
+    @model_validator(mode="after")
+    def _every_role(self) -> "AuthConfig":
+        missing = set(ROLES) - set(self.roles)
+        _require(not missing, f"auth.yaml roles has no entry for {sorted(missing)}")
+        for role, permissions in self.roles.items():
+            _require(len(set(permissions)) == len(permissions), f"auth.yaml roles.{role} lists a permission twice")
+        return self
+
+    def permissions_of(self, role: str) -> frozenset[str]:
+        return frozenset(self.roles[role])
+
+
 # --- the whole tree -----------------------------------------------------------
 
 class PipelineConfig(StrictModel):
     """One field per ``configs/<name>.yaml`` file, plus the prompt templates."""
 
+    auth: AuthConfig
     fallbacks: FallbackPolicy
     mitosis: MitosisConfig
     models: ModelRegistry

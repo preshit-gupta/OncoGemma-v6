@@ -17,6 +17,7 @@ from app.core.gcs import (
     upload_blob_from_bytes
 )
 from app.core.db import get_db
+from app.auth.deps import CurrentUser, require
 from app.core.slide_access import PRECONDITION_ERRORS, open_case_slide, slide_stain_transform
 from app.models.case import Case
 from app.models.slide import Slide
@@ -88,7 +89,6 @@ class TriageEditsPayload(BaseModel):
 class TriageConfirmPayload(BaseModel):
     case_id: str
     no_invasive_tumor: bool = False
-    reviewed_by: str = "pathologist_01"
 
 
 def apply_edit_ops(machine_hotspots: list[dict], edits: list[Any]) -> list[dict]:
@@ -155,7 +155,7 @@ def apply_edit_ops(machine_hotspots: list[dict], edits: list[Any]) -> list[dict]
 
 
 @router.get("/{case_id}")
-def get_triage_data(case_id: str, db: Session = Depends(get_db)):
+def get_triage_data(case_id: str, db: Session = Depends(get_db), user: CurrentUser = Depends(require("case:read"))):
     """
     Returns latest triage machine outputs, probability grid ref, heatmap URI, and saved edits.
     """
@@ -237,7 +237,7 @@ def get_triage_data(case_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/{case_id}/heatmap")
-def get_triage_heatmap_image(case_id: str, db: Session = Depends(get_db)):
+def get_triage_heatmap_image(case_id: str, db: Session = Depends(get_db), user: CurrentUser = Depends(require("case:read"))):
     """Returns the Viridis heatmap PNG overlay directly from GCS."""
     try:
         hm_bytes = download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_id}/triage/heatmap_triage.png")
@@ -264,7 +264,8 @@ def get_hotspot_thumbnail(
     stain: Literal["norm", "orig"] = "norm",
     cx: Optional[float] = Query(None),
     cy: Optional[float] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require("case:read"))
 ):
     """
     Extracts and streams a calibrated microscopic RGB patch centered on the specified hotspot.
@@ -429,7 +430,7 @@ def get_hotspot_thumbnail(
 
 
 @router.post("/edits")
-def save_triage_edits(payload: TriageEditsPayload, db: Session = Depends(get_db)):
+def save_triage_edits(payload: TriageEditsPayload, db: Session = Depends(get_db), user: CurrentUser = Depends(require("stage:review"))):
     """
     Saves draft edit operations diff.
     """
@@ -461,7 +462,7 @@ def save_triage_edits(payload: TriageEditsPayload, db: Session = Depends(get_db)
     
     audit = AuditEvent(
         case_id=str(payload.case_id),
-        actor="pathologist",
+        actor=user.id,
         event_type="review_edit",
         stage="triage",
         payload={"edit_count": len(payload.edits)}
@@ -473,7 +474,7 @@ def save_triage_edits(payload: TriageEditsPayload, db: Session = Depends(get_db)
 
 
 @router.post("/confirm")
-def confirm_triage(payload: TriageConfirmPayload, db: Session = Depends(get_db)):
+def confirm_triage(payload: TriageConfirmPayload, db: Session = Depends(get_db), user: CurrentUser = Depends(require("stage:confirm"))):
     """
     Confirms triage stage, writes effective hotspots into DB, and queues next stage.
     """
@@ -551,7 +552,7 @@ def confirm_triage(payload: TriageConfirmPayload, db: Session = Depends(get_db))
 
     stage_exec.status = "confirmed"
     stage_exec.reviewed_at = datetime.now(timezone.utc)
-    stage_exec.reviewed_by = payload.reviewed_by
+    stage_exec.reviewed_by = user.id
 
     case_uid = to_uuid(payload.case_id)
     if payload.no_invasive_tumor:
@@ -588,7 +589,7 @@ def confirm_triage(payload: TriageConfirmPayload, db: Session = Depends(get_db))
 
     audit = AuditEvent(
         case_id=str(payload.case_id),
-        actor=payload.reviewed_by,
+        actor=user.id,
         event_type="stage_confirmed",
         stage="triage",
         payload={

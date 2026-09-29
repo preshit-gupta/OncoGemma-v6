@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Header
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.auth.deps import cloud_tasks_service
 from app.core.db import get_db
 from app.models.stage_execution import StageExecution
 from worker.execution import STAGE_HANDLERS, StageFailedError, execute_stage, mark_running
@@ -32,10 +33,12 @@ class ExecuteStagePayload(BaseModel):
 def execute_stage_webhook(
     body: ExecuteStagePayload,
     db: Session = Depends(get_db),
-    x_cloudtasks_taskname: Optional[str] = Header(None)
+    x_cloudtasks_taskname: Optional[str] = Header(None),
+    caller: str = Depends(cloud_tasks_service),
 ):
     """
     HTTP handler invoked by Google Cloud Tasks to execute a stage asynchronously.
+    Only the queue's service account may call it, with an OIDC token (SPEC-03 §3.4).
     """
     case_id_str = body.case_id
     stage_name = body.stage.lower()

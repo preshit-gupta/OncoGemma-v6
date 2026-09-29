@@ -9,6 +9,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.auth.deps import cloud_tasks_service
 from app.core.db import Base, get_db
 from app.core.pipeline_config import get_config_hash
 from app.core.run_context import RunMode
@@ -215,6 +216,8 @@ def test_webhook_stamps_the_config_hash(Session):
             db.close()
 
     main.app.dependency_overrides[get_db] = override_db
+    # Cloud Tasks' OIDC identity is covered by tests/auth/test_worker_webhook_auth.py.
+    main.app.dependency_overrides[cloud_tasks_service] = lambda: "tasks@example.iam.gserviceaccount.com"
     try:
         with patch.dict("worker.execution.STAGE_HANDLERS", {"grading": lambda se, db, rt: ("gs://out", {})}):
             response = TestClient(main.app).post(
@@ -223,6 +226,7 @@ def test_webhook_stamps_the_config_hash(Session):
             )
     finally:
         main.app.dependency_overrides.pop(get_db, None)
+        main.app.dependency_overrides.pop(cloud_tasks_service, None)
     assert response.status_code == 200, response.text
     with Session() as db:
         done = db.get(StageExecution, exec_id)

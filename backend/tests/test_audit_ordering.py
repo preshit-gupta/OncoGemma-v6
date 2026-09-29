@@ -53,7 +53,7 @@ def setup_test_db():
 def test_unknown_case_id_audit_returns_404():
     """Verify audit endpoints return 404 for unknown or malformed case IDs (#189, #708)."""
     fake_case_id = str(uuid.uuid4())
-    headers = {"X-User-Role": "pathologist"}
+    headers = {"X-Test-Role": "pathologist"}
 
     # GET audit events for unknown case
     r_audit = client.get(f"/api/v1/cases/{fake_case_id}/audit", headers=headers)
@@ -135,7 +135,7 @@ def test_stage_started_audit_event_emission():
             resp = client.post(
                 f"/api/v1/cases/{case_uid}/stages/triage/approve",
                 json={"review_comment": "Verified triage heatmap quality"},
-                headers={"X-User-Role": "pathologist"}
+                headers={"X-Test-Role": "pathologist"}
             )
         assert resp.status_code == 202
         res_data = resp.json()

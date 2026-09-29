@@ -1,0 +1,57 @@
+# Sign-in sessions and the role permission matrix (SPEC-03 §3.3, §4.1).
+
+session:
+  absolute_lifetime_min: 480  # 8 h from sign-in, whatever the activity
+  idle_timeout_min: 60  # a session unused for this long is expired
+  cache_ttl_s: 30  # how long an instance trusts a looked-up session; bounds revocation latency (AC4)
+  cache_max_entries: 4096
+
+# Each role lists every permission it holds. A permission not listed is denied.
+roles:
+  admin:
+    - case:read
+    - case:create
+    - slide:upload
+    - slide:set_mpp
+    - case:delete
+    - stage:review
+    - stage:confirm
+    - stage:retry
+    - batch:create
+    - batch:cancel
+    - batch:read
+    - research:read
+    - research:annotate
+    - labels:qa
+    - issue:write
+    - eval:test_split
+    - model:promote
+    - user:manage
+    - audit:read_all
+  researcher:
+    - case:read
+    - case:create
+    - slide:upload
+    - slide:set_mpp
+    - stage:retry
+    - batch:create
+    - batch:cancel
+    - batch:read
+    - research:read
+    - research:annotate
+    - labels:qa
+    - issue:write
+  pathologist:
+    - case:read
+    - case:create
+    - slide:upload
+    - slide:set_mpp
+    - stage:review
+    - stage:confirm
+    - stage:retry
+    - batch:read
+    - research:read
+    - research:annotate
+    - issue:write
+  viewer:
+    - case:read

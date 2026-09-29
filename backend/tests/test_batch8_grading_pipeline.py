@@ -257,7 +257,7 @@ def test_confirm_grading_payload_validation_rejects_invalid_score():
                 }
             }
         },
-        headers={"X-User-Role": "pathologist"}
+        headers={"X-Test-Role": "pathologist"}
     )
     assert res_bad_score.status_code == 422
 
@@ -280,7 +280,7 @@ def test_confirm_grading_payload_validation_rejects_invalid_score():
                 }
             }
         },
-        headers={"X-User-Role": "pathologist"}
+        headers={"X-Test-Role": "pathologist"}
     )
     assert res_bad_type.status_code == 422
 
@@ -307,10 +307,10 @@ def test_confirm_grading_stage_rejects_non_pathologist_role():
             "nottingham_sum": 5,
             "grade": 1
         },
-        headers={"X-User-Role": "technician"}
+        headers={"X-Test-Role": "viewer"}  # v5's technician role is a viewer (SPEC-03 §4.1)
     )
     assert res.status_code == 403
-    assert "Only pathologists or administrators" in res.json()["detail"]
+    assert res.json()["detail"] == "forbidden"
 
 
 def test_histologic_type_dedicated_confirm_endpoint():
@@ -342,7 +342,7 @@ def test_histologic_type_dedicated_confirm_endpoint():
             "histologic_type": "ILC",
             "reviewed_by": "Dr. Attending Pathologist"
         },
-        headers={"X-User-Role": "pathologist", "X-User-Id": "Dr. Attending Pathologist"}
+        headers={"X-Test-Role": "pathologist", "X-Test-User-Id": "Dr. Attending Pathologist"}
     )
     assert res.status_code == 200
 
@@ -398,7 +398,7 @@ def test_confirm_grading_divergence_without_justification_rejected():
             "grade": 2,
             "overrides": {}
         },
-        headers={"X-User-Role": "pathologist"}
+        headers={"X-Test-Role": "pathologist"}
     )
     assert res.status_code == 400
     assert "justification" in res.json()["detail"].lower()
@@ -443,7 +443,7 @@ def test_confirm_grading_stage_successful_and_locked_against_reconfirmation():
     res_first = client.post(
         "/api/v1/stages/grading/confirm",
         json=payload,
-        headers={"X-User-Role": "pathologist"}
+        headers={"X-Test-Role": "pathologist"}
     )
     assert res_first.status_code == 200
     assert res_first.json()["status"] == "success"
@@ -452,7 +452,7 @@ def test_confirm_grading_stage_successful_and_locked_against_reconfirmation():
     res_second = client.post(
         "/api/v1/stages/grading/confirm",
         json=payload,
-        headers={"X-User-Role": "pathologist"}
+        headers={"X-Test-Role": "pathologist"}
     )
     assert res_second.status_code == 409
     assert "already confirmed" in res_second.json()["detail"].lower()
@@ -516,7 +516,7 @@ def test_confirm_without_a_type_keeps_the_confirmed_type():
     """The v6 client confirms with {case_id}; v5 then silently wrote IDC-NST over the confirmed type."""
     case_uid = _seed_grading("ILC", "Dr. Pathologist")
     res = TestClient(app).post(
-        "/api/v1/stages/grading/confirm", json=_confirm_payload(case_uid), headers={"X-User-Role": "pathologist"}
+        "/api/v1/stages/grading/confirm", json=_confirm_payload(case_uid), headers={"X-Test-Role": "pathologist"}
     )
     assert res.status_code == 200, res.text
     db = TestingSessionLocal()
@@ -528,7 +528,7 @@ def test_confirm_without_a_type_keeps_the_confirmed_type():
 def test_confirm_without_a_type_is_refused_while_the_type_is_unassessed():
     case_uid = _seed_grading(None, "unconfirmed")
     res = TestClient(app).post(
-        "/api/v1/stages/grading/confirm", json=_confirm_payload(case_uid), headers={"X-User-Role": "pathologist"}
+        "/api/v1/stages/grading/confirm", json=_confirm_payload(case_uid), headers={"X-Test-Role": "pathologist"}
     )
     assert res.status_code == 400
     assert "Histologic Type must be explicitly confirmed" in res.json()["detail"]
@@ -553,6 +553,6 @@ def test_every_estimator_type_can_be_confirmed():
         res = TestClient(app).post(
             "/api/v1/stages/grading/type/confirm",
             json={"case_id": str(case_uid), "histologic_type": histotype, "reviewed_by": "Dr. P"},
-            headers={"X-User-Role": "pathologist", "X-User-Id": "Dr. P"},
+            headers={"X-Test-Role": "pathologist", "X-Test-User-Id": "Dr. P"},
         )
         assert res.status_code == 200, (histotype, res.text)

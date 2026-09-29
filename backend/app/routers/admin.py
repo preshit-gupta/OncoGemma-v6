@@ -1,11 +1,12 @@
 """
 admin.py — Internal admin utilities for OncoGemma.
 IMPORTANT: These endpoints are for development/testing use only.
-They are guarded by a secret token defined in the ADMIN_SECRET env var.
+They require the user:manage permission and a secret token defined in the ADMIN_SECRET env var.
 """
 import os
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy import text
+from app.auth.deps import CurrentUser, require
 from app.core.db import engine
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
@@ -17,7 +18,10 @@ def _check_secret(x_admin_secret: str | None):
 
 
 @router.post("/reset-database")
-def reset_database(x_admin_secret: str | None = Header(default=None)):
+def reset_database(
+    x_admin_secret: str | None = Header(default=None),
+    user: CurrentUser = Depends(require("user:manage")),
+):
     """
     TRUNCATE all clinical data tables in dependency order.
     Retains schema (tables/columns). Does NOT drop the database.

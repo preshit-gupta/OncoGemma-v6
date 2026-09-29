@@ -237,7 +237,10 @@ def test_grading_api_full_workflow():
         "nottingham_sum": 8,
         "grade": 3
     }
-    res_confirm = client.post("/api/v1/stages/grading/confirm", json=valid_confirm_payload)
+    # The confirming pathologist is the signed-in user; a reviewed_by in the body is ignored.
+    res_confirm = client.post(
+        "/api/v1/stages/grading/confirm", json=valid_confirm_payload, headers={"X-Test-User-Id": "Dr. Smith"}
+    )
     assert res_confirm.status_code == 200
     conf_data = res_confirm.json()
     assert conf_data["status"] == "success"

@@ -2,7 +2,7 @@
 
 Update this file at the end of every session (SPEC plan §3 rule 8). Keep it under 60 lines.
 
-**Last updated:** 2026-09-29 (Claude)
+**Last updated:** 2026-09-30 (Claude)
 **Phase:** P1 — Fix
 
 ## Done
@@ -25,15 +25,20 @@ Update this file at the end of every session (SPEC plan §3 rule 8). Keep it und
   - WP-7.2 (branch `wp/7.2-detector-client`): shared `pipeline/mitosis_detect.py` (512 px tiles at 0.25 µm/px, resampling, ownership), v2 raw predict with pinned weights, raw Stage A at min_prob 0.01; MIDOG++ adapter fixed (corner boxes, 'not mitotic figure', TIFF resolution); `eval/mitosis_baseline.py`.
   - Baseline (`reports/baseline/mitosis_midogpp_094.md`): KongNet alone F1 0.862 at τ 0.75, NMS 7.5 µm (old 0.35/20 µm: 0.831). The Gemini referee cuts F1 to 0.676 (rejects 25 true figures), so it is off (`referee.enabled: false`). One image only: generalisation needs more MIDOG++ val images.
 
+- **WP-4.1 (SPEC-03 §3–4), branch `wp/4.1-sso-rbac`, PR open.** `app/auth/`: Google ID-token verification (issuer, verified email, `hd` in `AUTH_ALLOWED_DOMAINS` or an allow-listed invitee), `users`/`sessions` (`0009_auth`), HS256 session cookie checked against the DB on every request (30 s per-instance cache; logout, role change and disable revoke), double-submit CSRF, `require(perm)` from `configs/auth.yaml` on all 44 guarded routes, Cloud Tasks OIDC on the webhook, `/api/v1/auth/*` and `/api/v1/admin/users*` per `docs/contracts/auth_v1.md`. Audit actors are the verified `users.id` (client `reviewed_by` ignored). Tests `backend/tests/auth` (AC1–AC5, 266 cases; suite 1283 passed, 1 skipped, ~16 min); legacy tests sign in through a conftest override (`X-Test-Role`).
+
 ## Ready for delegates now
 
-Lanes are in `docs/tasks/README.md`. **New, blocks deploying M3:** a frontend card for the specimen type (required select on case creation, a prompt for `unknown` cases like `needs_mpp`, `PATCH .../specimen-type` then retry preprocess). Lane E: WP-7.1.
+Lanes are in `docs/tasks/README.md`. The specimen-type UI is merged (#21). Lane E: WP-7.1. **Lane B follow-up from 4.1:** drop `reviewed_by` from the request bodies in `frontend/lib/api.ts` (the API ignores it), and build the frontend with `NEXT_PUBLIC_AUTH_ENABLED=1` and `NEXT_PUBLIC_GOOGLE_CLIENT_ID`.
 
 ## Claude — next
 
-1. Owner merges 3.3 and 3.4 (3.1 and 3.2 are in), the `migrations` CI job checks `0006`–`0008` on Postgres 15, then **4.1**. Before any deploy: run `pytest backend/tests/pipeline/test_slide_io.py::test_concurrent_reads_are_byte_identical_to_single_threaded_reads` on Linux (AC7 has only run on Windows).
+1. Owner reviews and merges the 4.1 PR. Then 5.4/5.5. Before any deploy: run `pytest backend/tests/pipeline/test_slide_io.py::test_concurrent_reads_are_byte_identical_to_single_threaded_reads` on Linux (AC7 has only run on Windows).
+2. 4.1 left for WP-4.3 (§5): rate limits, soft delete and unmounting reset-database/bulk delete outside `ENV=test`, Idempotency-Key, audit trigger. IAP is optional.
 
 ## Open items (program owner)
+
+- **Deploying 4.1 (owner; frontend and backend together, or every page gets 401):** create the OAuth web client (JavaScript origin = frontend URL); create secret `og-session-signing-key` (e.g. `openssl rand -base64 48`, no trailing newline) and grant the API's service account access; deploy with substitutions `_GOOGLE_OAUTH_CLIENT_ID`, `_AUTH_ALLOWED_DOMAINS`, `_BOOTSTRAP_ADMIN_EMAIL` (`cloudbuild.yaml`); build the frontend with `NEXT_PUBLIC_AUTH_ENABLED=1` and the client ID; the bootstrap admin signs in first and invites everyone else at `/admin/users`. With `USE_CLOUD_TASKS` on, `CLOUD_TASKS_SERVICE_ACCOUNT` must be set.
 
 - **TODO after the M3 deployment is finished (owner): check the pen-mark rule on real slides.** A pen mark is a pen-coloured connected component of at least 1 mm² (`qc.yaml` `pen_marks.min_component_area_mm2`), not a pen-coloured pixel (SPEC-04 §3.6 says pixels): hematoxylin falls in the blue pen range (h 90–130) and removing it by colour deleted tissue in the synthetic test. Look for bluish tumour dropped from the mask, and for ink left in it (AC5 BCNB diagnostic).
 - **M3 must not be deployed before the frontend can state a specimen type** (preprocess refuses `unknown`, and today's UI sends none). Existing cases need a specimen type and a preprocess re-run (mask json + stain profile). Slides that need MPP have no case thumbnail (409); the owner accepted that on 2026-09-30.

@@ -10,7 +10,7 @@ from app.main import app
 from app.models.audit import AuditEvent
 from app.models.case import Case
 
-PATHOLOGIST = {"X-User-Role": "pathologist"}
+PATHOLOGIST = {"X-Test-Role": "pathologist"}
 
 
 @pytest.fixture
@@ -61,7 +61,7 @@ def test_the_specimen_type_can_be_set_afterwards_and_is_audited(client):
 def test_the_specimen_type_route_checks_role_case_and_value(client):
     case_id = client.post("/api/v1/cases", headers=PATHOLOGIST).json()["id"]
     url = f"/api/v1/cases/{case_id}/specimen-type"
-    assert client.patch(url, headers={"X-User-Role": "viewer"}, json={"specimen_type": "resection"}).status_code == 403
+    assert client.patch(url, headers={"X-Test-Role": "viewer"}, json={"specimen_type": "resection"}).status_code == 403
     assert client.patch(f"/api/v1/cases/{uuid.uuid4()}/specimen-type", headers=PATHOLOGIST, json={"specimen_type": "resection"}).status_code == 404
     assert client.patch(url, headers=PATHOLOGIST, json={"specimen_type": "unknown"}).status_code == 422
     assert client.patch(url, headers=PATHOLOGIST, json={}).status_code == 422

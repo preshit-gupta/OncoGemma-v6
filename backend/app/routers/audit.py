@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, func
 
 from app.core.db import get_db
-from app.core.auth import get_current_user, CurrentUser
+from app.auth.deps import CurrentUser, require
 from app.models.audit import AuditEvent
 from app.models.case import Case
 from app.schemas.audit import PaginatedAuditEvents, AuditEventResponse
@@ -17,7 +17,7 @@ def get_case_audit_events(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
-    user: CurrentUser = Depends(get_current_user)
+    user: CurrentUser = Depends(require("case:read"))
 ):
     try:
         case_uid = uuid.UUID(str(case_id))
