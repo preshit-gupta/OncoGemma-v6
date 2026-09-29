@@ -310,86 +310,6 @@
     "line_hash": "c98174a5cfe0f70c4fc5cc69b670a6180fc299d8"
   },
   {
-    "path": "backend/pipeline/qc_checks.py",
-    "rule": "L1",
-    "line_hash": "9508cb86956e10a8f50fc3a3e30d6e320b4dd5fe"
-  },
-  {
-    "path": "backend/pipeline/qc_checks.py",
-    "rule": "L1",
-    "line_hash": "9508cb86956e10a8f50fc3a3e30d6e320b4dd5fe"
-  },
-  {
-    "path": "backend/pipeline/qc_checks.py",
-    "rule": "L1",
-    "line_hash": "9508cb86956e10a8f50fc3a3e30d6e320b4dd5fe"
-  },
-  {
-    "path": "backend/pipeline/qc_checks.py",
-    "rule": "L1",
-    "line_hash": "baf088170612b56a894503bb5efcd829859ef8bb"
-  },
-  {
-    "path": "backend/pipeline/qc_checks.py",
-    "rule": "L1",
-    "line_hash": "baf088170612b56a894503bb5efcd829859ef8bb"
-  },
-  {
-    "path": "backend/pipeline/qc_checks.py",
-    "rule": "L1",
-    "line_hash": "baf088170612b56a894503bb5efcd829859ef8bb"
-  },
-  {
-    "path": "backend/pipeline/qc_checks.py",
-    "rule": "L2",
-    "line_hash": "db793f41175978a6a9721e258de471578de39efb"
-  },
-  {
-    "path": "backend/pipeline/qc_checks.py",
-    "rule": "L3",
-    "line_hash": "3b9f0ca70dc1ac082ed5905b7043e0aab1c741f9"
-  },
-  {
-    "path": "backend/pipeline/qc_checks.py",
-    "rule": "L3",
-    "line_hash": "3b9f0ca70dc1ac082ed5905b7043e0aab1c741f9"
-  },
-  {
-    "path": "backend/pipeline/qc_checks.py",
-    "rule": "L3",
-    "line_hash": "3b9f0ca70dc1ac082ed5905b7043e0aab1c741f9"
-  },
-  {
-    "path": "backend/pipeline/qc_checks.py",
-    "rule": "L3",
-    "line_hash": "3b9f0ca70dc1ac082ed5905b7043e0aab1c741f9"
-  },
-  {
-    "path": "backend/pipeline/qc_checks.py",
-    "rule": "L3",
-    "line_hash": "c875f743490b27f1c9d67b4f4c20c451654c0fb8"
-  },
-  {
-    "path": "backend/pipeline/qc_checks.py",
-    "rule": "L3",
-    "line_hash": "c875f743490b27f1c9d67b4f4c20c451654c0fb8"
-  },
-  {
-    "path": "backend/pipeline/qc_checks.py",
-    "rule": "L3",
-    "line_hash": "c875f743490b27f1c9d67b4f4c20c451654c0fb8"
-  },
-  {
-    "path": "backend/pipeline/qc_checks.py",
-    "rule": "L3",
-    "line_hash": "c875f743490b27f1c9d67b4f4c20c451654c0fb8"
-  },
-  {
-    "path": "backend/pipeline/qc_checks.py",
-    "rule": "L4",
-    "line_hash": "fc58761968fe3ed9b630e2ce84bb8b55280f278e"
-  },
-  {
     "path": "backend/pipeline/stain.py",
     "rule": "L1",
     "line_hash": "9508cb86956e10a8f50fc3a3e30d6e320b4dd5fe"
@@ -562,37 +482,7 @@
   {
     "path": "backend/worker/preprocess.py",
     "rule": "L1",
-    "line_hash": "2714ab2d41333dcc563973f5524d76bb86952c25"
-  },
-  {
-    "path": "backend/worker/preprocess.py",
-    "rule": "L1",
-    "line_hash": "572219b146742e49ed9ad2aaa50cf1a91b330095"
-  },
-  {
-    "path": "backend/worker/preprocess.py",
-    "rule": "L1",
-    "line_hash": "9508cb86956e10a8f50fc3a3e30d6e320b4dd5fe"
-  },
-  {
-    "path": "backend/worker/preprocess.py",
-    "rule": "L1",
-    "line_hash": "baf088170612b56a894503bb5efcd829859ef8bb"
-  },
-  {
-    "path": "backend/worker/preprocess.py",
-    "rule": "L1",
-    "line_hash": "c2ff1807579847fbfebdc8fb62a5d8a9ebdb332f"
-  },
-  {
-    "path": "backend/worker/preprocess.py",
-    "rule": "L1",
     "line_hash": "e8a955ec9a8c1f7aaf58604c2f7da65992c84ed5"
-  },
-  {
-    "path": "backend/worker/qc.py",
-    "rule": "L1",
-    "line_hash": "572219b146742e49ed9ad2aaa50cf1a91b330095"
   },
   {
     "path": "backend/worker/qc.py",

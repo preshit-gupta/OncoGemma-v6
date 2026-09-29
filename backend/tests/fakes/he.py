@@ -44,3 +44,18 @@ def he_picture(w: np.ndarray = W_HE, block_px: int = 8, tissue_fraction: float =
         return rgb
 
     return picture
+
+
+def he_slide_rgb(width_px: int, height_px: int, block_px: int = 8, margin: float = 0.06, seed: int = 0) -> np.ndarray:
+    """A whole H&E section on glass: blocks of random concentrations inside a margin of empty glass."""
+    rng = np.random.default_rng(seed)
+    rows, cols = -(-height_px // block_px), -(-width_px // block_px)
+    conc = np.stack([0.05 + 1.15 * rng.random((rows, cols)), 0.05 + 0.85 * rng.random((rows, cols))], axis=-1)
+    blocks = rgb_from_concentrations(conc)
+    rgb = np.repeat(np.repeat(blocks, block_px, axis=0), block_px, axis=1)[:height_px, :width_px].copy()
+    m_x, m_y = int(width_px * margin), int(height_px * margin)
+    rgb[:m_y] = GLASS
+    rgb[-m_y:] = GLASS
+    rgb[:, :m_x] = GLASS
+    rgb[:, -m_x:] = GLASS
+    return rgb

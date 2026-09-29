@@ -27,3 +27,15 @@ class DegenerateStainProfileError(StainError):
 
 class StainProfileMissingError(StainError):
     """The slide has no stain profile; Stage 2 (preprocess) must run for it."""
+
+
+class TissueMaskError(RuntimeError):
+    """A tissue mask is malformed, or its artifacts are inconsistent."""
+
+
+class TissueMaskMissingError(TissueMaskError):
+    """The case has no registered tissue mask; Stage 2 (preprocess) must run for it."""
+
+
+class SpecimenTypeRequired(ValueError):
+    """The case's specimen type is unknown, so its profile cannot be chosen (SPEC-04 §3.2)."""

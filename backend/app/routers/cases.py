@@ -33,7 +33,9 @@ from app.models.grading import Grading
 from app.models.audit import AuditEvent
 from app.core.rehydrate import rehydrate_case_from_gcs
 from app.schemas.case import (
+    CaseCreate,
     CaseResponse,
+    SpecimenTypeUpdateRequest,
     SlideUploadUrlRequest,
     SlideUploadUrlResponse,
     SlideFinalizeRequest,
@@ -46,12 +48,14 @@ router = APIRouter(prefix="/api/v1/cases", tags=["cases"])
 
 @router.post("", response_model=CaseResponse, status_code=status.HTTP_201_CREATED)
 def create_case(
+    payload: CaseCreate | None = None,
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(get_current_user)
 ):
     if user.role not in ("admin", "pathologist"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Pathologist or Admin role required to create cases.")
-    case_obj = Case(created_by=user.id)
+    specimen_type = payload.specimen_type if payload and payload.specimen_type else "unknown"
+    case_obj = Case(created_by=user.id, specimen_type=specimen_type)
     db.add(case_obj)
     db.commit()
     db.refresh(case_obj)
@@ -60,7 +64,7 @@ def create_case(
         case_id=str(case_obj.id),
         actor=user.id,
         event_type="case_created",
-        payload={"created_by": user.id}
+        payload={"created_by": user.id, "specimen_type": specimen_type}
     )
     db.add(audit)
     db.commit()
@@ -789,12 +793,43 @@ def get_case_detail(
         id=case_obj.id,
         created_by=case_obj.created_by,
         status=case_obj.status,
+        specimen_type=case_obj.specimen_type,
         created_at=case_obj.created_at,
         slides=slides_data,
         stages=stages_data,
         tile_url_template=tile_template,
         cdn_base_url=settings.CDN_BASE_URL
     )
+
+
+@router.patch("/{case_id}/specimen-type", status_code=status.HTTP_200_OK)
+def update_case_specimen_type(
+    case_id: uuid.UUID,
+    req: SpecimenTypeUpdateRequest,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user)
+):
+    """
+    State whether the case's specimen is a resection or a core biopsy (SPEC-04 §3.2).
+    Preprocess refuses an 'unknown' specimen; retry it (stages/preprocess/retry) after setting this.
+    """
+    if user.role not in ("admin", "pathologist"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Pathologist or Admin role required.")
+
+    case_obj = db.get(Case, case_id)
+    if not case_obj:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+
+    previous = case_obj.specimen_type
+    case_obj.specimen_type = req.specimen_type
+    db.add(AuditEvent(
+        case_id=str(case_id),
+        actor=user.id,
+        event_type="specimen_type_set",
+        payload={"from": previous, "to": req.specimen_type}
+    ))
+    db.commit()
+    return {"case_id": str(case_id), "specimen_type": case_obj.specimen_type}
 
 
 @router.patch("/{case_id}/slides/{slide_id}/mpp", status_code=status.HTTP_200_OK)

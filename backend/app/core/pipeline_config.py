@@ -24,6 +24,7 @@ from app.core.config_types import (
     NonEmptyStr,
     NonNegativeFloat,
     NonNegativeInt,
+    OverviewMpp,
     Percent,
     PositiveFloat,
     PositiveInt,
@@ -33,6 +34,7 @@ from app.core.config_types import (
 )
 from app.core.fallbacks import FallbackPolicy
 from app.core.model_registry import ModelRegistry
+from pipeline.errors import SpecimenTypeRequired
 
 # Settings fields that configs/models.yaml may reference as ${NAME}. Anything
 # else is refused, so a secret can never be interpolated into the hashed config.
@@ -78,26 +80,31 @@ def _require(condition: bool, message: str) -> None:
 
 # --- qc.yaml ----------------------------------------------------------------
 
-class TissueCoverageQC(StrictModel):
-    fail_threshold: Fraction
-    warn_threshold: Fraction
+class OverviewQC(StrictModel):
+    """The pen-mark and fold checks look at the whole slide at this resolution."""
 
-    @model_validator(mode="after")
-    def _ordered(self) -> "TissueCoverageQC":
-        _require(self.fail_threshold <= self.warn_threshold, "fail_threshold must not exceed warn_threshold")
-        return self
+    mpp: OverviewMpp
 
 
 class FocusQC(StrictModel):
-    vol_threshold: PositiveFloat
+    """Which tiles the focus check reads; its thresholds are per specimen type (specimen_profiles.yaml)."""
+
+    mpp: Mpp
     tile_size_px: PositiveInt
     sample_max_tiles: PositiveInt
-    fail_blurry_ratio: Fraction
-    warn_blurry_ratio: Fraction
+    # A tile is sampled only when at least this fraction of its area is tissue.
+    min_tissue_fraction: Fraction
+
+
+class ResolutionQC(StrictModel):
+    """Native resolution of the slide, in µm/px (SPEC-04 §3.7)."""
+
+    warn_native_mpp: PositiveFloat
+    fail_native_mpp: PositiveFloat
 
     @model_validator(mode="after")
-    def _ordered(self) -> "FocusQC":
-        _require(self.warn_blurry_ratio <= self.fail_blurry_ratio, "warn_blurry_ratio must not exceed fail_blurry_ratio")
+    def _ordered(self) -> "ResolutionQC":
+        _require(self.warn_native_mpp < self.fail_native_mpp, "warn_native_mpp must be below fail_native_mpp")
         return self
 
 
@@ -147,8 +154,9 @@ class StainSanityQC(StrictModel):
 
 
 class QcConfig(StrictModel):
-    tissue_coverage: TissueCoverageQC
+    overview: OverviewQC
     focus: FocusQC
+    resolution: ResolutionQC
     pen_marks: PenMarksQC
     folds: FoldsQC
     stain_sanity: StainSanityQC
@@ -357,6 +365,8 @@ class StainFitConfig(StrictModel):
     """How Stage 2 fits a slide's stain profile (SPEC-04 §3.2, §3.4)."""
 
     n_patches: PositiveInt
+    # Tissue positions offered to the fitter; it stops at n_patches valid ones.
+    n_candidates: PositiveInt
     patch_um: PositiveFloat
     fit_mpp: Mpp
     # A patch whose mean HSV saturation is below this is glass or fat, not stained tissue.
@@ -378,6 +388,7 @@ class StainFitConfig(StrictModel):
     @model_validator(mode="after")
     def _ordered(self) -> "StainFitConfig":
         _require(self.sparse_below <= self.n_patches, "sparse_below must not exceed n_patches")
+        _require(self.n_patches <= self.n_candidates, "n_patches must not exceed n_candidates")
         return self
 
 
@@ -387,9 +398,57 @@ class StainTargetConfig(StrictModel):
     ref: StainRefId
 
 
+class TissueMaskConfig(StrictModel):
+    """How Stage 2 computes the registered tissue mask (SPEC-04 §3.6)."""
+
+    mpp: OverviewMpp
+    # The Otsu threshold on the grey image is clipped to this range (0-255).
+    otsu_clip: list[Channel8]
+    # A pixel with HSV saturation (0-255) above this is tissue however light it is.
+    sat_min: Channel8
+    open_radius_um: NonNegativeFloat
+    min_component_um2: PositiveFloat
+    fill_holes_max_um2: NonNegativeFloat
+
+    @model_validator(mode="after")
+    def _ordered(self) -> "TissueMaskConfig":
+        _require(len(self.otsu_clip) == 2 and self.otsu_clip[0] <= self.otsu_clip[1], "otsu_clip must be [low, high] with low <= high")
+        return self
+
+
+class SpecimenQcConfig(StrictModel):
+    """QC thresholds that depend on the specimen type (SPEC-04 §3.2, §3.7)."""
+
+    # Absolute tissue area: what matters for grading is how much tissue there is, not how full the glass is.
+    tissue_area_fail_mm2: PositiveFloat
+    tissue_area_warn_mm2: PositiveFloat
+    # A tile whose variance of the Laplacian is below this is blurry.
+    focus_vol_threshold: PositiveFloat
+    focus_fail_ratio: Fraction
+    focus_warn_ratio: Fraction
+
+    @model_validator(mode="after")
+    def _ordered(self) -> "SpecimenQcConfig":
+        _require(self.tissue_area_fail_mm2 <= self.tissue_area_warn_mm2, "tissue_area_fail_mm2 must not exceed tissue_area_warn_mm2")
+        _require(self.focus_warn_ratio <= self.focus_fail_ratio, "focus_warn_ratio must not exceed focus_fail_ratio")
+        return self
+
+
+class NormPyramidConfig(StrictModel):
+    """The stain-normalised DeepZoom pyramid the viewer shows (SPEC-04 §3.4): coarse levels only."""
+
+    # The pyramid extends down to this resolution; finer levels are served from the raw pyramid.
+    max_mpp: Mpp
+    # Levels are generated from the coarsest until this many tiles are reached.
+    max_tiles: PositiveInt
+
+
 class SpecimenProfile(StrictModel):
+    tissue_mask: TissueMaskConfig
     stain_fit: StainFitConfig
     stain_target: StainTargetConfig
+    norm_pyramid: NormPyramidConfig
+    qc: SpecimenQcConfig
 
 
 class SpecimenProfilesConfig(StrictModel):
@@ -401,6 +460,15 @@ class SpecimenProfilesConfig(StrictModel):
         missing = {"resection", "core_biopsy"} - set(self.profiles)
         _require(not missing, f"specimen_profiles.yaml has no profile for {sorted(missing)}")
         return self
+
+    def for_type(self, specimen_type: str) -> SpecimenProfile:
+        """The profile of a case's specimen type. An 'unknown' specimen has none: SpecimenTypeRequired."""
+        profile = self.profiles.get(specimen_type)
+        if profile is None:
+            raise SpecimenTypeRequired(
+                f"the case's specimen type is {specimen_type!r}; set it to resection or core_biopsy before preprocessing"
+            )
+        return profile
 
 
 # --- stain_refs/*.json --------------------------------------------------------

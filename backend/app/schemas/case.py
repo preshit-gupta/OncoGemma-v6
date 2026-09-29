@@ -1,9 +1,18 @@
 from datetime import datetime, timezone
+from typing import Literal
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 
+# A case's specimen type when someone states it. 'unknown' is only what a case is before that.
+SpecimenTypeValue = Literal["resection", "core_biopsy"]
+
 class CaseCreate(BaseModel):
-    pass
+    # Optional until the case-creation form has a required select (SPEC-04 §3.2); an unstated
+    # specimen type is 'unknown' and preprocess refuses it.
+    specimen_type: SpecimenTypeValue | None = None
+
+class SpecimenTypeUpdateRequest(BaseModel):
+    specimen_type: SpecimenTypeValue
 
 class CaseResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -11,6 +20,7 @@ class CaseResponse(BaseModel):
     id: UUID
     created_by: str
     status: str
+    specimen_type: str
     created_at: datetime
 
     @field_serializer("created_at")
@@ -49,6 +59,7 @@ class CaseDetailResponse(BaseModel):
     id: UUID
     created_by: str
     status: str
+    specimen_type: str
     created_at: datetime
     slides: list[dict] = []
     stages: list[dict] = []

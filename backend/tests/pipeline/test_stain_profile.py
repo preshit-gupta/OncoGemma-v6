@@ -31,6 +31,7 @@ from tests.fakes.slide import FakeOpenSlide
 
 FIT = StainFitConfig(
     n_patches=6,
+    n_candidates=12,
     patch_um=64.0,
     fit_mpp=1.0,
     min_sat_mean=0.05,

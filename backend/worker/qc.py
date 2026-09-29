@@ -2,7 +2,6 @@ import os
 import json
 import shutil
 import tempfile
-from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -13,22 +12,25 @@ from app.core.gcs import (
     download_blob_to_filename,
     resolve_slide_raw_uri
 )
+from app.core.stain_profiles import latest_stain_profile
+from app.core.tissue_mask_store import load_tissue_mask
 from app.models.case import Case
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
 from app.models.audit import AuditEvent
-from pipeline.stain import fit_macenko_stain
 from pipeline.qc_checks import run_all_qc_checks
+from pipeline.slide_io import SlideReader, require_mpp, seed_from_checksum
 from worker.runtime import StageRuntime
 
 def run_qc(stage_execution: StageExecution, session: Session, runtime: StageRuntime) -> tuple[str, dict]:
     """
     QC worker handler:
-    1. Downloads slide directly from GCS.
-    2. Runs the QC check suite with the injected ``configs/qc.yaml`` thresholds.
-    3. Evaluates overall verdict ('pass', 'warn', 'fail').
-    4. Uploads qc/output.json directly to GCS.
-    5. Updates stage status.
+    1. Loads the case's registered tissue mask and the slide's stain profile from preprocess (nothing is re-fitted).
+    2. Downloads slide directly from GCS.
+    3. Runs the QC check suite with the injected ``configs/qc.yaml`` and specimen-profile thresholds.
+    4. Evaluates overall verdict ('pass', 'warn', 'fail').
+    5. Uploads qc/output.json directly to GCS.
+    6. Updates stage status.
     """
     input_ref = stage_execution.input_ref or {}
     slide_id = input_ref.get("slide_id")
@@ -47,19 +49,23 @@ def run_qc(stage_execution: StageExecution, session: Session, runtime: StageRunt
         raise ValueError(f"Slide object {slide_id} not found in database")
 
     # Halt QC stage if MPP is missing per PRD 01-stage-v4.0 §2.3 step 4
-    if not getattr(slide_obj, "mpp_x", None) or slide_obj.mpp_x <= 0 or not getattr(slide_obj, "mpp_y", None) or slide_obj.mpp_y <= 0:
-        raise ValueError(f"Slide {slide_obj.id} is missing valid MPP (status='needs_mpp'). Cannot execute QC stage.")
+    require_mpp(slide_obj)
 
-    mpp_x = float(slide_obj.mpp_x)
-    mpp_y = float(slide_obj.mpp_y)
-    checksum = getattr(slide_obj, "checksum_sha256", "default_checksum") or "default_checksum"
+    case_obj = session.get(Case, case_id)
+    if not case_obj:
+        raise ValueError(f"Case {case_id} not found in database")
+    specimen_qc = runtime.config.specimen_profiles.for_type(case_obj.specimen_type).qc
+    seed = seed_from_checksum(slide_obj.checksum_sha256)
+    mask = load_tissue_mask(case_id)
+    stain_profile = latest_stain_profile(session, slide_obj.id)
 
     scratch_dir = tempfile.mkdtemp(prefix="og_qc_")
+    reader = None
 
     try:
         gcs_uri_original = resolve_slide_raw_uri(case_id, slide_obj) or slide_obj.gcs_uri_original or f"gs://{settings.GCS_RAW_BUCKET}/cases/{case_id}/{slide_id}.svs"
         raw_bucket_name, blob_name = parse_gcs_uri(gcs_uri_original)
-        
+
         ext = os.path.splitext(blob_name)[1] or ".svs"
         local_slide_path = os.path.join(scratch_dir, f"slide{ext}")
 
@@ -69,34 +75,19 @@ def run_qc(stage_execution: StageExecution, session: Session, runtime: StageRunt
         if not os.path.exists(local_slide_path):
             raise FileNotFoundError(f"Raw slide file not found in GCS for QC stage in case {case_id}")
 
-        try:
-            import openslide
-            slide = openslide.OpenSlide(local_slide_path)
-        except Exception:
-            slide = Image.open(local_slide_path)
+        reader = SlideReader.from_slide_row(local_slide_path, slide_obj)
 
-        # Obtain stain matrix & tissue mask
-        normalizer, stain_params, tissue_mask_1bit = fit_macenko_stain(
-            slide,
-            checksum_sha256=checksum,
-            ref_image_path="configs/stain_reference.png",
-            mpp_x=mpp_x,
-            mpp_y=mpp_y
-        )
-
-        # Execute 5-check QC check suite (PRD 02 §3.1)
+        # Execute the QC check suite (PRD 02 §3.1, SPEC-04 §3.7)
         qc_result = run_all_qc_checks(
-            slide,
-            tissue_mask_1bit=tissue_mask_1bit,
-            mpp_x=mpp_x,
-            mpp_y=mpp_y,
-            stain_params=stain_params,
+            reader,
+            mask,
+            stain_profile,
             config=runtime.config.qc,
+            specimen_qc=specimen_qc,
+            seed=seed,
             config_hash=runtime.ctx.config_hash
         )
-
-        if hasattr(slide, "close"):
-            slide.close()
+        qc_result["specimen_type"] = case_obj.specimen_type
 
         verdict = qc_result["verdict"]
 
@@ -110,8 +101,6 @@ def run_qc(stage_execution: StageExecution, session: Session, runtime: StageRunt
         )
 
         # Update stage status & case status based on QC verdict
-        case_obj = session.get(Case, case_id)
-
         if verdict == "pass":
             stage_execution.status = "done"
 
@@ -150,8 +139,7 @@ def run_qc(stage_execution: StageExecution, session: Session, runtime: StageRunt
         elif verdict == "fail":
             stage_execution.status = "failed"
             stage_execution.error = f"QC Hard Failure: {[c['message'] for c in qc_result['checks'] if c['status'] == 'fail']}"
-            if case_obj:
-                case_obj.status = "needs_rescan"
+            case_obj.status = "needs_rescan"
 
         # Emit audit event
         audit = AuditEvent(
@@ -171,5 +159,6 @@ def run_qc(stage_execution: StageExecution, session: Session, runtime: StageRunt
         return output_ref, {"opencv": "4.13.0"}
 
     finally:
+        if reader is not None:
+            reader.close()
         shutil.rmtree(scratch_dir, ignore_errors=True)
-

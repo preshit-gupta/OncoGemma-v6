@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 from pipeline.stain import PureNumpyMacenkoNormalizer, fit_macenko_stain
 from app.core.pipeline_config import get_config_hash, get_pipeline_config
-from pipeline.qc_checks import run_all_qc_checks
+
 from app.models.case import Case
 from app.models.slide import Slide
 from app.models.grading import Grading
@@ -72,29 +72,6 @@ def test_fit_macenko_stain_degenerate_mask_flagging():
     assert "fit_status" in stain_params
     # Pure white slide should have degenerate or sparse tissue
     assert stain_params["fit_status"] in ["degenerate", "sparse"]
-
-
-def test_qc_all_5_checks_pass_on_clean_benchmark():
-    """Verify complete 5-check suite evaluates all checks cleanly."""
-    arr = np.random.randint(160, 240, (512, 512, 3), dtype=np.uint8)
-    slide = Image.fromarray(arr)
-    mask = np.ones((512, 512), dtype=bool)
-    stain_params = {
-        "max_concentrations": [1.95, 1.10],
-        "fit_status": "fitted"
-    }
-
-    res = run_all_qc_checks(
-        slide, mask, stain_params=stain_params, config=get_pipeline_config().qc, config_hash=get_config_hash()
-    )
-    assert len(res["checks"]) == 5
-    assert res["verdict"] in ["pass", "warn"]
-    names = [c["name"] for c in res["checks"]]
-    assert "tissue_coverage" in names
-    assert "focus" in names
-    assert "pen_marks" in names
-    assert "folds" in names
-    assert "stain_sanity" in names
 
 
 def test_grading_rerun_resets_stale_overrides_and_unconfirms_type():
