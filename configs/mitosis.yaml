@@ -1,25 +1,22 @@
 # OncoGemma Stage v4.3 - Mitosis Detection, Virtual HPFs & Scoring Configuration
 
 detector:
-  model_name: "yolov8_mitosis_midog22"
-  weights_path: "models/detector/yolov8_midog.pt"
+  producer: kongnet_det_midog_1 # configs/models.yaml; each tile is split into its 512 px inputs
   tile_size_px: 1024
   mpp: 0.25 # 40x magnification (~0.25 um/pixel)
   tile_size_um: 256.0 # 1024 * 0.25
   stride_px: 960 # 64 px overlap across tiles
   overlap_px: 64
-  det_threshold: 0.35 # High-recall candidate sweep threshold (recall ~0.88-0.90 on MIDOG++)
-  review_threshold: 0.40 # Gating threshold for pathologist confirmation (0.40 - 0.65 is unreviewed)
+  det_threshold: 0.35 # Candidate sweep threshold, sent to the detector as min_prob
   nms_radius_um: 20.0 # Cross-tile greedy NMS suppression radius (MIDOG standard: 15-20 um cell diameter)
-  batch_size: 16
-  fp16: true
 
-verifier:
-  enabled: true
-  model_name: "hovernet_mitosis_v1"
-  weights_path: "models/verifier/hovernet_mitosis.pt"
-  crop_size_px: 128
-  ver_threshold: 0.70 # Confirmed mitosis verification threshold (>=0.70 is definite mitosis)
+# Every candidate is adjudicated by this VLM (SPEC-06 arm A2: v5 prompt, strict MitosisVerdict).
+referee:
+  producer: gemini_referee
+  prompt: mitosis_confirmation@v1.md
+  focus_px: 128 # focus crop at the slide's own resolution
+  context_um: 512.0 # context field ...
+  context_px: 512 # ... resampled to ~1.0 um/px
 
 hpf:
   radius_um: 262.0 # 250-270 um field radius (area ≈ 0.2157 mm²)
@@ -27,6 +24,7 @@ hpf:
   density_grid_res_um: 16.0 # Spatial density sampling resolution
   min_separation_um: 524.0 # 2 * radius_um (strict non-overlap)
   relaxed_min_separation_um: 393.0 # 1.5 * radius_um (overlap relaxation for constrained tumor margins)
+  min_tissue_coverage: 0.70 # minimum tissue fraction inside an HPF (v5 code default)
 
 scoring:
   basis: "per_mm2"
@@ -35,6 +33,3 @@ scoring:
     score3_min: 7.30 # mitoses/mm² (classic >=20 / 2.74 mm²)
   display_classic_equivalent: true
   classic_area_mm2: 2.74
-
-mock:
-  use_mock_detector: false

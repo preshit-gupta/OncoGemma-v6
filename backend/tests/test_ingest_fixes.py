@@ -27,6 +27,7 @@ from worker.ingest import (
 from worker.preprocess import run_preprocess
 from worker.qc import run_qc
 from worker.triage import run_triage
+from tests.fakes.runtime import make_runtime
 from worker.mitosis import run_mitosis
 from worker.grading import run_grading
 
@@ -196,17 +197,17 @@ def test_issue_38_missing_mpp_sets_needs_mpp_and_halts_pipeline(db_session, tmp_
 
     triage_exec = StageExecution(case_id=case_id, stage="triage", attempt=1, status="running", input_ref={"slide_id": str(slide_id)})
     with pytest.raises(ValueError) as exc_tri:
-        run_triage(triage_exec, db_session)
+        run_triage(triage_exec, db_session, make_runtime(triage_exec))
     assert "missing valid MPP" in str(exc_tri.value)
 
     mitosis_exec = StageExecution(case_id=case_id, stage="mitosis", attempt=1, status="running", input_ref={"slide_id": str(slide_id)})
     with pytest.raises(ValueError) as exc_mit:
-        run_mitosis(mitosis_exec, db_session)
+        run_mitosis(mitosis_exec, db_session, make_runtime(mitosis_exec))
     assert "missing valid MPP" in str(exc_mit.value)
 
     grading_exec = StageExecution(case_id=case_id, stage="grading", attempt=1, status="running", input_ref={"slide_id": str(slide_id)})
     with pytest.raises(ValueError) as exc_grad:
-        run_grading(grading_exec, db_session)
+        run_grading(grading_exec, db_session, make_runtime(grading_exec))
     assert "missing valid MPP" in str(exc_grad.value)
 
 
@@ -359,15 +360,15 @@ def test_negative_and_zero_mpp_rejected_by_all_workers(db_session):
 
     exec_triage = StageExecution(case_id=case_id, stage="triage", attempt=1, status="running", input_ref={"slide_id": str(slide_id)})
     with pytest.raises(ValueError, match="missing valid MPP"):
-        run_triage(exec_triage, db_session)
+        run_triage(exec_triage, db_session, make_runtime(exec_triage))
 
     exec_mitosis = StageExecution(case_id=case_id, stage="mitosis", attempt=1, status="running", input_ref={"slide_id": str(slide_id)})
     with pytest.raises(ValueError, match="missing valid MPP"):
-        run_mitosis(exec_mitosis, db_session)
+        run_mitosis(exec_mitosis, db_session, make_runtime(exec_mitosis))
 
     exec_grading = StageExecution(case_id=case_id, stage="grading", attempt=1, status="running", input_ref={"slide_id": str(slide_id)})
     with pytest.raises(ValueError, match="missing valid MPP"):
-        run_grading(exec_grading, db_session)
+        run_grading(exec_grading, db_session, make_runtime(exec_grading))
 
 
 def test_mitosis_router_endpoints_reject_missing_mpp(db_session):

@@ -1,283 +1,73 @@
 """
-OncoGemma Stage v4.3 - HoVer-Net Mitosis Verifier & Nuclear Morphometry Engine.
-Performs second-pass instance segmentation and classification on 128x128 candidate crops.
-Filters out apoptotic bodies, lymphocytes, and pyknotic debris from true mitotic figures.
+Stage 4 referee inputs: the two images the VLM sees for each mitosis candidate.
+
+The v5 morphometric "HoVer-Net" verifier moved to pipeline/heuristics/morph_verifier.py and
+is no longer part of the stage (SPEC-06 §9). SPEC-06 §5.4 (WP-7.5) replaces this geometry.
 """
-import os
-from typing import Protocol, Tuple, List, Optional
-import numpy as np
+import io
+
+import openslide
+from PIL import Image
+
+from app.core.openslide_lock import OPENSLIDE_GLOBAL_LOCK
+from app.inference.gateway import ImageInput, InputSpec
+from pipeline.errors import SlideReadError
+
+# JPEG quality of the context image, as v5 sent it.
+CONTEXT_JPEG_QUALITY = 85
 
 
-class MitosisVerifier(Protocol):
-    def verify(self, crop_rgb: np.ndarray) -> Tuple[float, Optional[List[List[int]]]]:
-        """
-        Evaluates a 128x128 crop centered at candidate centroid.
-        Returns:
-            p_mitosis: Probability (0.0 to 1.0) that crop contains a genuine mitotic figure.
-            contour: Approximate boundary coordinates [[x1, y1], [x2, y2], ...] of the central nucleus.
-        """
-        ...
+def _read(slide_obj, location, level, size) -> Image.Image:
+    try:
+        with OPENSLIDE_GLOBAL_LOCK:
+            return slide_obj.read_region(location, level, size).convert("RGB")
+    except openslide.OpenSlideError as exc:
+        raise SlideReadError(f"could not read {size} px at {location} (level {level}): {exc}") from exc
 
 
-class HoVerNetMitosisVerifier:
-    """
-    HoVer-Net Architecture & Morphological Nuclear Instance Verifier.
-    Differentiates true mitotic figures (metaphase plates, anaphase spindles, telophase clusters)
-    from resting tumor nuclei, lymphocytes, apoptotic fragments, and debris.
-    """
-    def __init__(self, weights_path: Optional[str] = None, threshold: float = 0.50, device: str = "cpu"):
-        self.weights_path = weights_path
-        self.threshold = threshold
-        self.device = device
-        self.model = None
-        self.model_version = "od_heuristic@dev"
-
-        if weights_path and os.path.exists(weights_path):
-            try:
-                import torch
-                self.model = torch.load(weights_path, map_location=device)
-                self.model_version = "hovernet_fast_mitosis@v1.2"
-                print(f"[HoVerNetVerifier] Loaded weights from {weights_path}")
-            except Exception as e:
-                print(f"[HoVerNetVerifier Warning] Failed to load {weights_path}: {e}. Using morphological verification engine.")
-                self.model = None
-                self.model_version = "od_heuristic@dev"
-
-    def verify(self, crop_rgb: np.ndarray) -> Tuple[float, Optional[List[List[int]]]]:
-        """
-        Evaluates a 128x128 crop at 0.25 um/px.
-        """
-        h, w, _ = crop_rgb.shape
-        if h < 32 or w < 32:
-            return 0.0, None
-
-        if self.model is not None:
-            try:
-                import torch
-                img_t = torch.from_numpy(crop_rgb).permute(2, 0, 1).float() / 255.0
-                img_t = img_t.unsqueeze(0).to(self.device)
-                with torch.no_grad():
-                    output = self.model(img_t)
-                # Output may be dict ({'p_mitosis': ...}), tensor, or scalar
-                if isinstance(output, dict):
-                    p_mitosis = float(output.get("p_mitosis", 0.5))
-                elif hasattr(output, "item"):
-                    p_mitosis = float(output.item())
-                elif hasattr(output, "__getitem__"):
-                    first = output[0]
-                    p_mitosis = float(first.item() if hasattr(first, "item") else first)
-                else:
-                    p_mitosis = float(output)
-                return float(np.clip(p_mitosis, 0.0, 1.0)), None
-            except Exception as e:
-                print(f"[HoVerNet Runtime Error] {e}. Falling back to morphometric classifier.")
-
-        # Morphometric nuclear instance analysis on 128x128 patch
-        return self._morphometric_nuclear_analysis(crop_rgb)
-
-    def _morphometric_nuclear_analysis(self, crop_rgb: np.ndarray) -> Tuple[float, Optional[List[List[int]]]]:
-        """
-        First-principles cellular morphometry:
-        1. Analyzes central region for chromatin condensation and nuclear morphology.
-        2. Measures boundary irregularity / spiculation (spindle protrusions vs smooth lymphocyte/nuclear envelope).
-        3. Detects absence of intact nuclear membrane (classic hallmark of active mitosis).
-        4. Explicitly filters out non-mitotic mimickers:
-           - Apoptotic bodies (small, dense, pyknotic, high circularity, haloed)
-           - Lymphocytes (small, smooth continuous unbroken envelope, high circularity/solidity)
-           - Resting / interphase nuclei (intact membrane, vesicular chromatin, lower OD)
-           - Background stroma / debris / dust specks
-        """
-        try:
-            import cv2
-        except ImportError:
-            cv2 = None
-
-        h, w, _ = crop_rgb.shape
-        cy, cx = h // 2, w // 2
-        r_px = min(36, min(h, w) // 2 - 2) # ~18 um radius (72 px diameter) region for true mitotic figures (#124)
-
-        # Optical density transformation
-        rgb_f = np.maximum(crop_rgb.astype(np.float32), 1.0) / 255.0
-        od = -np.log(rgb_f)
-        # Hematoxylin absorption component
-        h_od = od[:, :, 0] - 0.15 * od[:, :, 1] - 0.15 * od[:, :, 2]
-
-        center_h_od = h_od[cy - r_px : cy + r_px, cx - r_px : cx + r_px]
-        mean_h_od = float(np.mean(center_h_od))
-
-        # Reject empty background / stroma
-        if mean_h_od < 0.20:
-            return 0.05, None
-
-        # Robust 95th percentile OD (avoids single-pixel outlier blowout)
-        p95_od = float(np.percentile(center_h_od, 95))
-        std_od = float(np.std(center_h_od))
-
-        # Segment central chromatin clump
-        thresh = max(0.35, float(np.median(h_od) + 1.2 * np.std(h_od)))
-        chromatin_mask = (center_h_od > thresh).astype(np.uint8) * 255
-
-        contour_pts = None
-
-        if cv2 is not None:
-            cnts, _ = cv2.findContours(chromatin_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-            if not cnts:
-                return 0.10, None
-
-            # Filter to contours close to center
-            # Extract the central connected component located at (r_px, r_px)
-            central_cnt = None
-            for cnt in cnts:
-                if cv2.pointPolygonTest(cnt, (r_px, r_px), False) >= -2.0:
-                    central_cnt = cnt
-                    break
-
-            if central_cnt is None:
-                # Fallback to closest contour within central radius
-                central_cnt = min(cnts, key=lambda c: cv2.pointPolygonTest(c, (r_px, r_px), True) ** 2)
-
-            area = float(cv2.contourArea(central_cnt))
-            perim = float(cv2.arcLength(central_cnt, True))
-
-            if area < 80 or perim <= 0:
-                # Tiny debris / noise
-                return 0.12, None
-
-            equiv_diam = float(np.sqrt(4.0 * area / np.pi)) # diameter in pixels
-            circ = float((4.0 * np.pi * area) / (perim * perim))
-            hull = cv2.convexHull(central_cnt)
-            hull_area = max(1.0, float(cv2.contourArea(hull)))
-            solidity = float(area / hull_area)
-
-            equiv_perim = np.pi * equiv_diam
-            spiculation = float((perim - equiv_perim) / max(1.0, equiv_perim))
-
-            # Approximate nuclear contour in crop coordinates
-            approx_cnt = cv2.approxPolyDP(central_cnt, 1.5, True)
-            contour_pts = []
-            for pt in approx_cnt:
-                px_crop = int(pt[0][0] + (cx - r_px))
-                py_crop = int(pt[0][1] + (cy - r_px))
-                contour_pts.append([px_crop, py_crop])
-
-            # Measure halo contrast ratio to detect apoptotic retraction space
-            mask_cnt_inner = np.zeros_like(center_h_od, dtype=np.uint8)
-            cv2.drawContours(mask_cnt_inner, [central_cnt], -1, 255, -1)
-            kernel = np.ones((5, 5), np.uint8)
-            mask_cnt_outer = cv2.dilate(mask_cnt_inner, kernel, iterations=2)
-            halo_mask = (mask_cnt_outer > 0) & (mask_cnt_inner == 0)
-            halo_od = float(np.mean(center_h_od[halo_mask])) if np.any(halo_mask) else 0.5
-            core_od = float(np.mean(center_h_od[mask_cnt_inner > 0])) if np.any(mask_cnt_inner > 0) else 0.5
-
-            # 1. Reject Apoptotic Bodies (Van Diest Criteria):
-            # Apoptotic bodies feature small, smooth, compact globular pyknotic fragments
-            # (equiv_diam < 25 px, circ > 0.55, spiculation < 0.20) or clear retraction halo.
-            if equiv_diam < 25.0 and circ > 0.55 and spiculation < 0.20:
-                return 0.08, contour_pts
-
-            # 2. Reject Lymphocyte / Inflammatory Cell:
-            # Small (diam 15-32 px ~ 4-8 um), high circularity (>0.60), high solidity (>0.84), low spiculation (<0.18)
-            if 15.0 <= equiv_diam <= 32.0 and circ > 0.60 and solidity > 0.84 and spiculation < 0.18:
-                return 0.10, contour_pts
-
-            # 3. Reject Resting Interphase Nuclei:
-            # True mitoses REQUIRE dissolved nuclear envelope. An intact, continuous oval/circular membrane
-            # with smooth contour (spiculation < 0.18, circ > 0.52, solidity > 0.83) represents interphase.
-            if spiculation < 0.18 and solidity > 0.83 and (circ > 0.52 or p95_od < 0.90):
-                return 0.14, contour_pts
-
-            # 4. Reject Tiny Debris / Giant Tissue Folds:
-            if area < 300.0 or equiv_diam < 20.0 or area > 4200.0 or equiv_diam > 75.0:
-                return 0.12, contour_pts
-
-            # 5. Mitotic Figure Scoring (Van Diest Classic Metaphase / Anaphase / Telophase Criteria):
-            # True dividing cell requires:
-            # - High spiculation / chromosome arms protruding into cytoplasm (spiculation >= 0.18)
-            # - Intensely condensed basophilic chromatin (p95_od >= 0.75)
-            # - High texture variance from individual chromosomes (std_od >= 0.20)
-            # - Irregular, jagged contour from envelope dissolution (solidity < 0.82)
-            size_score = float(np.clip((equiv_diam - 20.0) / 22.0, 0.0, 1.0))
-            spic_score = float(np.clip((spiculation - 0.15) / 0.25, 0.0, 1.0))
-            od_score = float(np.clip((p95_od - 0.70) / 0.60, 0.0, 1.0))
-            texture_score = float(np.clip((std_od - 0.18) / 0.30, 0.0, 1.0))
-            irregularity_score = float(np.clip((0.90 - solidity) / 0.25, 0.0, 1.0))
-
-            if spic_score < 0.10 or od_score < 0.20 or texture_score < 0.15:
-                return 0.22, contour_pts
-
-            p_mitosis = 0.20 + (
-                0.25 * spic_score +
-                0.25 * od_score +
-                0.25 * texture_score +
-                0.15 * size_score +
-                0.10 * irregularity_score
-            )
-
-            return float(np.clip(p_mitosis, 0.05, 0.95)), contour_pts
-        else:
-            # Fallback when OpenCV is not installed
-            dense_pixels = int(np.sum(chromatin_mask > 0))
-            if dense_pixels < 30:
-                return 0.12, None
-            score = 0.20 + min(0.70, (dense_pixels / 600.0) * 0.35 + (p95_od / 2.0) * 0.35)
-            return float(np.clip(score, 0.05, 0.95)), None
-
-
-def create_dual_magnification_composite(
+def mitosis_referee_images(
     slide_obj,
     center_x: int,
     center_y: int,
-    mpp_x: float = 0.25
-) -> tuple[bytes, bytes]:
+    mpp_x: float,
+    focus_px: int,
+    context_um: float,
+    context_px: int,
+) -> tuple[ImageInput, ImageInput]:
     """
-    Extract dual-magnification views for MedGemma multimodal refereeing:
-    1. Focus Crop (40x, 128x128 px): Target cell with subtle circular reticle.
-    2. Context Patch (10x, 512x512 px): Surrounding tumor bed architecture.
+    Two views of the candidate at level-0 pixel (center_x, center_y):
+    1. Focus: focus_px x focus_px at the slide's own resolution (PNG).
+    2. Context: context_um x context_um around it, resampled to context_px (JPEG).
+    Each ImageInput's spec states the resolution actually sent.
     """
-    from PIL import Image
-    import io
-    from app.core.openslide_lock import OPENSLIDE_GLOBAL_LOCK
-
-    # 1. 40x Focus Crop (128x128 px @ level 0)
-    crop_size = 128
-    x0 = max(0, int(center_x - crop_size // 2))
-    y0 = max(0, int(center_y - crop_size // 2))
-
-    with OPENSLIDE_GLOBAL_LOCK:
-        rgba_focus = slide_obj.read_region((x0, y0), 0, (crop_size, crop_size))
-        rgb_focus = rgba_focus.convert("RGB")
-
+    x0 = max(0, int(center_x - focus_px // 2))
+    y0 = max(0, int(center_y - focus_px // 2))
+    focus = _read(slide_obj, (x0, y0), 0, (focus_px, focus_px))
     buf_focus = io.BytesIO()
-    rgb_focus.save(buf_focus, format="PNG")
-    crop_bytes = buf_focus.getvalue()
+    focus.save(buf_focus, format="PNG")
+    focus_image = ImageInput(
+        buf_focus.getvalue(),
+        InputSpec(mpp=mpp_x, size_px=(focus_px, focus_px), color="raw", format="png"),
+    )
 
-    # 2. 10x Context Crop (512x512 px @ 1.0 um/px)
-    downsample = 1.0 / max(mpp_x, 0.1) # e.g. 4.0
-    l0_w = int(512 * downsample)
-    l0_h = int(512 * downsample)
-    cx0 = max(0, int(center_x - l0_w // 2))
-    cy0 = max(0, int(center_y - l0_h // 2))
-
-    with OPENSLIDE_GLOBAL_LOCK:
-        # Utilize pyramid level if available for faster downsampling
-        level = 0
-        read_w, read_h = l0_w, l0_h
-        if hasattr(slide_obj, "get_best_level_for_downsample"):
-            try:
-                cand_level = slide_obj.get_best_level_for_downsample(downsample)
-                cand_down = slide_obj.level_downsamples[cand_level]
-                if cand_down <= downsample * 1.25:
-                    level = cand_level
-                    read_w = max(1, int(round(l0_w / cand_down)))
-                    read_h = max(1, int(round(l0_h / cand_down)))
-            except Exception:
-                level = 0
-
-        rgba_ctx = slide_obj.read_region((cx0, cy0), level, (read_w, read_h))
-        rgb_ctx = rgba_ctx.convert("RGB").resize((512, 512), Image.Resampling.BILINEAR)
-
-    buf_ctx = io.BytesIO()
-    rgb_ctx.save(buf_ctx, format="JPEG", quality=85)
-    context_bytes = buf_ctx.getvalue()
-
-    return crop_bytes, context_bytes
+    downsample = context_um / context_px / mpp_x
+    l0_side = int(context_um / mpp_x)
+    cx0 = max(0, int(center_x - l0_side // 2))
+    cy0 = max(0, int(center_y - l0_side // 2))
+    level, read_side = 0, l0_side
+    if hasattr(slide_obj, "get_best_level_for_downsample"):
+        # Read from a pyramid level no coarser than the target, when one exists.
+        candidate = slide_obj.get_best_level_for_downsample(downsample)
+        candidate_downsample = slide_obj.level_downsamples[candidate]
+        if candidate_downsample <= downsample * 1.25:
+            level, read_side = candidate, max(1, int(round(l0_side / candidate_downsample)))
+    context = _read(slide_obj, (cx0, cy0), level, (read_side, read_side)).resize(
+        (context_px, context_px), Image.Resampling.BILINEAR
+    )
+    buf_context = io.BytesIO()
+    context.save(buf_context, format="JPEG", quality=CONTEXT_JPEG_QUALITY)
+    context_image = ImageInput(
+        buf_context.getvalue(),
+        InputSpec(mpp=l0_side * mpp_x / context_px, size_px=(context_px, context_px), color="raw", format="jpeg"),
+    )
+    return focus_image, context_image

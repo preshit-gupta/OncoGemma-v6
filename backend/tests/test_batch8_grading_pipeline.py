@@ -2,8 +2,8 @@
 Batch 8 Test Suite: Stage 5 Nottingham Grading, Histologic Type Confirmation & MedGemma Fallback Integrity.
 
 Validates:
-1. Finding #722: HistologicTypeResponse requires type and confidence; empty/malformed inputs fail schema validation.
-2. Finding #597: MedGemma fallback and client use explicit task parameter to prevent keyword hijacking.
+1-2. Findings #722 / #597 (MedGemma schema and mock routing) moved with WP-2.3d: the strict
+     HistotypeVerdict is tested in tests/inference, and the mock responder no longer exists.
 3. Finding #598: Findings narrative fallback extracts Nottingham grade and sum from aggregate nesting.
 4. Finding #599: CAP synoptic fallback grounds pleomorphism in p_score and LVI in case lvi_status.
 5. Finding #136: Grading worker raises ValueError on empty hotspots; zero fabricated 24 diagonal coordinates.
@@ -36,8 +36,8 @@ from app.models.detection import Detection
 from app.models.hpf_site import HpfSite
 from app.models.stage_execution import StageExecution
 from app.models.audit import AuditEvent
-from pipeline.medgemma import HistologicTypeResponse, MedGemmaClient
 from worker.grading import select_max_density_hotspot_patches, run_grading
+from tests.fakes.runtime import make_runtime
 
 # Shared in-memory test database
 SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
@@ -102,47 +102,6 @@ def _create_approved_grading_data():
 
 
 # ============================================================================
-# 1. MedGemma Schema Validation Tests (#722)
-# ============================================================================
-
-def test_histologic_type_response_validation_failure_on_empty():
-    """Empty dictionary must not default to IDC-NST / medium; it must fail validation."""
-    with pytest.raises(ValidationError):
-        HistologicTypeResponse.model_validate({})
-
-
-def test_histologic_type_response_validation_missing_confidence():
-    """Missing confidence field must raise ValidationError."""
-    with pytest.raises(ValidationError):
-        HistologicTypeResponse.model_validate({"type": "IDC-NST"})
-
-
-def test_histologic_type_response_valid_schema_error():
-    """Explicit unassessed_schema_error confidence value is valid."""
-    resp = HistologicTypeResponse.model_validate({
-        "type": "other",
-        "confidence": "unassessed_schema_error",
-        "rationale": "Model timeout degraded"
-    })
-    assert resp.type == "other"
-    assert resp.confidence == "unassessed_schema_error"
-
-
-# ============================================================================
-# 2. MedGemma Task Routing & Mock Dispatch Tests (#597)
-# ============================================================================
-
-def test_medgemma_task_routing_priority():
-    """Prompt containing 'tubule' must not be hijacked if task is histologic_type or cap_report."""
-    client = MedGemmaClient()
-    prompt_with_tubule = "Review tubule formation patterns and classify the primary histologic subtype."
-    
-    resp_type = client._mock_fallback_response(prompt_with_tubule, task="histologic_type")
-    assert "IDC-NST" in resp_type or "histologic" in resp_type.lower()
-    assert "tubule_percent" not in resp_type
-
-
-# ============================================================================
 # 4. Zero Hotspot Fabrication Tests (#136)
 # ============================================================================
 
@@ -177,7 +136,7 @@ def test_run_grading_worker_fails_fast_on_zero_hotspots():
     db.commit()
 
     with pytest.raises(ValueError, match="No confirmed tumor hotspots"):
-        run_grading(stage_exec, db)
+        run_grading(stage_exec, db, make_runtime(stage_exec))
     db.close()
 
 
@@ -222,7 +181,7 @@ def test_run_grading_worker_queries_detections_without_name_error():
         # Halt execution right after the Stage 4 mitotic score retrieval step
         mock_os.side_effect = RuntimeError("OpenSlide stopped after detection query")
         with pytest.raises(RuntimeError, match="OpenSlide stopped after detection query"):
-            run_grading(stage_exec, db)
+            run_grading(stage_exec, db, make_runtime(stage_exec))
     db.close()
 
 
@@ -519,3 +478,82 @@ def test_patch_image_returns_404_on_missing_file():
     res = client.get(f"/api/v1/stages/grading/{case_uid}/patches/{uuid.uuid4()}/image")
     assert res.status_code == 404
     assert "not found" in res.json()["detail"].lower()
+
+
+# ============================================================================
+# 9. No default histologic type (SPEC-01 §3.9, WP-2.3d)
+# ============================================================================
+
+def _confirm_payload(case_uid, **extra):
+    payload = {
+        "case_id": str(case_uid),
+        "reviewed_by": "Dr. Pathologist",
+        "tubule_score": 2,
+        "pleo_score": 2,
+        "mitotic_score": 1,
+        "nottingham_sum": 5,
+        "grade": 1,
+    }
+    payload.update(extra)
+    return payload
+
+
+def _seed_grading(histologic_type, type_confirmed_by, machine=None):
+    db = TestingSessionLocal()
+    case_uid = uuid.uuid4()
+    db.add_all([
+        Case(id=case_uid, status="in_progress", created_by="test_user"),
+        StageExecution(case_id=case_uid, stage="grading", attempt=1, status="awaiting_review"),
+        Grading(case_id=case_uid, histologic_type=histologic_type, type_confirmed_by=type_confirmed_by,
+                tubule_score=2, pleo_score=2, mitotic_score=1, nottingham_sum=5, grade=1,
+                machine=machine or _create_approved_grading_data()),
+    ])
+    db.commit()
+    db.close()
+    return case_uid
+
+
+def test_confirm_without_a_type_keeps_the_confirmed_type():
+    """The v6 client confirms with {case_id}; v5 then silently wrote IDC-NST over the confirmed type."""
+    case_uid = _seed_grading("ILC", "Dr. Pathologist")
+    res = TestClient(app).post(
+        "/api/v1/stages/grading/confirm", json=_confirm_payload(case_uid), headers={"X-User-Role": "pathologist"}
+    )
+    assert res.status_code == 200, res.text
+    db = TestingSessionLocal()
+    record = db.query(Grading).filter(Grading.case_id == case_uid).first()
+    assert record.histologic_type == "ILC" and record.type_confirmed_by == "Dr. Pathologist"
+    db.close()
+
+
+def test_confirm_without_a_type_is_refused_while_the_type_is_unassessed():
+    case_uid = _seed_grading(None, "unconfirmed")
+    res = TestClient(app).post(
+        "/api/v1/stages/grading/confirm", json=_confirm_payload(case_uid), headers={"X-User-Role": "pathologist"}
+    )
+    assert res.status_code == 400
+    assert "Histologic Type must be explicitly confirmed" in res.json()["detail"]
+
+
+def test_unassessed_type_is_not_proposed_as_idc_nst():
+    machine = {**_create_approved_grading_data(), "histologic_type": None}
+    case_uid = _seed_grading(None, "unconfirmed", machine=machine)
+    res = TestClient(app).get(f"/api/v1/stages/grading/{case_uid}")
+    assert res.status_code == 200, res.text
+    histotype = res.json()["histologic_type"]
+    assert histotype["proposed_type"] is None and histotype["confirmed_type"] is None
+    assert histotype["confidence"] is None
+
+
+def test_every_estimator_type_can_be_confirmed():
+    from typing import get_args
+    from app.inference.schemas import HistotypeVerdict
+
+    for histotype in get_args(HistotypeVerdict.model_fields["type"].annotation):
+        case_uid = _seed_grading(histotype, "unconfirmed")
+        res = TestClient(app).post(
+            "/api/v1/stages/grading/type/confirm",
+            json={"case_id": str(case_uid), "histologic_type": histotype, "reviewed_by": "Dr. P"},
+            headers={"X-User-Role": "pathologist", "X-User-Id": "Dr. P"},
+        )
+        assert res.status_code == 200, (histotype, res.text)

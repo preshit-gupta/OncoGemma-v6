@@ -30,6 +30,7 @@ from app.models.hotspot import Hotspot
 from app.models.audit import AuditEvent
 from app.routers.mitosis import sync_and_persist_hpf_counts
 from worker.mitosis import run_mitosis
+from tests.fakes.runtime import make_runtime
 
 
 # Test Database setup
@@ -88,7 +89,7 @@ def test_worker_aborts_without_confirmed_hotspots():
 
     # Hotspot table is empty for this case
     with pytest.raises(ValueError) as excinfo:
-        run_mitosis(stage_exec, db)
+        run_mitosis(stage_exec, db, make_runtime(stage_exec))
 
     assert "No confirmed tumor hotspots found for case" in str(excinfo.value)
     db.close()
@@ -283,12 +284,13 @@ def test_add_candidate_raises_500_on_slide_read_failure():
 
 
 # =========================================================================
-# GCS Triage Artifact Fallback Test
+# Unconfirmed triage output is never used (SPEC-06 §9)
 # =========================================================================
-def test_worker_recovers_hotspots_from_triage_artifact():
+def test_worker_refuses_unconfirmed_triage_artifact():
     """
-    Validates that when Hotspot table has 0 rows, run_mitosis recovers
-    hotspots from cases/{case_id}/triage/output.json in GCS and populates DB.
+    The v5 worker copied hotspots out of cases/{case_id}/triage/output.json when the
+    Hotspot table was empty, running Stage 4 on unconfirmed triage. Hotspots now come
+    from the confirmed triage in the database only; without them the stage fails.
     """
     db = TestingSessionLocal()
     case_id = uuid.uuid4()
@@ -321,17 +323,8 @@ def test_worker_recovers_hotspots_from_triage_artifact():
     }).encode("utf-8")
 
     with patch("worker.mitosis.download_blob_as_bytes", return_value=mock_triage_output):
-        # Even if downstream slide extraction fails later, the hotspot check must succeed and persist to DB
-        try:
-            run_mitosis(stage_exec, db)
-        except Exception as e:
-            # Must NOT be "No confirmed tumor hotspots found"
-            assert "No confirmed tumor hotspots found" not in str(e)
+        with pytest.raises(ValueError, match="No confirmed tumor hotspots found"):
+            run_mitosis(stage_exec, db, make_runtime(stage_exec))
 
-    # Verify hotspot was persisted into the DB
-    recovered = db.scalars(select(Hotspot).where(Hotspot.case_id == case_id)).all()
-    assert len(recovered) == 1
-    assert recovered[0].id == "hs_01"
-    assert recovered[0].area_mm2 == 0.36
+    assert db.scalars(select(Hotspot).where(Hotspot.case_id == case_id)).all() == []
     db.close()
-

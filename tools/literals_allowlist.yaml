@@ -1,1 +1,76 @@
-[]
+# Literals that are allowed to stay (SPEC-01 §3.8): path, rule, line hash and why.
+- path: backend/pipeline/heuristics/od_sweep.py
+  rule: L4
+  line_hash: 97b8a6b4234d39bdea61f767ffc2f289f07a6143
+  justification: Frozen v5 heuristic, ablation replay only (SPEC-06 §6.2 A0); moved verbatim from pipeline/detect.py in WP-2.3c. No stage imports it.
+  snippet: 'if h < 32 or w < 32:'
+- path: backend/pipeline/heuristics/od_sweep.py
+  rule: L4
+  line_hash: 00d1a047857ddd2afa58d2cf257392381560e81e
+  justification: Frozen v5 heuristic, ablation replay only (SPEC-06 §6.2 A0); moved verbatim from pipeline/detect.py in WP-2.3c. No stage imports it.
+  snippet: tissue_mask = (tile_rgb[:, :, 0] < 235) | (tile_rgb[:, :, 1] < 235) | (tile_rgb[:, :, 2] < 235)
+- path: backend/pipeline/heuristics/od_sweep.py
+  rule: L4
+  line_hash: 4c8179a782b799bd3fb2ad50f32974b296fcb5d3
+  justification: Frozen v5 heuristic, ablation replay only (SPEC-06 §6.2 A0); moved verbatim from pipeline/detect.py in WP-2.3c. No stage imports it.
+  snippet: 'if not (400 <= area <= 3800):'
+- path: backend/pipeline/heuristics/od_sweep.py
+  rule: L4
+  line_hash: 04846d6e2e107dca42fa208347a7f421c287a201
+  justification: Frozen v5 heuristic, ablation replay only (SPEC-06 §6.2 A0); moved verbatim from pipeline/detect.py in WP-2.3c. No stage imports it.
+  snippet: 'if equiv_diam < 28.0 and circ > 0.62:'
+- path: backend/pipeline/heuristics/od_sweep.py
+  rule: L4
+  line_hash: a181eb1b1a79e970e3a5face2299fd2272ed1764
+  justification: Frozen v5 heuristic, ablation replay only (SPEC-06 §6.2 A0); moved verbatim from pipeline/detect.py in WP-2.3c. No stage imports it.
+  snippet: 'if not any(math.hypot(c[0] - s[0], c[1] - s[1]) < 80.0 for s in suppressed):'
+- path: backend/pipeline/heuristics/od_sweep.py
+  rule: L1
+  line_hash: 4595d1cc5586d23ef0ec4d3a04e95e297a4c0fb0
+  justification: Frozen v5 heuristic, ablation replay only (SPEC-06 §6.2 A0); moved verbatim from pipeline/detect.py in WP-2.3c. No stage imports it.
+  snippet: max_per_tile = max_candidates_per_tile or 4
+- path: backend/pipeline/heuristics/morph_verifier.py
+  rule: L4
+  line_hash: fe8eaae2d77664fdccd6027725005365e7cc6bb5
+  justification: Frozen v5 heuristic, ablation replay only (SPEC-06 §6.2 A0); moved verbatim from pipeline/verify.py in WP-2.3c. No stage imports it.
+  snippet: 'if mean_h_od < 0.20:'
+- path: backend/pipeline/heuristics/morph_verifier.py
+  rule: L4
+  line_hash: d62dea9c98ba8e15f735459e8547cc19299a10ef
+  justification: Frozen v5 heuristic, ablation replay only (SPEC-06 §6.2 A0); moved verbatim from pipeline/verify.py in WP-2.3c. No stage imports it.
+  snippet: 'if cv2.pointPolygonTest(cnt, (r_px, r_px), False) >= -2.0:'
+- path: backend/pipeline/heuristics/morph_verifier.py
+  rule: L4
+  line_hash: 9150a8cb12b6da5908f01209e48c0b1c319adf1d
+  justification: Frozen v5 heuristic, ablation replay only (SPEC-06 §6.2 A0); moved verbatim from pipeline/verify.py in WP-2.3c. No stage imports it.
+  snippet: 'if area < 80 or perim <= 0:'
+- path: backend/pipeline/heuristics/morph_verifier.py
+  rule: L4
+  line_hash: 271ee5125098b814f8113ac1cde2fd468a799bcf
+  justification: Frozen v5 heuristic, ablation replay only (SPEC-06 §6.2 A0); moved verbatim from pipeline/verify.py in WP-2.3c. No stage imports it.
+  snippet: 'if equiv_diam < 25.0 and circ > 0.55 and spiculation < 0.20:'
+- path: backend/pipeline/heuristics/morph_verifier.py
+  rule: L4
+  line_hash: fd20299b1889aaf876efddaa37db532c8daea720
+  justification: Frozen v5 heuristic, ablation replay only (SPEC-06 §6.2 A0); moved verbatim from pipeline/verify.py in WP-2.3c. No stage imports it.
+  snippet: 'if 15.0 <= equiv_diam <= 32.0 and circ > 0.60 and solidity > 0.84 and spiculation < 0.18:'
+- path: backend/pipeline/heuristics/morph_verifier.py
+  rule: L4
+  line_hash: ed525a692b990c33aa0b1061d6e27268acb07b58
+  justification: Frozen v5 heuristic, ablation replay only (SPEC-06 §6.2 A0); moved verbatim from pipeline/verify.py in WP-2.3c. No stage imports it.
+  snippet: 'if spiculation < 0.18 and solidity > 0.83 and (circ > 0.52 or p95_od < 0.90):'
+- path: backend/pipeline/heuristics/morph_verifier.py
+  rule: L4
+  line_hash: bda29e686b0c3b92525f45e225c334d4c8ea6984
+  justification: Frozen v5 heuristic, ablation replay only (SPEC-06 §6.2 A0); moved verbatim from pipeline/verify.py in WP-2.3c. No stage imports it.
+  snippet: 'if area < 300.0 or equiv_diam < 20.0 or area > 4200.0 or equiv_diam > 75.0:'
+- path: backend/pipeline/heuristics/morph_verifier.py
+  rule: L4
+  line_hash: 7c71a3b01141ddb2008aea090c660277f6c40de6
+  justification: Frozen v5 heuristic, ablation replay only (SPEC-06 §6.2 A0); moved verbatim from pipeline/verify.py in WP-2.3c. No stage imports it.
+  snippet: 'if spic_score < 0.10 or od_score < 0.20 or texture_score < 0.15:'
+- path: backend/pipeline/heuristics/morph_verifier.py
+  rule: L4
+  line_hash: 34bd1df3086f7b27692d1b869682e36c0f0fbf3a
+  justification: Frozen v5 heuristic, ablation replay only (SPEC-06 §6.2 A0); moved verbatim from pipeline/verify.py in WP-2.3c. No stage imports it.
+  snippet: 'if dense_pixels < 30:'

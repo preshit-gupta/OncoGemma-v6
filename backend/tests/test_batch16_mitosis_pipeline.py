@@ -31,8 +31,8 @@ from app.models.stage_execution import StageExecution
 from app.models.detection import Detection
 from app.models.hpf_site import HpfSite
 from app.models.hotspot import Hotspot
-from pipeline.detect import YoloMitosisDetector, enumerate_hotspot_tiles
-from pipeline.verify import HoVerNetMitosisVerifier
+from pipeline.detect import enumerate_hotspot_tiles
+from pipeline.heuristics.od_sweep import detect_hyperchromatic_features
 from pipeline.scoring import compute_nottingham_mitotic_score, load_scoring_config
 
 
@@ -70,14 +70,13 @@ client = TestClient(app)
 # 1. Detector Tests (#119, #581, #582, #121, #583)
 # =========================================================================
 def test_hyperchromatic_feature_detection_and_unfloored_conf():
-    """Validates #582 & #583: Confidence is not floor-clipped, and peak OD uses submask."""
-    detector = YoloMitosisDetector(conf_threshold=0.40, max_candidates_per_tile=10)
+    """Validates #582 & #583 on the v5 OD sweep, now an ablation-only heuristic."""
 
     # Synthetic 1024x1024 tile with a very dark mitotic-like spot in the center
     tile = np.full((1024, 1024, 3), 220, dtype=np.uint8)
     tile[495:505, 495:505, :] = 30  # High optical density
 
-    candidates = detector._detect_hyperchromatic_features(tile)
+    candidates = detect_hyperchromatic_features(tile, 0.40, max_candidates_per_tile=10)
     assert isinstance(candidates, list)
     if candidates:
         cx, cy, conf = candidates[0]
@@ -89,7 +88,6 @@ def test_hyperchromatic_feature_detection_and_unfloored_conf():
 def test_tile_candidate_cap():
     """Validates #581: Candidate count per tile respects max_candidates_per_tile."""
     cap = 5
-    detector = YoloMitosisDetector(conf_threshold=0.10, max_candidates_per_tile=cap)
 
     # Synthetic tile with many dark spots
     tile = np.full((1024, 1024, 3), 220, dtype=np.uint8)
@@ -97,7 +95,7 @@ def test_tile_candidate_cap():
         r = 100 + i * 80
         tile[r:r+12, r:r+12, :] = 20
 
-    candidates = detector._detect_hyperchromatic_features(tile)
+    candidates = detect_hyperchromatic_features(tile, 0.10, max_candidates_per_tile=cap)
     assert len(candidates) <= cap
 
 
@@ -123,27 +121,6 @@ def test_enumerate_hotspot_tiles_clamping_and_polygon_check():
         assert t["origin_px"][1] >= 0
         assert t["origin_um"][0] >= 0
         assert t["origin_um"][1] >= 0
-
-
-# =========================================================================
-# 2. Verifier Tests (#595, #124)
-# =========================================================================
-def test_verifier_window_radius_and_prediction_parsing():
-    """Validates #124 (72px window) and #595 (model output parsing)."""
-    verifier = HoVerNetMitosisVerifier(threshold=0.55)
-    dummy_crop = np.full((128, 128, 3), 220, dtype=np.uint8)
-
-    # Test prediction parsing for dict output
-    mock_model = MagicMock()
-    mock_model.return_value = {"p_mitosis": 0.82}
-    verifier.model = mock_model
-    prob, contour = verifier.verify(dummy_crop)
-    assert prob == 0.82
-
-    # Test prediction parsing for scalar output
-    mock_model.return_value = 0.45
-    prob2, contour2 = verifier.verify(dummy_crop)
-    assert prob2 == 0.45
 
 
 # =========================================================================

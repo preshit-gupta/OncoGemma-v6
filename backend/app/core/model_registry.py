@@ -19,6 +19,9 @@ from app.core.config_types import (
 )
 
 ModelKind = Literal["embedding", "classifier", "detector", "vlm"]
+# Request and response layout of a Vertex endpoint's serving container
+# (app.inference.adapters.vertex_endpoint.WIRE_FORMATS).
+WireFormat = Literal["path_foundation_v1", "kongnet_midog_v1", "kongnet_midog_v2", "medgemma_chat_v1"]
 PythonModulePath = Annotated[str, Field(pattern=r"^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)*$")]
 
 
@@ -78,6 +81,7 @@ class GenerationParams(StrictModel):
 class VertexEndpointModel(StrictModel):
     kind: ModelKind
     provider: Literal["vertex_endpoint_raw_predict", "vertex_endpoint_predict"]
+    wire_format: WireFormat
     # None means the endpoint is not configured in this environment.
     endpoint_id: NonEmptyStr | None
     region: NonEmptyStr
@@ -109,6 +113,7 @@ class LocalArtifactModel(StrictModel):
     artifact_sha256: Sha256Hex
     version: NonEmptyStr
     input: FeatureInputContract | ImageInputContract
+    output_schema: NonEmptyStr | None = None
     trained_on: TrainedOn | None = None
     license_ref: NonEmptyStr | None = None
 

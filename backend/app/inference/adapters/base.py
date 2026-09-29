@@ -2,7 +2,7 @@
 
 An adapter turns one gateway request into one provider call and returns the raw
 response. It does not retry, validate, cache or record: the gateway does all of
-that. It reports failures only through the three exceptions below.
+that. It reports failures only through the exceptions below.
 """
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Protocol
@@ -23,10 +23,15 @@ class CallRejected(Exception):
     """The provider refused the request or answered in an unexpected shape. Never retried."""
 
 
+class Unavailable(Exception):
+    """The model cannot be reached and retrying cannot help: a missing artifact or endpoint."""
+
+
 @dataclass(frozen=True)
 class AdapterImage:
     data: bytes           # encoded image bytes, already checked against the input contract
     mime_type: str        # image/png or image/jpeg
+    mpp: float | None = None  # resolution declared in the image's InputSpec
 
 
 @dataclass(frozen=True)
@@ -39,6 +44,8 @@ class AdapterRequest:
     # receive it; the gateway validates the answer strictly either way.
     output_model: type[BaseModel] | None = None
     generation: Mapping[str, Any] = field(default_factory=dict)
+    # The call's other params (for example a detector's min_prob), as recorded and hashed.
+    parameters: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

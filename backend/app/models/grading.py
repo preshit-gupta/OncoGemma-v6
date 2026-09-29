@@ -23,7 +23,8 @@ class Grading(Base):
     mitotic_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     nottingham_sum: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     grade: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    histologic_type: Mapped[str] = mapped_column(String, nullable=False, default="IDC-NST")
+    # No default: an unassessed type stays NULL rather than reading as IDC-NST (SPEC-01 §3.9).
+    histologic_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     type_confirmed_by: Mapped[str] = mapped_column(String, nullable=False, default="unconfirmed")
     machine: Mapped[Dict[str, Any]] = mapped_column(JSON_TYPE, nullable=False, default=dict)
     overrides: Mapped[Dict[str, Any]] = mapped_column(JSON_TYPE, nullable=False, default=dict)

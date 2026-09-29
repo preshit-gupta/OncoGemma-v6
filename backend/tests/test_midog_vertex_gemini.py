@@ -1,9 +1,14 @@
 """
-Unit tests for MIDOG Vertex AI detector, Gemini Flash referee, and pathologist review preservation.
+KongNet (MIDOG) detector wire formats, detection persistence and HPF placement.
+
+The v5 YoloMitosisDetector, its optical-density fallback and the lenient MedGemma/Gemini
+mitosis schema were deleted in WP-2.3c (SPEC-01 §3.9). The detector and referee now run
+through the model gateway; tests/test_mitosis_worker.py covers the stage end to end.
 """
+import base64
 import io
-import json
-from unittest.mock import patch, MagicMock
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 from PIL import Image
@@ -11,76 +16,135 @@ from sqlalchemy import create_engine, select, delete, not_
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.core.config import settings
 from app.core.db import Base
+from app.core.pipeline_config import get_pipeline_config
+from app.core.tasks import EntityType, Task
+from app.inference.adapters.base import AdapterImage, AdapterRequest, CallRejected
+from app.inference.adapters.vertex_endpoint import VertexEndpointAdapter
+from app.inference.errors import ModelCallError
+from app.inference.gateway import EntityRef, ModelInputs
+from app.inference.outputs import DetectionList
 from app.models.case import Case
 from app.models.detection import Detection
-from pipeline.detect import YoloMitosisDetector
-from pipeline.medgemma import MedGemmaClient, MitosisConfirmationResponse
+from tests.fakes.gateway import decision_context, make_gateway, png_image
 
 
-def test_yolo_detector_vertex_ai_endpoint_mock():
-    """Verify YoloMitosisDetector connects to Vertex AI Endpoint and parses predictions."""
-    with patch("google.cloud.aiplatform.Endpoint") as mock_endpoint_cls, \
-         patch("google.cloud.aiplatform.init"):
-        
-        mock_endpoint = MagicMock()
-        mock_endpoint_cls.return_value = mock_endpoint
-        
-        # Mock prediction response with bounding boxes
-        mock_endpoint.predict.return_value = MagicMock(
-            predictions=[{
-                "boxes": [
-                    {"cx": 150.0, "cy": 250.0, "confidence": 0.85},
-                    {"x1": 400.0, "y1": 500.0, "x2": 450.0, "y2": 550.0, "conf": 0.72}
-                ]
-            }]
+def patch_png(value=200) -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (512, 512), (value, value, value)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def detector_entry(**changes):
+    entry = get_pipeline_config().models.models["kongnet_det_midog_1"]
+    return entry.model_copy(update={"endpoint_id": "456", **changes})
+
+
+class RecordingEndpoint:
+    def __init__(self, predictions):
+        self.predictions = predictions
+        self.calls = []
+
+    def predict(self, instances, parameters=None, timeout=None):
+        self.calls.append({"instances": instances, "parameters": parameters, "timeout": timeout})
+        return SimpleNamespace(predictions=self.predictions)
+
+
+def adapter_for(endpoint):
+    return VertexEndpointAdapter(project="p", endpoint_factory=lambda *args: endpoint)
+
+
+def request(n=4, min_prob=0.35):
+    images = tuple(AdapterImage(patch_png(), "image/png", 0.25) for _ in range(n))
+    return AdapterRequest("kongnet_det_midog_1", images=images, parameters={"min_prob": min_prob})
+
+
+def test_v1_request_is_what_the_deployed_service_reads():
+    endpoint = RecordingEndpoint([{"boxes": []}] * 4)
+    adapter_for(endpoint).call(detector_entry(), request(), 60.0)
+    (call,) = endpoint.calls
+    assert len(call["instances"]) == 4 and call["parameters"] is None and call["timeout"] == 60.0
+    first = call["instances"][0]
+    assert set(first) == {"image_bytes", "confidence_threshold"}
+    assert first["confidence_threshold"] == 0.35
+    # Lossless PNG, as the registry's input contract requires (v5 sent JPEG q90).
+    assert base64.b64decode(first["image_bytes"]) == patch_png()
+
+
+def test_v1_boxes_become_points_per_patch_in_request_order():
+    endpoint = RecordingEndpoint([
+        {"boxes": [{"cx": 100.0, "cy": 120.0, "width": 48.0, "height": 48.0, "confidence": 0.88}]},
+        {"boxes": []},
+        {"boxes": []},
+        {"boxes": [{"cx": 50.0, "cy": 60.0, "width": 48.0, "height": 48.0, "confidence": 0.92}]},
+    ])
+    raw = adapter_for(endpoint).call(detector_entry(), request(), 60.0)
+    assert raw.data == {"detections": [
+        [{"x": 100.0, "y": 120.0, "prob": 0.88}], [], [], [{"x": 50.0, "y": 60.0, "prob": 0.92}],
+    ]}
+
+
+@pytest.mark.parametrize(
+    "predictions, message",
+    [
+        # The error v5 turned into a silent switch to the OD heuristic (SPEC-01 §1.1).
+        ([{"boxes": [], "error": "Expected dimensions (512, 512), but got (1024, 1024)."}] * 4, "Expected dimensions"),
+        ([{"boxes": []}] * 3, "expected 4 predictions, got 3"),
+        ([{"boxes": [{"x1": 400.0, "y1": 500.0, "x2": 450.0, "y2": 550.0, "conf": 0.72}]}] + [{"boxes": []}] * 3,
+         "malformed box"),
+        ([{"boxes": [{"cx": 900.0, "cy": 10.0, "confidence": 0.9}]}] + [{"boxes": []}] * 3, "outside the 512x512"),
+        ([{"points": []}] * 4, "no boxes list"),
+    ],
+)
+def test_v1_malformed_answers_are_rejected_not_substituted(predictions, message):
+    with pytest.raises(CallRejected, match=message):
+        adapter_for(RecordingEndpoint(predictions)).call(detector_entry(), request(), 60.0)
+
+
+def test_v2_request_and_points():
+    endpoint = RecordingEndpoint([{"points": [{"x": 10.5, "y": 20.0, "prob": 0.41}], "error": None}, {"points": [], "error": None}])
+    raw = adapter_for(endpoint).call(detector_entry(wire_format="kongnet_midog_v2"), request(n=2, min_prob=0.01), 60.0)
+    (call,) = endpoint.calls
+    assert call["parameters"] == {"min_prob": 0.01}
+    assert call["instances"][0]["mpp"] == 0.25 and set(call["instances"][0]) == {"image_png_b64", "mpp"}
+    assert raw.data == {"detections": [[{"x": 10.5, "y": 20.0, "prob": 0.41}], []]}
+
+
+def test_v2_service_errors_are_rejected():
+    endpoint = RecordingEndpoint([{"points": [], "error": "mpp_mismatch: expected 0.25, got 0.5"}])
+    with pytest.raises(CallRejected, match="mpp_mismatch"):
+        adapter_for(endpoint).call(detector_entry(wire_format="kongnet_midog_v2"), request(n=1), 60.0)
+
+
+def test_empty_detections_are_trusted_and_recorded_through_the_gateway():
+    """A negative tile stays negative: no OD sweep is appended (v5 rescued it with the heuristic)."""
+    config = get_pipeline_config()
+    registry = config.models
+    kongnet = registry.models["kongnet_det_midog_1"].model_copy(update={"endpoint_id": "456"})
+    config = config.model_copy(update={"models": registry.model_copy(update={"models": {**registry.models, "kongnet_det_midog_1": kongnet}})})
+    endpoint = RecordingEndpoint([{"boxes": []}] * 2)
+    gateway = make_gateway(config, {"vertex_endpoint_predict": adapter_for(endpoint)})
+    dark = png_image((512, 512), 0.25, rgb=(30, 180, 200))
+    result = gateway.invoke(
+        Task.MITOSIS_DETECT, "kongnet_det_midog_1", ModelInputs(images=(dark, dark)), decision_context(),
+        EntityRef(EntityType.TILE_BATCH, "t0000", ids=("p0", "p1")), DetectionList, params={"min_prob": 0.35},
+    )
+    assert result.output.detections == [[], []]
+    assert gateway.log.pending()[0]["output"] == {"points": [[], []]}
+
+
+def test_error_payload_fails_the_call_through_the_gateway():
+    config = get_pipeline_config()
+    registry = config.models
+    kongnet = registry.models["kongnet_det_midog_1"].model_copy(update={"endpoint_id": "456"})
+    config = config.model_copy(update={"models": registry.model_copy(update={"models": {**registry.models, "kongnet_det_midog_1": kongnet}})})
+    gateway = make_gateway(config, {"vertex_endpoint_predict": adapter_for(RecordingEndpoint([{"boxes": [], "error": "boom"}]))})
+    with pytest.raises(ModelCallError, match="boom"):
+        gateway.invoke(
+            Task.MITOSIS_DETECT, "kongnet_det_midog_1", ModelInputs(images=(png_image((512, 512), 0.25),)),
+            decision_context(), EntityRef(EntityType.TILE_BATCH, "t0000", ids=("p0",)), DetectionList,
+            params={"min_prob": 0.35},
         )
-        
-        detector = YoloMitosisDetector(endpoint_id="projects/123/locations/us-central1/endpoints/456")
-        assert detector.vertex_endpoint is not None
-        assert detector.model_version.startswith("vertex_ai_midog@")
-        
-        dummy_tile = np.ones((512, 512, 3), dtype=np.uint8) * 200
-        detections = detector.detect(dummy_tile)
-        
-        assert len(detections) == 2
-        assert detections[0] == (150.0, 250.0, 0.85)
-        assert detections[1] == (425.0, 525.0, 0.72)
-
-
-def test_yolo_detector_fallback_provenance(monkeypatch):
-    """Verify detector reports od_heuristic@dev truthfully when no weights or endpoints exist."""
-    monkeypatch.setattr(settings, "VERTEX_MITOSIS_ENDPOINT_ID", None)
-    detector = YoloMitosisDetector(weights_path=None, endpoint_id=None)
-    assert detector.vertex_endpoint is None
-    assert detector.model is None
-    assert detector.model_version == "od_heuristic@dev"
-
-
-def test_gemini_flash_referee_mock():
-    """Verify MedGemmaClient uses Gemini Flash referee and parses strict van Diest JSON."""
-    client = MedGemmaClient()
-    
-    mock_json_response = json.dumps({
-        "verdict": "CONFIRMED",
-        "envelope_dissolved": True,
-        "spiculation_detected": True,
-        "confidence": "high",
-        "rationale": "Dissolved envelope with distinct ragged chromatin projections."
-    })
-    
-    with patch.object(client, "_call_gemini_flash", return_value=mock_json_response):
-        dummy_crop = io.BytesIO()
-        Image.new("RGB", (128, 128), color=(220, 200, 220)).save(dummy_crop, format="PNG")
-        crop_bytes = dummy_crop.getvalue()
-        
-        resp = client.evaluate_mitosis_confirmation_sync(crop_bytes)
-        assert isinstance(resp, MitosisConfirmationResponse)
-        assert resp.verdict == "CONFIRMED"
-        assert resp.envelope_dissolved is True
-        assert resp.spiculation_detected is True
-        assert resp.confidence == "high"
 
 
 def test_pathologist_detection_preservation_in_db():
@@ -92,21 +156,21 @@ def test_pathologist_detection_preservation_in_db():
     )
     TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base.metadata.create_all(bind=engine)
-    
+
     db = TestingSession()
     case_id = "test-case-preserve"
     case = Case(id=case_id, created_by="test_user", status="open")
     db.add(case)
     db.commit()
-    
-    # 1. Seed existing detections: 1 model, 1 gemini_referee, 1 pathologist review, 1 pathologist added
+
+    # 1. Seed existing detections: 1 model, 1 referee, 1 pathologist review, 1 pathologist added
     d1 = Detection(id="d1", case_id=case_id, centroid_um=[100.0, 100.0], label="mitosis", label_source="model")
-    d2 = Detection(id="d2", case_id=case_id, centroid_um=[200.0, 200.0], label="mitosis", label_source="gemini_referee_confirmed")
+    d2 = Detection(id="d2", case_id=case_id, centroid_um=[200.0, 200.0], label="mitosis", label_source="referee:gemini_referee")
     d3 = Detection(id="d3", case_id=case_id, centroid_um=[300.0, 300.0], label="mitosis", label_source="pathologist")
     d4 = Detection(id="d4", case_id=case_id, centroid_um=[400.0, 400.0], label="mitosis", label_source="pathologist_manual_added")
     db.add_all([d1, d2, d3, d4])
     db.commit()
-    
+
     # 2. Run the preservation query used in worker/mitosis.py
     existing_pathologist_dets = list(
         db.scalars(
@@ -118,7 +182,7 @@ def test_pathologist_detection_preservation_in_db():
     )
     assert len(existing_pathologist_dets) == 2
     assert {d.id for d in existing_pathologist_dets} == {"d3", "d4"}
-    
+
     # 3. Purge non-pathologist detections
     db.execute(
         delete(Detection).where(
@@ -128,282 +192,28 @@ def test_pathologist_detection_preservation_in_db():
         )
     )
     db.commit()
-    
+
     # 4. Check remaining
     remaining = list(db.scalars(select(Detection).where(Detection.case_id == case_id)).all())
     assert len(remaining) == 2
     assert {d.id for d in remaining} == {"d3", "d4"}
 
 
-def test_mitosis_confirmation_lenient_sanitization():
-    """Verify that fuzzy LLM responses (e.g. Cannot determine, REJECTED) are sanitized without throwing schema errors."""
-    fuzzy_payload = {
-        "verdict": "Cannot determine",
-        "envelope_dissolved": "Cannot determine",
-        "spiculation_detected": "false",
-        "confidence": "Very low",
-        "rationale": "Solid color patch lacking discernible nuclear structures."
-    }
-    resp = MitosisConfirmationResponse.model_validate(fuzzy_payload)
-    assert resp.verdict == "REJECTED_RESTING_NUCLEUS"
-    assert resp.envelope_dissolved is False
-    assert resp.spiculation_detected is False
-    assert resp.confidence == "low"
-
-    confirmed_payload = {
-        "verdict": "CONFIRMED mitotic figure",
-        "envelope_dissolved": "true",
-        "spiculation_detected": True,
-        "confidence": "high",
-        "rationale": "Clear mitotic metaphase plate with dissolved nuclear boundary."
-    }
-    resp2 = MitosisConfirmationResponse.model_validate(confirmed_payload)
-    assert resp2.verdict == "CONFIRMED"
-    assert resp2.envelope_dissolved is True
-    assert resp2.spiculation_detected is True
-    assert resp2.confidence == "high"
-
-
-def test_pipeline_referee_model_version_provenance():
-    """Verify that referee and detector version strings truthfully reflect Vertex AI configuration."""
-    with patch("google.cloud.aiplatform.Endpoint"), patch("google.cloud.aiplatform.init"):
-        detector = YoloMitosisDetector(endpoint_id="6276949705008087040")
-    assert detector.model_version == "vertex_ai_midog@6276949705008087040"
-
-    ref_model = getattr(settings, "GEMINI_REFEREE_MODEL", "gemini-2.5-flash")
-    referee_version = f"{ref_model}@van_diest"
-    assert "van_diest" in referee_version
-    assert ("gemini-2.5-flash" in referee_version or "gemini-1.5-flash" in referee_version)
-
-
-def test_yolo_detector_negative_tile_empty_list():
-    """Verify negative tiles returning 0 predictions do not fall back to heuristic generator."""
-    with patch("google.cloud.aiplatform.Endpoint") as mock_endpoint_cls, \
-         patch("google.cloud.aiplatform.init"):
-        mock_endpoint = MagicMock()
-        mock_endpoint_cls.return_value = mock_endpoint
-        mock_endpoint.predict.return_value = MagicMock(predictions=[{"boxes": []}])
-
-        detector = YoloMitosisDetector(endpoint_id="projects/123/locations/us-central1/endpoints/456")
-        dummy_tile = np.ones((512, 512, 3), dtype=np.uint8) * 200
-        detections = detector.detect(dummy_tile)
-        assert detections == []
-
-
-def test_mitosis_confirmation_long_rationale_sanitization():
-    """Verify rationales exceeding 500 characters do not crash Pydantic validation."""
-    long_rationale = "Candidate exhibits clear metaphase features with aligned equatorial chromosome plate. " * 20
-    assert len(long_rationale) > 1000
-
-    payload = {
-        "verdict": "CONFIRMED",
-        "envelope_dissolved": True,
-        "spiculation_detected": True,
-        "confidence": "high",
-        "rationale": long_rationale
-    }
-    resp = MitosisConfirmationResponse.model_validate(payload)
-    assert resp.verdict == "CONFIRMED"
-    assert len(resp.rationale) > 500
-    assert len(resp.rationale) <= 4000
-
-
-def test_yolo_detector_vertex_ai_1024_subpatching():
-    """Verify 1024x1024 tile is sliced into 4x 512x512 sub-patches and coordinates are properly remapped."""
-    with patch("google.cloud.aiplatform.Endpoint") as mock_endpoint_cls, \
-         patch("google.cloud.aiplatform.init"):
-        mock_endpoint = MagicMock()
-        mock_endpoint_cls.return_value = mock_endpoint
-
-        # Return 1 box from patch (0,0) and 1 box from patch (512, 512)
-        mock_endpoint.predict.return_value = MagicMock(
-            predictions=[
-                {"boxes": [{"cx": 100.0, "cy": 120.0, "confidence": 0.88}]},  # patch (0, 0)
-                {"boxes": []},                                                  # patch (512, 0)
-                {"boxes": []},                                                  # patch (0, 512)
-                {"boxes": [{"cx": 50.0, "cy": 60.0, "confidence": 0.92}]}     # patch (512, 512)
-            ]
-        )
-
-        detector = YoloMitosisDetector(endpoint_id="projects/123/locations/us-central1/endpoints/456")
-        tile_1024 = np.ones((1024, 1024, 3), dtype=np.uint8) * 200
-        detections = detector.detect(tile_1024)
-
-        # Verify 4 instances were submitted in the single batch call
-        call_kwargs = mock_endpoint.predict.call_args[1]
-        assert len(call_kwargs["instances"]) == 4
-
-        # Verify remapped coordinates
-        assert len(detections) == 2
-        # Patch (0, 0): cx=100.0, cy=120.0
-        assert detections[0] == (100.0, 120.0, 0.88)
-        # Patch (512, 512): cx=50.0 + 512 = 562.0, cy=60.0 + 512 = 572.0
-        assert detections[1] == (562.0, 572.0, 0.92)
-
-
-def test_yolo_detector_vertex_ai_error_triggers_fallback():
-    """Verify that an endpoint error response causes _detect_vertex_ai to return None and fallback to heuristic."""
-    with patch("google.cloud.aiplatform.Endpoint") as mock_endpoint_cls, \
-         patch("google.cloud.aiplatform.init"):
-        mock_endpoint = MagicMock()
-        mock_endpoint_cls.return_value = mock_endpoint
-
-        # Endpoint returns an error payload (the exact error observed in RCA)
-        mock_endpoint.predict.return_value = MagicMock(
-            predictions=[{
-                "boxes": [],
-                "error": "Expected dimensions (512, 512), but got (1024, 1024)."
-            }]
-        )
-
-        detector = YoloMitosisDetector(endpoint_id="projects/123/locations/us-central1/endpoints/456")
-
-        # Test _detect_vertex_ai directly returns None on error
-        dummy_tile = np.ones((512, 512, 3), dtype=np.uint8) * 200
-        assert detector._detect_vertex_ai(dummy_tile) is None
-
-
-def test_yolo_detector_vertex_ai_non_standard_tile_padding():
-    """Verify non-standard tile sizes (e.g. 768x768) are padded to multiples of 512 and margin candidates filtered."""
-    with patch("google.cloud.aiplatform.Endpoint") as mock_endpoint_cls, \
-         patch("google.cloud.aiplatform.init"):
-        mock_endpoint = MagicMock()
-        mock_endpoint_cls.return_value = mock_endpoint
-
-        # 768x768 slices into 4 patches (2x2 grid) of 512x512
-        # Patch 3 (bottom-right) covers valid region [0:256, 0:256], and padding [256:512, 256:512]
-        mock_endpoint.predict.return_value = MagicMock(
-            predictions=[
-                {"boxes": []},
-                {"boxes": []},
-                {"boxes": []},
-                {"boxes": [
-                    {"cx": 100.0, "cy": 100.0, "confidence": 0.85},  # inside valid region (100 < 256)
-                    {"cx": 350.0, "cy": 350.0, "confidence": 0.90}   # in padded margin (350 >= 256) -> should be discarded
-                ]}
-            ]
-        )
-
-        detector = YoloMitosisDetector(endpoint_id="projects/123/locations/us-central1/endpoints/456")
-        tile_768 = np.ones((768, 768, 3), dtype=np.uint8) * 200
-        detections = detector.detect(tile_768)
-
-        call_kwargs = mock_endpoint.predict.call_args[1]
-        assert len(call_kwargs["instances"]) == 4
-
-        # Only the candidate in the valid region should survive: 512 + 100 = 612
-        assert len(detections) == 1
-        assert detections[0] == (612.0, 612.0, 0.85)
-
-
-def test_yolo_detector_vertex_ai_zero_detections_trusted():
-    """Verify that when Vertex AI succeeds with 0 detections on a negative tile, detect() returns [] without falling back to heuristic."""
-    with patch("google.cloud.aiplatform.Endpoint") as mock_endpoint_cls, \
-         patch("google.cloud.aiplatform.init"):
-        mock_endpoint = MagicMock()
-        mock_endpoint_cls.return_value = mock_endpoint
-
-        # Return 0 boxes across all patches
-        mock_endpoint.predict.return_value = MagicMock(
-            predictions=[
-                {"boxes": []},
-                {"boxes": []},
-                {"boxes": []},
-                {"boxes": []}
-            ]
-        )
-
-        detector = YoloMitosisDetector(endpoint_id="projects/123/locations/us-central1/endpoints/456")
-        tile_1024 = np.ones((1024, 1024, 3), dtype=np.uint8) * 200
-        detections = detector.detect(tile_1024)
-        assert detections == []
-
-
-def test_yolo_detector_does_not_pollute_vertex_results_on_dense_tile():
-    """Verify that when Vertex AI returns detections on a tile with hyperchromatic chromatin, detect() does NOT append OD candidates."""
-    with patch("google.cloud.aiplatform.Endpoint") as mock_endpoint_cls, \
-         patch("google.cloud.aiplatform.init"):
-        mock_endpoint = MagicMock()
-        mock_endpoint_cls.return_value = mock_endpoint
-
-        mock_endpoint.predict.return_value = MagicMock(
-            predictions=[
-                {"boxes": [{"cx": 200.0, "cy": 200.0, "confidence": 0.88}]},
-                {"boxes": []},
-                {"boxes": []},
-                {"boxes": []}
-            ]
-        )
-
-        detector = YoloMitosisDetector(endpoint_id="projects/123/locations/us-central1/endpoints/456")
-        # Dense dark H&E tile that would otherwise trigger optical density blobs
-        dense_tile = np.zeros((1024, 1024, 3), dtype=np.uint8)
-        dense_tile[:, :, 0] = 30  # very low intensity -> high optical density
-        dense_tile[:, :, 1] = 180
-        dense_tile[:, :, 2] = 200
-
-        detections = detector.detect(dense_tile)
-        # Authoritative: ONLY the Vertex AI box must be returned
-        assert len(detections) == 1
-        assert detections[0][0] == 200.0
-        assert detections[0][1] == 200.0
-        assert detections[0][2] == 0.88
-
-
 def test_van_diest_morphometric_verification_rejection():
-    """Verify that HoVerNetMitosisVerifier rejects small round pyknotic / apoptotic fragments under van Diest rules."""
-    from pipeline.verify import HoVerNetMitosisVerifier
-    verifier = HoVerNetMitosisVerifier(weights_path=None)
-
-    # Synthetic 128x128 crop with a small round dense apoptotic body
-    crop = np.ones((128, 128, 3), dtype=np.uint8) * 230
+    """The ablation-only v5 verifier heuristic rejects small round pyknotic / apoptotic fragments."""
     import cv2
-    # Draw small round pyknotic sphere at center (radius 8px = diam 16px, high circularity, smooth)
+    from pipeline.heuristics.morph_verifier import morphometric_mitosis_probability
+
+    crop = np.ones((128, 128, 3), dtype=np.uint8) * 230
     cv2.circle(crop, (64, 64), 8, (40, 20, 60), -1)
-
-    score, contour = verifier.verify(crop)
-    # Under van Diest morphometrics, small round pyknotic bodies must receive low score (< 0.35)
+    score, contour = morphometric_mitosis_probability(crop)
     assert score < 0.35
-
-
-def test_yolo_detector_vertex_empty_on_cellular_tile_rescued_by_od_features():
-    """Verify that when Vertex AI returns [] on a cellular tile with chromatin, OD sweep rescues candidates."""
-    with patch("google.cloud.aiplatform.Endpoint") as mock_endpoint_cls, \
-         patch("google.cloud.aiplatform.init"):
-        mock_endpoint = MagicMock()
-        mock_endpoint_cls.return_value = mock_endpoint
-
-        # Endpoint returns empty boxes (as observed in production on 40x tile)
-        mock_endpoint.predict.return_value = MagicMock(
-            predictions=[
-                {"boxes": []},
-                {"boxes": []},
-                {"boxes": []},
-                {"boxes": []}
-            ]
-        )
-
-        detector = YoloMitosisDetector(endpoint_id="projects/123/locations/us-central1/endpoints/456")
-        
-        # Cellular tile with hematoxylin staining and condensed chromatin blobs
-        import cv2
-        tile = np.ones((1024, 1024, 3), dtype=np.uint8) * 220
-        # Draw 3 condensed chromatin clusters (dark blue/purple)
-        cv2.circle(tile, (200, 200), 16, (40, 20, 80), -1)
-        cv2.circle(tile, (400, 400), 18, (35, 15, 75), -1)
-        cv2.circle(tile, (600, 600), 20, (50, 25, 90), -1)
-
-        detections = detector.detect(tile)
-        # Rescued by optical density chromatin sweeper: must not be 0
-        assert len(detections) >= 3
-        # Model version should retain vertex_ai provenance so UI does not show dev fallback warning
-        assert detector.model_version.startswith("vertex_ai_midog@")
 
 
 def test_greedy_place_hpfs_strictly_guarantees_10_hpfs_with_hotspots():
     """Verify that when hotspots only fit 9 HPFs, Pass 3 places the 10th HPF in tumor bed tissue to achieve >=2.0 mm²."""
     from pipeline.hpf import greedy_place_hpfs
-    
+
     # 20000 x 20000 um slide
     ny, nx = 40, 40
     stride = 500.0
@@ -437,8 +247,3 @@ def test_greedy_place_hpfs_strictly_guarantees_10_hpfs_with_hotspots():
     import math
     total_area_mm2 = 10 * (math.pi * (0.262 ** 2))
     assert total_area_mm2 > 2.0
-
-
-
-
-

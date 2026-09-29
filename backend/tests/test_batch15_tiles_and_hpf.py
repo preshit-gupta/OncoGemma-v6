@@ -24,7 +24,7 @@ from pipeline.tiles import (
     read_region_srgb,
     extract_patch_from_pyramid
 )
-from pipeline.probe import ProbeRunner
+from pipeline.probe import l2_normalize
 from app.core.config import settings
 from app.core.gcs import (
     generate_signed_upload_url,
@@ -306,23 +306,29 @@ def test_get_gcs_artifact_direct_url_regex_hotspot():
 # ---------------------------------------------------------------------------
 
 def test_probe_runner_dimension_assertion():
-    """Issue #88: ProbeRunner strictly verifies 384 embedding dimension."""
-    runner = ProbeRunner()
+    """Issue #88: the tumour classifier refuses embeddings of the wrong shape."""
+    from app.core.pipeline_config import get_pipeline_config
+    from app.inference.adapters.base import AdapterRequest, CallRejected
+    from app.inference.adapters.local_sklearn import LocalSklearnAdapter
 
     # Wrong number of dimensions (1D instead of 2D)
     with pytest.raises(ValueError) as exc1:
-        runner.predict_proba(np.zeros((384,), dtype=np.float32))
+        l2_normalize(np.zeros((384,), dtype=np.float32))
     assert "Embeddings must be a 2D array" in str(exc1.value)
 
+    entry = get_pipeline_config().models.models["triage_probe"]
+    adapter = LocalSklearnAdapter()
+
     # Wrong feature dimension (512 instead of 384)
-    with pytest.raises(ValueError) as exc2:
-        runner.predict_proba(np.zeros((10, 512), dtype=np.float32))
-    assert "Embedding dimension mismatch" in str(exc2.value)
+    with pytest.raises(CallRejected) as exc2:
+        adapter.call(entry, AdapterRequest("triage_probe", features=np.zeros((10, 512), dtype=np.float32)), 5.0)
+    assert "expects 384 features, got 512" in str(exc2.value)
 
     # Correct dimension (384)
-    probas = runner.predict_proba(np.zeros((5, 384), dtype=np.float32))
+    raw = adapter.call(entry, AdapterRequest("triage_probe", features=l2_normalize(np.ones((5, 384), dtype=np.float32))), 5.0)
+    probas = raw.data["probabilities"]
     assert len(probas) == 5
-    assert all(0.0 <= p <= 1.0 for p in probas)
+    assert all(0.0 <= p <= 1.0 for row in probas for p in row)
 
 
 def test_confirm_triage_mutual_exclusion_invariant():

@@ -57,7 +57,11 @@ def generate_mitosis_density_map(
 
         weight = 1.0
         if label == "unreviewed":
-            weight = float(cand.get("ver_conf", cand.get("det_conf", 0.5)))
+            # A verifier score when one exists (v5), otherwise the detector probability.
+            weight = cand["ver_conf"] if cand.get("ver_conf") is not None else cand.get("det_conf")
+            if weight is None:
+                raise ValueError(f"unreviewed candidate {cand.get('id')} has no detector or verifier probability")
+            weight = float(weight)
             # Issue #596: Ignore low-confidence candidate noise (< 0.5)
             if weight < 0.5:
                 continue

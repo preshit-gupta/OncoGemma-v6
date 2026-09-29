@@ -22,13 +22,6 @@ class Settings(BaseSettings):
         "VERTEX_PATH_FOUNDATION_LOCATION",
         "us-central1"
     )
-    # Note: Dedicated prediction DNS (*.prediction.vertexai.goog) is discovered automatically
-    # by aiplatform.Endpoint and used for raw_predict. VERTEX_PATH_FOUNDATION_API_ENDPOINT
-    # should only be set if routing the regional control plane (*-aiplatform.googleapis.com).
-    VERTEX_PATH_FOUNDATION_API_ENDPOINT: str | None = os.getenv(
-        "VERTEX_PATH_FOUNDATION_API_ENDPOINT",
-        None
-    )
 
     # Vertex AI Endpoint Configuration - MedGemma 1.5 (Stage 5 Grading)
     VERTEX_MEDGEMMA_ENDPOINT_ID: str = os.getenv(
@@ -39,13 +32,7 @@ class Settings(BaseSettings):
         "VERTEX_MEDGEMMA_LOCATION",
         "us-central1"
     )
-    VERTEX_MEDGEMMA_MODEL_VERSION: str = os.getenv(
-        "VERTEX_MEDGEMMA_MODEL_VERSION",
-        "1.5@2026.08"
-    )
-    MEDGEMMA_TEMPERATURE: float = float(os.getenv("MEDGEMMA_TEMPERATURE", "0.0"))
-    MEDGEMMA_MAX_RETRIES: int = int(os.getenv("MEDGEMMA_MAX_RETRIES", "2"))
-    USE_MOCK_VERTEX_AI: bool = os.getenv("USE_MOCK_VERTEX_AI", "false").lower() in ("true", "1")
+    # Model versions, generation settings and retries live in configs/models.yaml.
 
     # Vertex AI Endpoint Configuration - YOLO Mitosis Sweeper (Stage 4)
     VERTEX_MITOSIS_ENDPOINT_ID: str | None = os.getenv(
@@ -58,8 +45,6 @@ class Settings(BaseSettings):
     )
 
     # Gemini Multimodal Referee Configuration (Stage 4)
-    GEMINI_API_KEY: str | None = os.getenv("GEMINI_API_KEY", None)
-    USE_GEMINI_FLASH_REFEREE: bool = os.getenv("USE_GEMINI_FLASH_REFEREE", "true").lower() in ("true", "1")
     GEMINI_REFEREE_MODEL: str = os.getenv("GEMINI_REFEREE_MODEL", "gemini-2.5-flash")
 
     # Database: set exactly one of DATABASE_URL or CLOUD_SQL_CONNECTION_NAME (app.core.db).

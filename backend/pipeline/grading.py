@@ -305,18 +305,18 @@ def aggregate_grading_findings(
             "needs_human": True
         }
 
-    # 1. Filter tumor-containing patches for Tubule assessment (accounting for pathologist overrides)
-    tumor_tubule = []
-    for r in tubule_responses:
-        tumor_present = r.get("user_tumor_present") if r.get("user_tumor_present") is not None else r.get("tumor_present", True)
-        if tumor_present:
-            tumor_tubule.append(r)
-    
+    # 1. Filter tumor-containing patches for Tubule assessment (accounting for pathologist overrides).
+    # A patch whose estimate failed (None) and has no pathologist value is left out, never defaulted.
+    def _effective(r: Dict[str, Any], user_key: str, model_key: str) -> Any:
+        return r.get(user_key) if r.get(user_key) is not None else r.get(model_key)
+
+    tumor_tubule = [
+        r for r in tubule_responses
+        if _effective(r, "user_tumor_present", "tumor_present") and _effective(r, "user_tubule_percent", "tubule_percent") is not None
+    ]
+
     if tumor_tubule:
-        tubule_vals = [
-            float(r.get("user_tubule_percent") if r.get("user_tubule_percent") is not None else r.get("tubule_percent", 0.0))
-            for r in tumor_tubule
-        ]
+        tubule_vals = [float(_effective(r, "user_tubule_percent", "tubule_percent")) for r in tumor_tubule]
         # Pathologist-reviewed/modified patches receive highest confidence weight
         tubule_w = [
             1.5 if r.get("user_tubule_percent") is not None else weights_map.get(str(r.get("confidence", "medium")).lower(), 1.0)
@@ -329,13 +329,11 @@ def aggregate_grading_findings(
         tubule_score = None
         
     # 2. Pleomorphism mode calculation across all valid responses (accounting for pathologist overrides)
-    pleo_vals = [
-        int(r.get("user_pleo_score") if r.get("user_pleo_score") is not None else r.get("pleomorphism_score", 2))
-        for r in pleo_responses
-    ]
+    assessed_pleo = [r for r in pleo_responses if _effective(r, "user_pleo_score", "pleomorphism_score") is not None]
+    pleo_vals = [int(_effective(r, "user_pleo_score", "pleomorphism_score")) for r in assessed_pleo]
     pleo_w = [
         1.5 if r.get("user_pleo_score") is not None else weights_map.get(str(r.get("confidence", "medium")).lower(), 1.0)
-        for r in pleo_responses
+        for r in assessed_pleo
     ]
     
     pleo_score, pleo_dispersion = weighted_mode(pleo_vals, pleo_w, tie_breaker=max)

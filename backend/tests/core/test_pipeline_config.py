@@ -151,6 +151,61 @@ def test_files_that_disagree_are_rejected(tmp_path):
         load(configs)
 
 
+@pytest.mark.parametrize(
+    "edit, message",
+    [
+        (lambda d: d.update(embedding_model="medgemma"), "embedding_model 'medgemma' must be an embedding model"),
+        (lambda d: d.update(embedding_model="missing"), "embedding_model 'missing'"),
+        (lambda d: d.update(tumor_model="path_foundation"), "tumor_model 'path_foundation' must be a classifier"),
+        (lambda d: d["tumor_referee"].update(producer="triage_probe"), "must be a VLM"),
+        (lambda d: d["tumor_referee"].update(prompt="tumor_verification@v9.md"), "is not in configs/prompts"),
+        (lambda d: d["tumor_referee"].update(candidates=5), "at least hotspot_extraction.max_hotspots"),
+        (lambda d: d.update(vertex_ai={"batch_size": 64}), "vertex_ai"),
+    ],
+)
+def test_triage_models_must_exist_in_the_registry(tmp_path, edit, message):
+    configs = copy_configs(tmp_path)
+    edit_yaml(configs / "triage.yaml", edit)
+    with pytest.raises(ConfigLoadError, match=message):
+        load(configs)
+
+
+@pytest.mark.parametrize(
+    "edit, message",
+    [
+        (lambda d: d["detector"].update(producer="medgemma"), "must be a detector with an image input contract"),
+        (lambda d: d["detector"].update(tile_size_px=768, stride_px=704, tile_size_um=192.0),
+         "must be a multiple of the detector's"),
+        (lambda d: d["detector"].update(mpp=0.5, tile_size_um=512.0), "must equal the detector's input mpp 0.25"),
+        (lambda d: d["referee"].update(producer="kongnet_det_midog_1"), "must be a VLM"),
+        (lambda d: d["referee"].update(prompt="mitosis_referee@v2.md"), "is not in configs/prompts"),
+        (lambda d: d.update(verifier={"enabled": True}), "verifier"),
+        (lambda d: d["hpf"].update(min_tissue_coverage=1.5), "min_tissue_coverage"),
+    ],
+)
+def test_mitosis_models_must_exist_in_the_registry(tmp_path, edit, message):
+    configs = copy_configs(tmp_path)
+    edit_yaml(configs / "mitosis.yaml", edit)
+    with pytest.raises(ConfigLoadError, match=message):
+        load(configs)
+
+
+@pytest.mark.parametrize(
+    "edit, message",
+    [
+        (lambda d: d["grading"]["estimators"].update(producer="triage_probe"), "must be a VLM"),
+        (lambda d: d["grading"]["estimators"].update(pleo_prompt="pleo@v2.md"), "pleo_prompt 'pleo@v2.md' is not in configs/prompts"),
+        (lambda d: d["grading"]["estimators"].update(histotype_images=30), "must not exceed n_patches"),
+        (lambda d: d["grading"]["estimators"].pop("tubule_prompt"), "tubule_prompt"),
+    ],
+)
+def test_grading_estimators_must_exist_in_the_registry(tmp_path, edit, message):
+    configs = copy_configs(tmp_path)
+    edit_yaml(configs / "scoring.yaml", edit)
+    with pytest.raises(ConfigLoadError, match=message):
+        load(configs)
+
+
 def test_duplicate_yaml_key_is_rejected(tmp_path):
     configs = copy_configs(tmp_path)
     text = (configs / "triage.yaml").read_text(encoding="utf-8")

@@ -27,6 +27,7 @@ from app.core.config_types import (
     Percent,
     PositiveFloat,
     PositiveInt,
+    RegistryKey,
     StrictModel,
 )
 from app.core.fallbacks import FallbackPolicy
@@ -150,18 +151,15 @@ class QcConfig(StrictModel):
 # --- mitosis.yaml -----------------------------------------------------------
 
 class MitosisDetectorConfig(StrictModel):
-    model_name: NonEmptyStr
-    weights_path: NonEmptyStr
+    # Registry key of the detector; each tile is split into its input-sized patches.
+    producer: RegistryKey
     tile_size_px: PositiveInt
     mpp: Mpp
     tile_size_um: PositiveFloat
     stride_px: PositiveInt
     overlap_px: NonNegativeInt
     det_threshold: Fraction
-    review_threshold: Fraction
     nms_radius_um: PositiveFloat
-    batch_size: PositiveInt
-    fp16: bool
 
     @model_validator(mode="after")
     def _consistent(self) -> "MitosisDetectorConfig":
@@ -170,16 +168,19 @@ class MitosisDetectorConfig(StrictModel):
             math.isclose(self.tile_size_um, self.tile_size_px * self.mpp, rel_tol=1e-6),
             "tile_size_um must equal tile_size_px * mpp",
         )
-        _require(self.det_threshold <= self.review_threshold, "det_threshold must not exceed review_threshold")
         return self
 
 
-class MitosisVerifierConfig(StrictModel):
-    enabled: bool
-    model_name: NonEmptyStr
-    weights_path: NonEmptyStr
-    crop_size_px: PositiveInt
-    ver_threshold: Fraction
+class MitosisRefereeConfig(StrictModel):
+    """The VLM that adjudicates every detected candidate (SPEC-06 arm A2: v5 prompt, strict schema)."""
+
+    producer: RegistryKey
+    prompt: PromptFileName
+    # Image 1: a focus_px square at the slide's own resolution around the candidate.
+    focus_px: PositiveInt
+    # Image 2: a context_um square around it, resampled to context_px.
+    context_um: PositiveFloat
+    context_px: PositiveInt
 
 
 class MitosisHpfConfig(StrictModel):
@@ -188,6 +189,8 @@ class MitosisHpfConfig(StrictModel):
     density_grid_res_um: PositiveFloat
     min_separation_um: PositiveFloat
     relaxed_min_separation_um: PositiveFloat
+    # Minimum tissue fraction inside a placed HPF.
+    min_tissue_coverage: Fraction
 
     @model_validator(mode="after")
     def _non_overlapping(self) -> "MitosisHpfConfig":
@@ -218,16 +221,11 @@ class MitosisScoringConfig(StrictModel):
     classic_area_mm2: PositiveFloat
 
 
-class MitosisMockConfig(StrictModel):
-    use_mock_detector: bool
-
-
 class MitosisConfig(StrictModel):
     detector: MitosisDetectorConfig
-    verifier: MitosisVerifierConfig
+    referee: MitosisRefereeConfig
     hpf: MitosisHpfConfig
     scoring: MitosisScoringConfig
-    mock: MitosisMockConfig
 
 
 # --- scoring.yaml -----------------------------------------------------------
@@ -268,6 +266,14 @@ class ConfidenceWeights(StrictModel):
     high: PositiveFloat
 
 
+class GradingEstimatorsConfig(StrictModel):
+    producer: RegistryKey
+    tubule_prompt: PromptFileName
+    pleo_prompt: PromptFileName
+    histotype_prompt: PromptFileName
+    histotype_images: PositiveInt
+
+
 class GradingSamplingConfig(StrictModel):
     n_patches: PositiveInt
     patch_size_px: PositiveInt
@@ -275,6 +281,7 @@ class GradingSamplingConfig(StrictModel):
     min_tumor_patches: PositiveInt
     max_disp: Fraction
     confidence_weights: ConfidenceWeights
+    estimators: GradingEstimatorsConfig
 
     @model_validator(mode="after")
     def _ordered(self) -> "GradingSamplingConfig":
@@ -297,16 +304,16 @@ class ScoringConfig(StrictModel):
 
 # --- triage.yaml ------------------------------------------------------------
 
-class TriageVertexConfig(StrictModel):
-    batch_size: PositiveInt
-    concurrency: PositiveInt
-    max_retries: NonNegativeInt
+class TumorRefereeConfig(StrictModel):
+    """The VLM that checks candidate hotspots for invasive tumour (SPEC-05 §5.4 arm)."""
 
-
-class TriageProbeConfig(StrictModel):
-    model_name: NonEmptyStr
-    model_path: NonEmptyStr
-    version: NonEmptyStr
+    producer: RegistryKey
+    prompt: PromptFileName
+    # Candidates sent to the referee; hotspot_extraction.max_hotspots of them are kept.
+    candidates: PositiveInt
+    # Each candidate is shown as a square field_um wide, resampled to size_px (the prompt states both).
+    field_um: PositiveFloat
+    size_px: PositiveInt
 
 
 class HotspotExtractionConfig(StrictModel):
@@ -323,9 +330,19 @@ class TriageConfig(StrictModel):
     patch_size_px: PositiveInt
     tissue_threshold_pct: Fraction
     max_sample_patches: PositiveInt
-    vertex_ai: TriageVertexConfig
-    probe: TriageProbeConfig
+    # Registry keys: the tile embedder and the classifier over its embeddings.
+    embedding_model: RegistryKey
+    tumor_model: RegistryKey
+    tumor_referee: TumorRefereeConfig
     hotspot_extraction: HotspotExtractionConfig
+
+    @model_validator(mode="after")
+    def _enough_candidates(self) -> "TriageConfig":
+        _require(
+            self.tumor_referee.candidates >= self.hotspot_extraction.max_hotspots,
+            "tumor_referee.candidates must be at least hotspot_extraction.max_hotspots",
+        )
+        return self
 
 
 # --- pricing.yaml -----------------------------------------------------------
@@ -364,7 +381,79 @@ class PipelineConfig(StrictModel):
             self.mitosis.hpf.radius_um == self.scoring.hpf.radius_um and self.mitosis.hpf.count == self.scoring.hpf.count,
             "mitosis.yaml hpf and scoring.yaml hpf must have the same radius_um and count",
         )
+        self._triage_models_exist()
+        self._mitosis_models_exist()
+        self._grading_models_exist()
         return self
+
+    def _grading_models_exist(self) -> None:
+        estimators = self.scoring.grading.estimators
+        vlm = self.models.models.get(estimators.producer)
+        _require(
+            vlm is not None and vlm.kind == "vlm",
+            f"scoring.yaml grading.estimators.producer {estimators.producer!r} must be a VLM in models.yaml",
+        )
+        for field in ("tubule_prompt", "pleo_prompt", "histotype_prompt"):
+            prompt = getattr(estimators, field)
+            _require(
+                prompt in self.prompts,
+                f"scoring.yaml grading.estimators.{field} {prompt!r} is not in configs/prompts",
+            )
+        _require(
+            estimators.histotype_images <= self.scoring.grading.n_patches,
+            "scoring.yaml grading.estimators.histotype_images must not exceed n_patches",
+        )
+
+    def _mitosis_models_exist(self) -> None:
+        models, detector, referee = self.models.models, self.mitosis.detector, self.mitosis.referee
+        entry = models.get(detector.producer)
+        contract = getattr(entry, "input", None)
+        _require(
+            entry is not None and entry.kind == "detector" and contract is not None and hasattr(contract, "size_px"),
+            f"mitosis.yaml detector.producer {detector.producer!r} must be a detector with an image input contract",
+        )
+        patch_w, patch_h = contract.size_px
+        _require(
+            patch_w == patch_h and detector.tile_size_px % patch_w == 0,
+            f"mitosis.yaml detector.tile_size_px must be a multiple of the detector's {contract.size_px} input",
+        )
+        _require(
+            math.isclose(detector.mpp, contract.mpp),
+            f"mitosis.yaml detector.mpp {detector.mpp} must equal the detector's input mpp {contract.mpp}",
+        )
+        vlm = models.get(referee.producer)
+        _require(
+            vlm is not None and vlm.kind == "vlm",
+            f"mitosis.yaml referee.producer {referee.producer!r} must be a VLM in models.yaml",
+        )
+        _require(
+            referee.prompt in self.prompts,
+            f"mitosis.yaml referee.prompt {referee.prompt!r} is not in configs/prompts",
+        )
+
+    def _triage_models_exist(self) -> None:
+        models, triage = self.models.models, self.triage
+        embedder = models.get(triage.embedding_model)
+        _require(
+            embedder is not None and embedder.kind == "embedding",
+            f"triage.yaml embedding_model {triage.embedding_model!r} must be an embedding model in models.yaml",
+        )
+        classifier = models.get(triage.tumor_model)
+        _require(
+            classifier is not None
+            and classifier.kind == "classifier"
+            and getattr(getattr(classifier, "input", None), "features", None) == triage.embedding_model,
+            f"triage.yaml tumor_model {triage.tumor_model!r} must be a classifier over {triage.embedding_model}",
+        )
+        referee = models.get(triage.tumor_referee.producer)
+        _require(
+            referee is not None and referee.kind == "vlm",
+            f"triage.yaml tumor_referee.producer {triage.tumor_referee.producer!r} must be a VLM in models.yaml",
+        )
+        _require(
+            triage.tumor_referee.prompt in self.prompts,
+            f"triage.yaml tumor_referee.prompt {triage.tumor_referee.prompt!r} is not in configs/prompts",
+        )
 
     def config_hash(self) -> str:
         return hashlib.sha256(canonical_json(self.model_dump(mode="json")).encode("utf-8")).hexdigest()
