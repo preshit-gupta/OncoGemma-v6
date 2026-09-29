@@ -28,6 +28,14 @@ class FetchIntegrityError(Exception):
     pass
 
 
+class SlideMetadataError(Exception):
+    """Raised when a slide file cannot be opened to read its metadata (mpp, magnification, scanner)."""
+
+    def __init__(self, slide_path: str, reason: str) -> None:
+        self.slide_path = slide_path
+        super().__init__(f"Cannot read slide metadata from {slide_path}: {reason}")
+
+
 @dataclass(frozen=True)
 class FetchedFile:
     slide_id: str

@@ -9,6 +9,7 @@ from .base import (
     DatasetConfigMissing,
     FetchedFile,
     FetchIntegrityError,
+    SlideMetadataError,
     load_config,
     load_registry,
 )
@@ -47,6 +48,7 @@ __all__ = [
     "LocalStorage",
     "MANIFEST_COLUMNS",
     "MIDOGppAdapter",
+    "SlideMetadataError",
     "Storage",
     "TCGABRCAAdapter",
     "TUPAC16Adapter",

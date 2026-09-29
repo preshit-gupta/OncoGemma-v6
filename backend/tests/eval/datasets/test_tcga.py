@@ -4,12 +4,15 @@ SPEC-02 §3.1 and WP-5.2.
 """
 import hashlib
 import json
+import re
+import sys
+import types
 from pathlib import Path
 import httpx
 import pandas as pd
 import pytest
 
-from eval.datasets.base import FetchedFile, FetchIntegrityError
+from eval.datasets.base import FetchedFile, FetchIntegrityError, SlideMetadataError
 from eval.datasets.storage import LocalStorage
 from eval.datasets.tcga import TCGABRCAAdapter
 
@@ -198,3 +201,102 @@ def test_tcga_to_manifest_passes_validation():
     assert len(manifest_df) == 1
     assert manifest_df.iloc[0]["dataset"] == "tcga_brca_dx"
     assert manifest_df.iloc[0]["sha256"] == "b" * 64
+
+
+class _FakeOpenSlideError(Exception):
+    pass
+
+
+class _FakeOpenSlideUnsupportedFormatError(_FakeOpenSlideError):
+    pass
+
+
+class _FakeSlide:
+    def __init__(self, properties: dict[str, str]) -> None:
+        self.properties = properties
+
+    def __enter__(self) -> "_FakeSlide":
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        return None
+
+
+def _fake_openslide(open_slide) -> types.ModuleType:
+    """Stand-in `openslide` module; mirrors the real error hierarchy, OpenSlide(path) calls open_slide."""
+    module = types.ModuleType("openslide")
+    module.OpenSlideError = _FakeOpenSlideError
+    module.OpenSlideUnsupportedFormatError = _FakeOpenSlideUnsupportedFormatError
+    module.OpenSlide = open_slide
+    return module
+
+
+def test_tcga_slide_meta_reads_openslide_properties(monkeypatch, tmp_path: Path):
+    properties = {"openslide.mpp-x": "0.2527", "aperio.AppMag": "40", "openslide.vendor": "aperio"}
+    monkeypatch.setitem(sys.modules, "openslide", _fake_openslide(lambda path: _FakeSlide(properties)))
+    adapter = TCGABRCAAdapter()
+    row = pd.Series({"file_id": "f1", "submitter_id": "TCGA-A7-A0DC"})
+
+    meta = adapter.slide_meta(row, str(tmp_path / "f1.svs"))
+
+    assert meta["mpp_override"] == 0.2527
+    assert meta["mpp_source"] == "file"
+    assert meta["native_mag"] == 40.0
+    assert meta["scanner"] == "aperio"
+    assert meta["tss"] == "A7"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        _FakeOpenSlideError("Not a TIFF file"),
+        _FakeOpenSlideUnsupportedFormatError("Unsupported or missing image file"),
+        FileNotFoundError(2, "No such file or directory"),
+    ],
+    ids=["openslide_error", "unsupported_format", "file_not_found"],
+)
+def test_tcga_slide_meta_unreadable_slide_raises(monkeypatch, tmp_path: Path, error: Exception):
+    def open_slide(path: str):
+        raise error
+
+    monkeypatch.setitem(sys.modules, "openslide", _fake_openslide(open_slide))
+    adapter = TCGABRCAAdapter()
+    row = pd.Series({"file_id": "dx-corrupt", "submitter_id": "TCGA-A7-A0DC"})
+    # Never created on disk, so this also checks a missing file is not skipped silently.
+    slide_path = str(tmp_path / "dx-corrupt.svs")
+
+    with pytest.raises(SlideMetadataError, match=re.escape(slide_path)) as excinfo:
+        adapter.slide_meta(row, slide_path)
+
+    assert excinfo.value.slide_path == slide_path
+    assert excinfo.value.__cause__ is error
+
+
+def test_tcga_to_manifest_unreadable_slide_raises(monkeypatch, tmp_path: Path):
+    def open_slide(path: str):
+        raise _FakeOpenSlideUnsupportedFormatError("Unsupported or missing image file")
+
+    monkeypatch.setitem(sys.modules, "openslide", _fake_openslide(open_slide))
+    adapter = TCGABRCAAdapter()
+    discovered = pd.DataFrame([
+        {
+            "file_id": "f1",
+            "file_name": "TCGA-A7-A0DC-01Z-00-DX1.svs",
+            "submitter_id": "TCGA-A7-A0DC",
+            "patient_id": "TCGA-A7-A0DC",
+            "tss": "A7",
+        }
+    ])
+    fetched = {
+        "f1": FetchedFile(
+            slide_id="f1",
+            uri="file:///path/to/tcga-brca/dx/f1.svs",
+            sha256="b" * 64,
+            md5="a" * 32,
+            size_bytes=5000,
+        )
+    }
+    slide_path = str(tmp_path / "f1.svs")
+
+    with pytest.raises(SlideMetadataError, match=re.escape(slide_path)):
+        adapter.to_manifest(discovered, fetched, local_slide_paths={"f1": slide_path})
