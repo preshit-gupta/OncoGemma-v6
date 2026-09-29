@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import math
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Iterator, Literal, Protocol
 from uuid import UUID
 
@@ -347,12 +347,7 @@ def read_region_at_mpp(
     image = image.resize((out_w, out_h), resample, box=(box[0], box[1], min(box[2], read_w), min(box[3], read_h)))
     rgb = np.array(image, dtype=np.uint8)
 
-    stain_profile_id = None
-    if color == "normalized":
-        rgb = stain.apply(rgb)
-        stain_profile_id = stain.profile_id
-
-    return Region(
+    region = Region(
         rgb=rgb,
         target_mpp=target_mpp,
         origin_um=(float(x_um), float(y_um)),
@@ -361,9 +356,17 @@ def read_region_at_mpp(
         native_mpp=level.mpp,
         upsampled=level.mpp > target_mpp * (1 + mpp_tolerance),
         icc_applied=icc_applied,
-        color=color,
-        stain_profile_id=stain_profile_id,
+        color="raw",
+        stain_profile_id=None,
     )
+    return normalize_region(region, stain) if color == "normalized" else region
+
+
+def normalize_region(region: Region, stain: StainApplier) -> Region:
+    """The same region through the slide's persisted stain transform, for a caller that needs both colours."""
+    if region.color != "raw":
+        raise ValueError("only a raw region can be normalized")
+    return replace(region, rgb=stain.apply(region.rgb), color="normalized", stain_profile_id=stain.profile_id)
 
 
 def iter_extent_strips(reader: SlideReader, mpp: float) -> Iterator[tuple[int, np.ndarray]]:
@@ -384,3 +387,49 @@ def read_extent(reader: SlideReader, mpp: float) -> np.ndarray:
     """The slide's full extent at ``mpp`` as one RGB array (see ``iter_extent_strips``)."""
     strips = [rgb for _, rgb in iter_extent_strips(reader, mpp)]
     return np.concatenate(strips, axis=0)
+
+
+# DeepZoom tile edge; the viewer, the tile routers and the pyramid generator assume it.
+DZI_TILE_PX = 256
+
+
+def dzi_max_level(width_px: int, height_px: int) -> int:
+    """The deepest DeepZoom level of a slide (level 0 is one pixel; each level doubles), as OpenSlide numbers them."""
+    return math.ceil(math.log2(max(width_px, height_px)))
+
+
+def dzi_level_dimensions(width_px: int, height_px: int, level: int) -> tuple[int, int]:
+    """Size in pixels of DeepZoom ``level``: the slide shrunk by ``2 ** (max_level - level)``, rounded up."""
+    scale = 1 << (dzi_max_level(width_px, height_px) - level)
+    return -(-width_px // scale), -(-height_px // scale)
+
+
+def read_dzi_tile(
+    reader: SlideReader, level: int, col: int, row: int, *, color: Color = "raw", stain: StainApplier | None = None
+) -> Region:
+    """DeepZoom tile (``col``, ``row``) of ``level``, exactly the size OpenSlide's DeepZoomGenerator gives it.
+
+    An edge tile is smaller than ``DZI_TILE_PX``. The tile is read through ``read_region_at_mpp`` at the
+    level's resolution, so it has the same colour handling as every other read. A slide whose x and y
+    resolutions differ reads a fraction of a pixel off the tile size; the tile is resized to fit it.
+    """
+    width_px, height_px = reader.dimensions
+    max_level = dzi_max_level(width_px, height_px)
+    if not 0 <= level <= max_level:
+        raise RegionOutOfBoundsError(f"DeepZoom level {level} is outside 0..{max_level}")
+    scale = 1 << (max_level - level)
+    level_w, level_h = dzi_level_dimensions(width_px, height_px, level)
+    x0_px, y0_px = col * DZI_TILE_PX, row * DZI_TILE_PX
+    if not (0 <= x0_px < level_w and 0 <= y0_px < level_h):
+        raise RegionOutOfBoundsError(f"DeepZoom tile ({col}, {row}) is outside the {level_w}x{level_h} px level {level}")
+    tile_w, tile_h = min(DZI_TILE_PX, level_w - x0_px), min(DZI_TILE_PX, level_h - y0_px)
+    region = read_region_at_mpp(
+        reader,
+        x0_px * scale * reader.mpp_x, y0_px * scale * reader.mpp_y,
+        tile_w * scale * reader.mpp_x, tile_h * scale * reader.mpp_y,
+        reader.mpp_x * scale, color=color, stain=stain,
+    )
+    if region.rgb.shape[:2] != (tile_h, tile_w):
+        resized = Image.fromarray(region.rgb).resize((tile_w, tile_h), Image.Resampling.BICUBIC)
+        region = replace(region, rgb=np.array(resized, dtype=np.uint8))
+    return region

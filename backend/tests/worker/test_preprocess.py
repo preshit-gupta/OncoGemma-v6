@@ -183,11 +183,6 @@ def test_the_qc_stage_is_queued_with_the_preprocess_output(stage2_outputs):
     assert qc.status == "queued" and qc.input_ref["preprocess_output_ref"] == stage2_outputs.output_ref
 
 
-def test_the_v5_stain_params_file_is_still_written_for_unmigrated_stages(stage2_outputs):
-    params = json.loads(download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{stage2_outputs.case.id}/preprocess/stain_params.json"))
-    assert params["fit_status"] == "fitted" and len(params["stain_matrix"]) == 2
-
-
 def test_a_glass_only_slide_is_degenerate_and_gets_no_normalised_pyramid(db, tmp_path):
     glass = np.full((HEIGHT_PX, WIDTH_PX, 3), GLASS, dtype=np.uint8)
     case, slide, stage = add_case(db, tmp_path, rgb=glass)

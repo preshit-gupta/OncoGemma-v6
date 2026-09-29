@@ -6,7 +6,6 @@ import math
 import tempfile
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, Literal
-import numpy as np
 from PIL import Image
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Response
 from pydantic import BaseModel, Field
@@ -17,15 +16,17 @@ from app.core.config import settings
 from app.core.gcs import (
     parse_gcs_uri,
     download_blob_as_bytes,
-    download_blob_as_text,
     download_blob_to_filename,
     upload_blob_from_bytes,
-    delete_blob,
-    resolve_slide_raw_uri
+    delete_blob
 )
 from app.core.db import get_db
-from app.core.openslide_lock import OPENSLIDE_GLOBAL_LOCK
 from app.core.pipeline_config import get_pipeline_config
+from app.core.slide_access import PRECONDITION_ERRORS, open_case_slide, slide_stain_transform
+from app.core.tissue_mask_store import load_tissue_mask
+from google.api_core.exceptions import NotFound
+from pipeline.errors import SlideReadError, SpecimenTypeRequired, StainError
+from pipeline.slide_io import centered_origin_um, normalize_region, read_region_at_mpp
 from app.models.case import Case
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
@@ -324,62 +325,36 @@ def get_candidate_crop(
         if not slide_obj or not getattr(slide_obj, "mpp_x", None) or slide_obj.mpp_x <= 0 or not getattr(slide_obj, "mpp_y", None) or slide_obj.mpp_y <= 0:
             raise HTTPException(status_code=400, detail="Slide is missing valid MPP (status='needs_mpp'). Cannot extract crop.")
 
-        mpp_x = float(slide_obj.mpp_x)
-        mpp_y = float(slide_obj.mpp_y)
-
+        # The crop is what the referee saw: focus_px at focus_mpp around the candidate, in the slide's own
+        # colour ("orig") or through its persisted stain profile ("norm"). Padded with white past the edge.
+        referee_cfg = get_pipeline_config().mitosis.referee
+        focus_um = referee_cfg.focus_px * referee_cfg.focus_mpp
         try:
-            gcs_uri_original = resolve_slide_raw_uri(case_id, slide_obj) or getattr(slide_obj, "gcs_uri_original", None) or f"gs://{settings.GCS_RAW_BUCKET}/cases/{case_id}/slide.svs"
-            raw_bucket_name, r_blob_name = parse_gcs_uri(gcs_uri_original)
-            local_slide_path = get_cached_slide_path(raw_bucket_name, r_blob_name)
+            stain_transform = slide_stain_transform(db, slide_obj) if stain == "norm" else None
+            with open_case_slide(case_id, slide_obj) as reader:
+                region = read_region_at_mpp(
+                    reader, cx_um - focus_um / 2, cy_um - focus_um / 2, focus_um, focus_um, referee_cfg.focus_mpp,
+                    color="raw" if stain_transform is None else "normalized", stain=stain_transform,
+                )
+            buf = io.BytesIO()
+            Image.fromarray(region.rgb).save(buf, format="PNG")
+            extracted_crop_bytes = buf.getvalue()
 
-            if os.path.exists(local_slide_path):
-                with OPENSLIDE_GLOBAL_LOCK:
-                    import openslide
-                    os_slide = None
-                    try:
-                        os_slide = openslide.OpenSlide(local_slide_path)
-                        crop_size_px = 128
-                        half_crop_px = crop_size_px // 2
-                        cx_px = int(cx_um / mpp_x)
-                        cy_px = int(cy_um / mpp_y)
-                        top_left_x = max(0, cx_px - half_crop_px)
-                        top_left_y = max(0, cy_px - half_crop_px)
-                        crop_pil = os_slide.read_region((top_left_x, top_left_y), 0, (crop_size_px, crop_size_px)).convert("RGB")
-                    finally:
-                        if os_slide and hasattr(os_slide, "close"):
-                            os_slide.close()
+            try:
+                upload_blob_from_bytes(
+                    settings.GCS_ARTIFACTS_BUCKET,
+                    blob_name,
+                    extracted_crop_bytes,
+                    "image/png"
+                )
+            except Exception as up_e:
+                print(f"[Candidate Crop GCS Cache Note] {up_e}")
 
-                if stain == "norm":
-                    try:
-                        from pipeline.stain import PureNumpyMacenkoNormalizer
-                        sp_text = download_blob_as_text(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_id}/preprocess/stain_params.json")
-                        sp_data = json.loads(sp_text)
-                        if "stain_matrix" in sp_data and "max_concentrations" in sp_data:
-                            norm_obj = PureNumpyMacenkoNormalizer()
-                            norm_obj.stain_matrix_target = np.array(sp_data["stain_matrix"], dtype=float)
-                            norm_obj.max_conc_target = np.array(sp_data["max_concentrations"], dtype=float)
-                            norm_arr = norm_obj.transform(np.array(crop_pil))
-                            crop_pil = Image.fromarray(norm_arr)
-                    except Exception as se:
-                        print(f"[Candidate Crop Normalization Note] {se}")
-
-                buf = io.BytesIO()
-                crop_pil.save(buf, format="PNG")
-                extracted_crop_bytes = buf.getvalue()
-
-                try:
-                    upload_blob_from_bytes(
-                        settings.GCS_ARTIFACTS_BUCKET,
-                        blob_name,
-                        extracted_crop_bytes,
-                        "image/png"
-                    )
-                except Exception as up_e:
-                    print(f"[Candidate Crop GCS Cache Note] {up_e}")
-
-                return Response(content=extracted_crop_bytes, media_type="image/png", headers={"Cache-Control": "private, max-age=31536000, immutable"})
-        except Exception as e:
-            print(f"[Candidate Crop Extraction Error] {e}")
+            return Response(content=extracted_crop_bytes, media_type="image/png", headers={"Cache-Control": "private, max-age=31536000, immutable"})
+        except PRECONDITION_ERRORS as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (SlideReadError, NotFound, OSError) as exc:
+            print(f"[Candidate Crop Extraction Error] {exc}")
 
     raise HTTPException(status_code=404, detail=f"Candidate crop {candidate_id} could not be extracted from authentic slide")
 
@@ -447,75 +422,35 @@ def get_hpf_thumbnail(
     if not slide_obj or not getattr(slide_obj, "mpp_x", None) or slide_obj.mpp_x <= 0 or not getattr(slide_obj, "mpp_y", None) or slide_obj.mpp_y <= 0:
         raise HTTPException(status_code=400, detail="Slide is missing valid MPP (status='needs_mpp'). Cannot extract HPF thumbnail.")
 
-    mpp_x = float(slide_obj.mpp_x)
-    mpp_y = float(slide_obj.mpp_y)
-
-    # Resolution mapping calibrated to frontend HPF reticle canvas (r=236 px -> radius_um=262.0)
-    field_size_um = 577.29
+    # Review image width calibrated to the frontend HPF reticle canvas (r=236 px -> radius_um=262.0)
+    hpf_cfg = get_pipeline_config().mitosis.hpf
+    field_size_um = hpf_cfg.review_field_um
+    target_dim = hpf_cfg.review_px // {"40x": 1, "20x": 2, "10x": 4}[mag]
 
     extracted_bytes = None
     media_type = "image/png"
 
-    # OpenSlide raw WSI extraction directly from cached raw slide
+    # Raw WSI extraction from the cached raw slide, through the slide's persisted stain profile for "norm"
     try:
-        gcs_uri_original = resolve_slide_raw_uri(case_id, slide_obj) or getattr(slide_obj, "gcs_uri_original", None) or f"gs://{settings.GCS_RAW_BUCKET}/cases/{case_id}/slide.svs"
-        raw_bucket_name, blob_name = parse_gcs_uri(gcs_uri_original)
-        local_slide_path = get_cached_slide_path(raw_bucket_name, blob_name)
-
-        if os.path.exists(local_slide_path):
-            with OPENSLIDE_GLOBAL_LOCK:
-                import openslide
-                os_slide = None
-                try:
-                    os_slide = openslide.OpenSlide(local_slide_path)
-                    dim_w, dim_h = getattr(os_slide, "dimensions", (100000, 100000))
-                    crop_w_px = max(1, int(round(field_size_um / mpp_x)))
-                    crop_h_px = max(1, int(round(field_size_um / mpp_y)))
-
-                    cx_px = int(cx_um / mpp_x)
-                    cy_px = int(cy_um / mpp_y)
-
-                    x0 = max(0, min(dim_w - crop_w_px, cx_px - crop_w_px // 2))
-                    y0 = max(0, min(dim_h - crop_h_px, cy_px - crop_h_px // 2))
-
-                    downsample = 1.0 if mag == "40x" else (2.0 if mag == "20x" else 4.0)
-                    target_level = os_slide.get_best_level_for_downsample(downsample)
-                    lvl_downsample = float(os_slide.level_downsamples[target_level])
-                    lvl_w = max(1, int(round(crop_w_px / lvl_downsample)))
-                    lvl_h = max(1, int(round(crop_h_px / lvl_downsample)))
-
-                    patch_raw = os_slide.read_region((x0, y0), target_level, (lvl_w, lvl_h)).convert("RGB")
-                finally:
-                    if os_slide and hasattr(os_slide, "close"):
-                        os_slide.close()
-
-            target_dim = 2048 if mag == "40x" else (1024 if mag == "20x" else 512)
-            patch_final = patch_raw.resize((target_dim, target_dim), Image.Resampling.BILINEAR) if patch_raw.size != (target_dim, target_dim) else patch_raw
-
-            if stain == "norm":
-                try:
-                    from pipeline.stain import PureNumpyMacenkoNormalizer
-                    sp_text = download_blob_as_text(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_id}/preprocess/stain_params.json")
-                    sp_data = json.loads(sp_text)
-                    if "stain_matrix" in sp_data and "max_concentrations" in sp_data:
-                        norm_obj = PureNumpyMacenkoNormalizer()
-                        norm_obj.stain_matrix_target = np.array(sp_data["stain_matrix"], dtype=float)
-                        norm_obj.max_conc_target = np.array(sp_data["max_concentrations"], dtype=float)
-                        norm_arr = norm_obj.transform(np.array(patch_final))
-                        patch_final = Image.fromarray(norm_arr)
-                except Exception as se:
-                    print(f"[HPF Normalization Note] {se}")
-
-            buf = io.BytesIO()
-            if mag == "40x":
-                patch_final.save(buf, format="JPEG", quality=94)
-                media_type = "image/jpeg"
-            else:
-                patch_final.save(buf, format="PNG")
-                media_type = "image/png"
-            extracted_bytes = buf.getvalue()
-    except Exception as e:
-        print(f"[HPF Extraction Error] {e}")
+        stain_transform = slide_stain_transform(db, slide_obj) if stain == "norm" else None
+        with open_case_slide(case_id, slide_obj) as reader:
+            x_um, y_um = centered_origin_um(reader, cx_um, cy_um, field_size_um, field_size_um)
+            region = read_region_at_mpp(
+                reader, x_um, y_um, field_size_um, field_size_um, field_size_um / target_dim,
+                color="raw" if stain_transform is None else "normalized", stain=stain_transform,
+            )
+        buf = io.BytesIO()
+        if mag == "40x":
+            Image.fromarray(region.rgb).save(buf, format="JPEG", quality=94)
+            media_type = "image/jpeg"
+        else:
+            Image.fromarray(region.rgb).save(buf, format="PNG")
+            media_type = "image/png"
+        extracted_bytes = buf.getvalue()
+    except PRECONDITION_ERRORS as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (SlideReadError, NotFound, OSError) as exc:
+        print(f"[HPF Extraction Error] {exc}")
 
     if extracted_bytes is None:
         raise HTTPException(status_code=404, detail=f"HPF #{seq} microscopic patch ({mag}, {stain}) could not be extracted from authentic slide")
@@ -755,43 +690,43 @@ def add_pathologist_mitosis(payload: AddCandidatePayload, db: Session = Depends(
     if slide_obj:
         if not getattr(slide_obj, "mpp_x", None) or not getattr(slide_obj, "mpp_y", None):
             raise HTTPException(status_code=400, detail="Slide is missing valid MPP (status='needs_mpp'). Cannot generate crop.")
-        mpp_x = float(slide_obj.mpp_x)
-        mpp_y = float(slide_obj.mpp_y)
-    else:
-        mpp_x = 0.25
-        mpp_y = 0.25
 
-    crop_pil = None
-    if slide_obj and mpp_x and mpp_y:
-        gcs_uri_original = resolve_slide_raw_uri(case_id, slide_obj) or getattr(slide_obj, "gcs_uri_original", None) or f"gs://{settings.GCS_RAW_BUCKET}/cases/{case_id}/{slide_obj.id}.svs"
-        raw_bucket_name, blob_name = parse_gcs_uri(gcs_uri_original)
+    crop_bytes = None  # as scanned
+    norm_bytes = None  # through the slide's persisted stain profile, when the slide has a usable one
+    if slide_obj:
+        # The same crop the referee sees for a model candidate: focus_px at focus_mpp.
+        referee_cfg = get_pipeline_config().mitosis.referee
+        focus_um = referee_cfg.focus_px * referee_cfg.focus_mpp
         try:
-            local_slide_path = get_cached_slide_path(raw_bucket_name, blob_name)
-            if os.path.exists(local_slide_path):
-                import openslide
-                with OPENSLIDE_GLOBAL_LOCK:
-                    oslide = openslide.OpenSlide(local_slide_path)
-                    px = int(cx_um / mpp_x - 64)
-                    py = int(cy_um / mpp_y - 64) # Anisotropic Y axis (#753)
-                    crop_pil = oslide.read_region((px, py), 0, (128, 128)).convert("RGB")
-                    oslide.close()
-        except Exception as e:
+            with open_case_slide(case_id, slide_obj) as reader:
+                region = read_region_at_mpp(
+                    reader, cx_um - focus_um / 2, cy_um - focus_um / 2, focus_um, focus_um, referee_cfg.focus_mpp
+                )
+            buf = io.BytesIO()
+            Image.fromarray(region.rgb).save(buf, format="PNG")
+            crop_bytes = buf.getvalue()
+            try:
+                stain_transform = slide_stain_transform(db, slide_obj)
+            except (StainError, SpecimenTypeRequired):
+                stain_transform = None  # the review UI then has no normalised crop for any candidate of this slide
+            if stain_transform is not None:
+                norm_buf = io.BytesIO()
+                Image.fromarray(normalize_region(region, stain_transform).rgb).save(norm_buf, format="PNG")
+                norm_bytes = norm_buf.getvalue()
+        except (SlideReadError, NotFound, OSError) as e:
             print(f"[add_pathologist_mitosis Error] Slide crop extraction failed: {e}")
 
-    if crop_pil is None:
+    if crop_bytes is None:
         raise HTTPException(status_code=500, detail="Could not extract authentic optical crop from slide.")
 
-    buf = io.BytesIO()
-    crop_pil.save(buf, format="PNG")
-    crop_bytes = buf.getvalue()
-
-    crop_uri = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/mitosis/crops/{new_id}.png"
     crop_orig_uri = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/mitosis/crops/{new_id}_orig.png"
+    crop_uri = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/mitosis/crops/{new_id}.png" if norm_bytes else crop_orig_uri
 
     # Defensively wrapped GCS upload (#399)
     try:
-        upload_blob_from_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_id}/mitosis/crops/{new_id}.png", crop_bytes, "image/png")
         upload_blob_from_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_id}/mitosis/crops/{new_id}_orig.png", crop_bytes, "image/png")
+        if norm_bytes:
+            upload_blob_from_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_id}/mitosis/crops/{new_id}.png", norm_bytes, "image/png")
     except Exception as gcs_err:
         print(f"[add_pathologist_mitosis Note] GCS upload skipped or failed offline ({gcs_err}). Creating Detection row.")
 
@@ -914,13 +849,10 @@ def re_place_hpfs(payload: BulkActionPayload, db: Session = Depends(get_db)):
         slide_dims_um = (w_px * mpp_x, h_px * mpp_y)
 
     # Fetch preprocess tissue mask from GCS
-    tissue_mask = None
     try:
-        mask_bytes = download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_id}/preprocess/tissue_mask.png")
-        mask_img = Image.open(io.BytesIO(mask_bytes)).convert("L")
-        tissue_mask = np.array(mask_img) > 10
-    except Exception as me:
-        print(f"[re_place_hpfs Note] Could not load tissue_mask: {me}")
+        tissue = load_tissue_mask(case_id)
+    except PRECONDITION_ERRORS as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     # Fetch confirmed mitoses
     confirmed_dets = db.scalars(
@@ -971,7 +903,7 @@ def re_place_hpfs(payload: BulkActionPayload, db: Session = Depends(get_db)):
         grid_meta,
         hotspot_polygons_um=hotspot_polys,
         count=10,
-        tissue_mask=tissue_mask,
+        tissue=tissue,
         slide_dimensions_um=slide_dims_um,
         min_tissue_coverage=0.70,
         hotspot_priorities=hotspot_prios

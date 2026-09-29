@@ -363,6 +363,26 @@ def test_the_newest_profile_wins(session, monkeypatch):
     assert latest_stain_profile(session, slide.id).id == new.id != old.id
 
 
+def test_the_newest_profile_wins_even_within_one_clock_tick(session, monkeypatch):
+    """Two fits stamped by the same coarse clock tick must not tie: a later fit is always the newer profile."""
+    import app.core.stain_profiles as store
+
+    class FrozenClock:
+        @staticmethod
+        def now(tz=None):
+            from datetime import datetime
+
+            return datetime(2026, 9, 29, 12, 0, 0, tzinfo=tz)
+
+    monkeypatch.setattr(store, "datetime", FrozenClock)
+    slide = add_slide(session)
+    fit = a_fit(monkeypatch)
+    saved = [save_stain_profile(session, slide.id, fit) for _ in range(12)]
+    session.commit()
+    assert latest_stain_profile(session, slide.id).id == saved[-1].id
+    assert [row.created_at for row in saved] == sorted({row.created_at for row in saved})  # strictly increasing
+
+
 def test_a_slide_without_a_profile_needs_preprocess(session):
     slide = add_slide(session)
     with pytest.raises(StainProfileMissingError, match="preprocess"):

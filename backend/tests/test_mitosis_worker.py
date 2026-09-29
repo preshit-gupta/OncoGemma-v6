@@ -25,6 +25,7 @@ from pipeline.errors import SlideReadError
 from tests.fakes.gateway import FakeAdapter, json_text
 from tests.fakes.runtime import make_runtime
 from tests.fakes.slide import FakeOpenSlide, install_fake_slide
+from tests.fakes.stage2 import seed_stage2
 from worker.mitosis import run_mitosis
 
 SIDE_PX, MPP = 8000, 0.25
@@ -109,6 +110,7 @@ def seed(db_session, mpp=MPP):
                 prob_mean=0.9, prob_max=0.95, source="model", excluded=False),
     ])
     db_session.commit()
+    seed_stage2(db_session, case_id, slide_id, SIDE_PX * MPP, SIDE_PX * MPP)  # the mask spans the section, whatever the scan's mpp
     return stage, raw_uri
 
 
@@ -189,14 +191,36 @@ def test_detector_outage_fails_the_stage_without_detections(db_session, monkeypa
     assert detections(db_session, stage) == []
 
 
-def test_20x_slide_is_refused_by_the_detector_contract(db_session, monkeypatch):
-    """SPEC-01 AC5: a 0.5 µm/px tile never reaches KongNet unresampled."""
+def detector_specs(log):
+    return [spec for row in log.pending() if row["task"] == "mitosis_detect" for spec in row["input_spec"]["images"]]
+
+
+def mitosis_output(stage) -> dict:
+    return json.loads(download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{stage.case_id}/mitosis/output.json"))
+
+
+def test_a_20x_slide_is_upsampled_to_the_detector_resolution_and_reported(db_session, monkeypatch):
+    """SPEC-04 AC6: KongNet gets 512 px patches at 0.25 µm/px from a 0.5 µm/px scan, and the slice is recorded."""
     stage, raw_uri = seed(db_session, mpp=0.5)
-    install_fake_slide(monkeypatch, FakeOpenSlide(SIDE_PX // 2, SIDE_PX // 2), raw_uri)
-    endpoint = KongNetEndpoint()
-    with pytest.raises(InputContractError, match="mpp 0.5 is outside 0.25"):
-        run_mitosis(stage, db_session, runtime_for(stage, endpoint=endpoint))
-    assert endpoint.calls == []
+    slide = install_fake_slide(monkeypatch, FakeOpenSlide(SIDE_PX // 2, SIDE_PX // 2), raw_uri)
+    endpoint, log = KongNetEndpoint(), DecisionLog()
+
+    run_mitosis(stage, db_session, runtime_for(stage, endpoint=endpoint, log=log))
+
+    specs = detector_specs(log)
+    assert specs and all(s["mpp"] == 0.25 and s["size_px"] == [512, 512] for s in specs)
+    assert endpoint.calls  # the detector ran
+    output = mitosis_output(stage)
+    assert (output["native_mpp"], output["detector_upsampled"]) == (0.5, True)
+    assert set(slide.levels_read) == {0}  # the only level is coarser than the request
+
+
+def test_a_40x_slide_is_not_reported_as_upsampled(db_session, monkeypatch):
+    stage, raw_uri = seed(db_session)
+    install_fake_slide(monkeypatch, FakeOpenSlide(SIDE_PX, SIDE_PX), raw_uri)
+    run_mitosis(stage, db_session, runtime_for(stage))
+    output = mitosis_output(stage)
+    assert (output["native_mpp"], output["detector_upsampled"]) == (0.25, False)
 
 
 def test_v5_shaped_referee_answer_fails_the_stage(db_session, monkeypatch):

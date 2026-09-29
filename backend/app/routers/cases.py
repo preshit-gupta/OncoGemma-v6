@@ -1,6 +1,4 @@
 import uuid
-import os
-import tempfile
 from io import BytesIO
 from datetime import datetime, timezone
 from PIL import Image
@@ -13,7 +11,6 @@ from app.core.auth import get_current_user, CurrentUser
 from app.core.config import settings
 from app.core.gcs import (
     upload_blob_from_file,
-    download_blob_to_filename,
     generate_signed_upload_url,
     get_gcs_tile_template_url,
     parse_gcs_uri,
@@ -21,8 +18,11 @@ from app.core.gcs import (
     ALLOWED_WSI_EXTS
 )
 from starlette.concurrency import run_in_threadpool
-from app.core.openslide_lock import OPENSLIDE_GLOBAL_LOCK
+from google.api_core.exceptions import NotFound
+from app.core.slide_access import open_case_slide
 from app.core.cloud_tasks import dispatch_stage_task
+from pipeline.errors import MissingMppError, SlideReadError
+from pipeline.slide_io import read_region_at_mpp
 from app.models.case import Case
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
@@ -43,6 +43,9 @@ from app.schemas.case import (
     CaseDetailResponse,
     ApproveStageRequest
 )
+
+# Longer side of the case-list thumbnail, in pixels.
+THUMBNAIL_PX = 256
 
 router = APIRouter(prefix="/api/v1/cases", tags=["cases"])
 
@@ -694,42 +697,20 @@ def get_case_thumbnail(
     if not gcs_uri:
         raise HTTPException(status_code=404, detail="Slide GCS URI not set")
 
-    bucket_name, blob_name = parse_gcs_uri(gcs_uri)
-    ext = os.path.splitext(blob_name)[1] or ".svs"
-
-    temp_file = None
+    # The whole extent at the resolution that puts its longer side at THUMBNAIL_PX. A slide that
+    # cannot be read has no thumbnail; a grey square is never drawn in its place (SPEC-01 §3.9).
     try:
-        temp_fd, temp_path = tempfile.mkstemp(suffix=ext, prefix="thumb_")
-        os.close(temp_fd)
-        temp_file = temp_path
+        with open_case_slide(case_id, slide_obj) as reader:
+            extent_w, extent_h = reader.extent_um()
+            region = read_region_at_mpp(reader, 0.0, 0.0, extent_w, extent_h, max(extent_w, extent_h) / THUMBNAIL_PX)
+    except MissingMppError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except (SlideReadError, NotFound, OSError) as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Slide could not be read: {exc}") from exc
 
-        download_blob_to_filename(bucket_name, blob_name, temp_file)
-
-        try:
-            import openslide
-            with OPENSLIDE_GLOBAL_LOCK:
-                oslide = openslide.OpenSlide(temp_file)
-                thumb = oslide.get_thumbnail((256, 256)).convert("RGB")
-                oslide.close()
-        except Exception:
-            try:
-                with Image.open(temp_file) as pil_img:
-                    thumb = pil_img.copy()
-                    thumb.thumbnail((256, 256))
-                    thumb = thumb.convert("RGB")
-            except Exception:
-                thumb = Image.new("RGB", (256, 256), color=(240, 225, 235))
-
-        buf = BytesIO()
-        thumb.save(buf, format="PNG")
-        buf.seek(0)
-        return Response(content=buf.getvalue(), media_type="image/png")
-    finally:
-        if temp_file and os.path.exists(temp_file):
-            try:
-                os.remove(temp_file)
-            except Exception:
-                pass
+    buf = BytesIO()
+    Image.fromarray(region.rgb).save(buf, format="PNG")
+    return Response(content=buf.getvalue(), media_type="image/png")
 
 
 @router.get("/{case_id}", response_model=CaseDetailResponse)

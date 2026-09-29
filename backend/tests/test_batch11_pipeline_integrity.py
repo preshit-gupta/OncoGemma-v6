@@ -375,24 +375,3 @@ def test_upload_dzi_tree_error_propagation_mock():
             assert "Pyramid upload failed" in str(exc_info.value)
         finally:
             worker.ingest.get_gcs_client = orig_get_gcs
-
-
-def test_read_region_srgb_huge_coordinates_memory_safety():
-    """Verify read_region_srgb safely clamps massive micrometer bounding boxes without OOM (Issue #429)."""
-    from pipeline.tiles import read_region_srgb
-    # Create a 512x512 test image
-    img = Image.new("RGB", (512, 512), color=(180, 50, 120))
-    
-    # Request a massive 17-meter bounding box spanning millions of pixels
-    tile_arr, icc_applied = read_region_srgb(
-        slide=img,
-        x_um=0.0,
-        y_um=0.0,
-        w_um=17784381.0,
-        h_um=17784381.0,
-        out_px=(256, 256),
-        mpp_x=0.265,
-        mpp_y=0.265
-    )
-    assert tile_arr.shape == (256, 256, 3)
-    assert tile_arr.dtype == np.uint8

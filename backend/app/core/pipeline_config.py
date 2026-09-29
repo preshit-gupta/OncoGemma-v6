@@ -58,6 +58,8 @@ Channel8 = Annotated[int, Field(ge=0, le=255)]
 NottinghamSum = Annotated[int, Field(ge=NOTTINGHAM_MIN_SUM, le=NOTTINGHAM_MAX_SUM)]
 PromptFileName = Annotated[str, Field(pattern=r"^[a-z0-9_]+@v[0-9]+\.md$")]
 PromptText = Annotated[str, Field(min_length=1)]
+# Which colour a model is shown: the slide as scanned, or through its persisted stain transform (SPEC-04 §3.5).
+ColorPolicy = Literal["raw", "normalized"]
 # A colour reference is named <name>@v<version>, and its file is configs/stain_refs/<name>@v<version>.json.
 StainRefId = Annotated[str, Field(pattern=r"^[a-z0-9_]+@v[0-9]+$")]
 SpecimenType = Literal["resection", "core_biopsy"]
@@ -174,6 +176,8 @@ class MitosisDetectorConfig(StrictModel):
     overlap_px: NonNegativeInt
     det_threshold: Fraction
     nms_radius_um: PositiveFloat
+    # A sweep tile is read only when at least this fraction of it is tissue (registered mask).
+    min_tissue_fraction: Fraction
 
     @model_validator(mode="after")
     def _consistent(self) -> "MitosisDetectorConfig":
@@ -190,16 +194,21 @@ class MitosisRefereeConfig(StrictModel):
 
     producer: RegistryKey
     prompt: PromptFileName
-    # Image 1: a focus_px square at the slide's own resolution around the candidate.
+    # Image 1: a focus_px square at focus_mpp around the candidate, so its field of view is the same on every scanner.
     focus_px: PositiveInt
+    focus_mpp: Mpp
     # Image 2: a context_um square around it, resampled to context_px.
     context_um: PositiveFloat
     context_px: PositiveInt
+    color: ColorPolicy
 
 
 class MitosisHpfConfig(StrictModel):
     radius_um: PositiveFloat
     count: PositiveInt
+    # The review image of each field: review_field_um wide, review_px square (it fits the viewer's reticle).
+    review_field_um: PositiveFloat
+    review_px: PositiveInt
     density_grid_res_um: PositiveFloat
     min_separation_um: PositiveFloat
     relaxed_min_separation_um: PositiveFloat
@@ -286,6 +295,7 @@ class GradingEstimatorsConfig(StrictModel):
     pleo_prompt: PromptFileName
     histotype_prompt: PromptFileName
     histotype_images: PositiveInt
+    color: ColorPolicy
 
 
 class GradingSamplingConfig(StrictModel):
@@ -328,6 +338,7 @@ class TumorRefereeConfig(StrictModel):
     # Each candidate is shown as a square field_um wide, resampled to size_px (the prompt states both).
     field_um: PositiveFloat
     size_px: PositiveInt
+    color: ColorPolicy
 
 
 class HotspotExtractionConfig(StrictModel):

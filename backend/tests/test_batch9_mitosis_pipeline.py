@@ -322,9 +322,9 @@ def test_worker_refuses_unconfirmed_triage_artifact():
         ]
     }).encode("utf-8")
 
-    with patch("worker.mitosis.download_blob_as_bytes", return_value=mock_triage_output):
-        with pytest.raises(ValueError, match="No confirmed tumor hotspots found"):
-            run_mitosis(stage_exec, db, make_runtime(stage_exec))
+    # Hotspots come from the confirmed rows in the database only; the machine output above is never read.
+    with pytest.raises(ValueError, match="No confirmed tumor hotspots found"):
+        run_mitosis(stage_exec, db, make_runtime(stage_exec))
 
     assert db.scalars(select(Hotspot).where(Hotspot.case_id == case_id)).all() == []
     db.close()

@@ -8,6 +8,8 @@ from typing import List, Dict, Any, Tuple, Optional
 import numpy as np
 from scipy.signal import fftconvolve
 
+from pipeline.tissue_mask import TissueMask
+
 
 def create_circular_disk_mask(radius_cells: float) -> np.ndarray:
     """
@@ -111,29 +113,21 @@ def is_point_in_polygon(x: float, y: float, polygon: List[List[float]]) -> bool:
 
 def compute_continuous_tissue_coverage(
     grid_meta: Dict[str, Any],
-    tissue_mask: np.ndarray,
-    slide_dimensions_um: Tuple[float, float],
-    radius_um: float = 262.0
+    tissue: TissueMask,
+    radius_um: float
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Computes isotropic continuous circular tissue coverage fraction [0.0, 1.0]
     and center tissue boolean mask for every cell in grid_meta.
+    Each grid node stands for the ``stride`` square around it, whose tissue fraction the registered mask gives exactly.
     """
     origin_x, origin_y = grid_meta["origin_um"]
     stride = grid_meta["stride_um"]
     nx, ny = grid_meta["nx"], grid_meta["ny"]
-    slide_w_um, slide_h_um = slide_dimensions_um
-    mh, mw = tissue_mask.shape
 
-    gx_indices = np.arange(nx)
-    gy_indices = np.arange(ny)
-    px_coords = origin_x + gx_indices * stride
-    py_coords = origin_y + gy_indices * stride
-
-    mx_indices = np.clip(np.round(px_coords / max(slide_w_um, 1.0) * (mw - 1)).astype(int), 0, mw - 1)
-    my_indices = np.clip(np.round(py_coords / max(slide_h_um, 1.0) * (mh - 1)).astype(int), 0, mh - 1)
-
-    tissue_grid = (tissue_mask[np.ix_(my_indices, mx_indices)] > 0).astype(np.float32)
+    tissue_grid = tissue.fraction_grid(
+        stride, stride, nx, ny, origin_um=(origin_x - stride / 2, origin_y - stride / 2)
+    ).astype(np.float32)
 
     radius_cells = radius_um / stride
     kernel = create_circular_disk_mask(radius_cells)
@@ -156,7 +150,7 @@ def greedy_place_hpfs(
     radius_um: float = 262.0,
     min_separation_um: float = 524.0,
     relaxed_min_separation_um: float = 393.0,
-    tissue_mask: Optional[np.ndarray] = None,
+    tissue: Optional[TissueMask] = None,
     slide_dimensions_um: Optional[Tuple[float, float]] = None,
     min_tissue_coverage: float = 0.70,
     hotspot_priorities: Optional[List[float]] = None
@@ -177,9 +171,9 @@ def greedy_place_hpfs(
     working_density = density_map.copy()
 
     # Continuous circular tissue coverage calculation
-    if tissue_mask is not None and slide_dimensions_um is not None:
+    if tissue is not None:
         coverage_grid, center_tissue_grid = compute_continuous_tissue_coverage(
-            grid_meta, tissue_mask, slide_dimensions_um, radius_um=radius_um
+            grid_meta, tissue, radius_um=radius_um
         )
         valid_tissue_mask = (coverage_grid >= min_tissue_coverage) & center_tissue_grid
     else:

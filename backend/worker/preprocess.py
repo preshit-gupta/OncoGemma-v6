@@ -31,19 +31,25 @@ from app.core.gcs import (
     resolve_slide_raw_uri
 )
 from app.core.pipeline_config import NormPyramidConfig
-from app.core.stain_profiles import save_stain_profile
+from app.core.stain_profiles import save_stain_profile, transform_of_profile
 from app.core.tissue_mask_store import save_tissue_mask
 from app.models.case import Case
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
 from app.models.audit import AuditEvent
-from pipeline.slide_io import SlideReader, read_region_at_mpp, require_mpp, seed_from_checksum
+from pipeline.slide_io import (
+    DZI_TILE_PX,
+    SlideReader,
+    dzi_level_dimensions,
+    dzi_max_level,
+    read_dzi_tile,
+    require_mpp,
+    seed_from_checksum,
+)
 from pipeline.stain import FITTER_VERSION, StainTransform, fit_stain_profile
 from pipeline.tissue_mask import MASK_ALGORITHM_VERSION, compute_tissue_mask
 from worker.runtime import StageRuntime
 
-# DeepZoom tile edge; the tile routers and the viewer assume it.
-DZI_TILE_PX = 256
 # Concurrent tile uploads.
 UPLOAD_THREADS = 16
 
@@ -54,14 +60,14 @@ def norm_pyramid_levels(width_px: int, height_px: int, mpp_x: float, cfg: NormPy
     Level z shows the slide shrunk by ``2 ** (max_level - z)``, as OpenSlide's DeepZoomGenerator does.
     Levels are added from the coarsest while the cumulative tile count stays within ``cfg.max_tiles``.
     """
-    max_level = math.ceil(math.log2(max(width_px, height_px)))
+    max_level = dzi_max_level(width_px, height_px)
     downsample = max(1.0, cfg.max_mpp / mpp_x)
     finest = max(0, round(max_level - math.log2(downsample)))
     levels = []
     cumulative = 0
     for z in range(0, min(max_level, finest) + 1):
         scale = 1 << (max_level - z)
-        level_w, level_h = -(-width_px // scale), -(-height_px // scale)
+        level_w, level_h = dzi_level_dimensions(width_px, height_px, z)
         cols, rows = -(-level_w // DZI_TILE_PX), -(-level_h // DZI_TILE_PX)
         if cumulative + cols * rows > cfg.max_tiles and z > 0:
             break
@@ -81,25 +87,11 @@ def generate_norm_dzi_pyramid(
     os.makedirs(norm_pyramid_dir, exist_ok=True)
 
     for level in norm_pyramid_levels(*reader.dimensions, reader.mpp_x, cfg):
-        scale = level["scale"]
-        target_mpp = reader.mpp_x * scale
         norm_level_dir = os.path.join(norm_pyramid_dir, str(level["z"]))
         os.makedirs(norm_level_dir, exist_ok=True)
         for c in range(level["cols"]):
             for r in range(level["rows"]):
-                x0_px, y0_px = c * DZI_TILE_PX, r * DZI_TILE_PX
-                tile_w = min(DZI_TILE_PX, level["width_px"] - x0_px)
-                tile_h = min(DZI_TILE_PX, level["height_px"] - y0_px)
-                region = read_region_at_mpp(
-                    reader,
-                    x0_px * scale * reader.mpp_x, y0_px * scale * reader.mpp_y,
-                    tile_w * scale * reader.mpp_x, tile_h * scale * reader.mpp_y,
-                    target_mpp, color="normalized", stain=stain,
-                )
-                tile = Image.fromarray(region.rgb)
-                if tile.size != (tile_w, tile_h):
-                    # A slide whose mpp_x and mpp_y differ reads a fraction of a pixel off the DeepZoom tile size.
-                    tile = tile.resize((tile_w, tile_h), Image.Resampling.BICUBIC)
+                tile = Image.fromarray(read_dzi_tile(reader, level["z"], c, r, color="normalized", stain=stain).rgb)
                 tile.save(os.path.join(norm_level_dir, f"{c}_{r}.png"), "PNG")
                 tile.save(os.path.join(norm_level_dir, f"{c}_{r}.jpg"), "JPEG", quality=85)
 
@@ -212,23 +204,10 @@ def run_preprocess(stage_execution: StageExecution, session: Session, runtime: S
         fit = fit_stain_profile(reader, origins, profile.stain_fit, reference)
         stain_row = save_stain_profile(session, slide_obj.id, fit)
 
-        # Compatibility for stages and routers not yet migrated (WP-3.4 deletes this): the v5 stain_params.json.
-        upload_blob_from_bytes(
-            settings.GCS_ARTIFACTS_BUCKET,
-            f"cases/{case_id}/preprocess/stain_params.json",
-            json.dumps({
-                "stain_matrix": fit.w_tgt, "max_concentrations": fit.maxc_tgt,
-                "stain_matrix_src": fit.w_src, "max_conc_src": fit.maxc_src,
-                "fit_status": fit.fit_status, "patches_sampled": fit.n_patches,
-            }, indent=2).encode("utf-8"),
-            "application/json"
-        )
-        stain_params_uri = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/preprocess/stain_params.json"
-
         # 3. Normalized DZI pyramid from the persisted profile. A degenerate profile cannot normalise anything.
         norm_pyramid_uri = None
         if fit.fit_status != "degenerate":
-            stain = StainTransform.from_profile(stain_row, od_beta=profile.stain_fit.od_beta)
+            stain = transform_of_profile(stain_row, od_beta=profile.stain_fit.od_beta)
             norm_pyramid_uri = generate_norm_dzi_pyramid(reader, str(slide_obj.id), stain, profile.norm_pyramid, scratch_dir)
 
         icc_applied = reader.has_icc_profile
@@ -243,7 +222,6 @@ def run_preprocess(stage_execution: StageExecution, session: Session, runtime: S
             "stain_fit_status": fit.fit_status,
             "stain_patches": fit.n_patches,
             "stain_reference": fit.reference_id,
-            "stain_params_uri": stain_params_uri,
             "norm_pyramid_uri": norm_pyramid_uri,
             "tissue_mask_uri": tissue_mask_uri,
             "tissue_mask_meta_uri": tissue_mask_meta_uri,
