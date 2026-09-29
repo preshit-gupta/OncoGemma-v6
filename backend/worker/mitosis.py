@@ -474,7 +474,7 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
             count_total=total_mitoses_in_hpfs,
             n_hpf=len(hpfs),
             radius_um=radius_um,
-            config_dict={"scoring": mitosis_cfg.scoring.model_dump(mode="json")},
+            scoring=mitosis_cfg.scoring,
         )
 
         # Persist to Database: strictly preserve all pathologist annotations, delete previous model/referee detections (#464)

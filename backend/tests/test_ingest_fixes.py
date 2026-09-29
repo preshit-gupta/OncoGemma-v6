@@ -168,7 +168,7 @@ def test_issue_38_missing_mpp_sets_needs_mpp_and_halts_pipeline(db_session, tmp_
          patch("worker.ingest.upload_blob_from_bytes"), \
          patch("worker.ingest.upload_blob_from_file"):
 
-        out_ref, model_versions = run_ingest(stage_exec, db_session)
+        out_ref, model_versions = run_ingest(stage_exec, db_session, make_runtime(stage_exec))
 
     # 1. Slide status must be 'needs_mpp', MPP must NOT be defaulted to 0.25
     db_session.refresh(slide_obj)
@@ -187,12 +187,12 @@ def test_issue_38_missing_mpp_sets_needs_mpp_and_halts_pipeline(db_session, tmp_
     # 3. Downstream workers must fail fast if called while MPP is missing
     prep_exec = StageExecution(case_id=case_id, stage="preprocess", attempt=1, status="running", input_ref={"slide_id": str(slide_id)})
     with pytest.raises(ValueError) as exc_prep:
-        run_preprocess(prep_exec, db_session)
+        run_preprocess(prep_exec, db_session, make_runtime(prep_exec))
     assert "missing valid MPP" in str(exc_prep.value)
 
     qc_exec = StageExecution(case_id=case_id, stage="qc", attempt=1, status="running", input_ref={"slide_id": str(slide_id)})
     with pytest.raises(ValueError) as exc_qc:
-        run_qc(qc_exec, db_session)
+        run_qc(qc_exec, db_session, make_runtime(qc_exec))
     assert "missing valid MPP" in str(exc_qc.value)
 
     triage_exec = StageExecution(case_id=case_id, stage="triage", attempt=1, status="running", input_ref={"slide_id": str(slide_id)})
@@ -352,11 +352,11 @@ def test_negative_and_zero_mpp_rejected_by_all_workers(db_session):
 
     exec_prep = StageExecution(case_id=case_id, stage="preprocess", attempt=1, status="running", input_ref={"slide_id": str(slide_id)})
     with pytest.raises(ValueError, match="missing valid MPP"):
-        run_preprocess(exec_prep, db_session)
+        run_preprocess(exec_prep, db_session, make_runtime(exec_prep))
 
     exec_qc = StageExecution(case_id=case_id, stage="qc", attempt=1, status="running", input_ref={"slide_id": str(slide_id)})
     with pytest.raises(ValueError, match="missing valid MPP"):
-        run_qc(exec_qc, db_session)
+        run_qc(exec_qc, db_session, make_runtime(exec_qc))
 
     exec_triage = StageExecution(case_id=case_id, stage="triage", attempt=1, status="running", input_ref={"slide_id": str(slide_id)})
     with pytest.raises(ValueError, match="missing valid MPP"):

@@ -4,6 +4,7 @@ from PIL import Image
 from unittest.mock import AsyncMock, patch
 
 from pipeline.stain import PureNumpyMacenkoNormalizer, fit_macenko_stain
+from app.core.pipeline_config import get_config_hash, get_pipeline_config
 from pipeline.qc_checks import run_all_qc_checks
 from app.models.case import Case
 from app.models.slide import Slide
@@ -83,7 +84,9 @@ def test_qc_all_5_checks_pass_on_clean_benchmark():
         "fit_status": "fitted"
     }
 
-    res = run_all_qc_checks(slide, mask, stain_params=stain_params)
+    res = run_all_qc_checks(
+        slide, mask, stain_params=stain_params, config=get_pipeline_config().qc, config_hash=get_config_hash()
+    )
     assert len(res["checks"]) == 5
     assert res["verdict"] in ["pass", "warn"]
     names = [c["name"] for c in res["checks"]]

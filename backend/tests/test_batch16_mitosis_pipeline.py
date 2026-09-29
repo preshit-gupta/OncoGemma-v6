@@ -33,7 +33,8 @@ from app.models.hpf_site import HpfSite
 from app.models.hotspot import Hotspot
 from pipeline.detect import enumerate_hotspot_tiles
 from pipeline.heuristics.od_sweep import detect_hyperchromatic_features
-from pipeline.scoring import compute_nottingham_mitotic_score, load_scoring_config
+from app.core.pipeline_config import get_pipeline_config
+from pipeline.scoring import compute_nottingham_mitotic_score
 
 
 # Database setup for isolated testing
@@ -127,12 +128,11 @@ def test_enumerate_hotspot_tiles_clamping_and_polygon_check():
 # 3. Scoring Tests (#118, #764, #373)
 # =========================================================================
 def test_scoring_config_loading_and_multi_radius_summation():
-    """Validates #118, #764: dynamic yaml config loading and multi-radius area summation."""
-    cfg = load_scoring_config()
-    assert "mitotic_score" in cfg or "scoring" in cfg
+    """Validates #118, #764: injected typed scoring config and multi-radius area summation."""
+    scoring = get_pipeline_config().mitosis.scoring
 
     hpfs = [{"seq": i, "center_um": [i * 600, 1000], "radius_um": 262.0, "count": 2} for i in range(10)]
-    res = compute_nottingham_mitotic_score(count_total=20, n_hpf=10, radius_um=262.0, hpfs=hpfs)
+    res = compute_nottingham_mitotic_score(count_total=20, n_hpf=10, radius_um=262.0, scoring=scoring, hpfs=hpfs)
     assert res["score"] in (1, 2, 3)
     assert abs(res["area_mm2"] - (10 * math.pi * (0.262 ** 2))) < 0.01
 
@@ -141,13 +141,15 @@ def test_scoring_config_loading_and_multi_radius_summation():
         {"seq": 2, "center_um": [1000, 0], "radius_um": 300.0, "count": 2}
     ]
     expected_area = math.pi * (0.200 ** 2) + math.pi * (0.300 ** 2)
-    res_var = compute_nottingham_mitotic_score(count_total=3, n_hpf=2, radius_um=250.0, hpfs=var_hpfs)
+    res_var = compute_nottingham_mitotic_score(count_total=3, n_hpf=2, radius_um=250.0, scoring=scoring, hpfs=var_hpfs)
     assert abs(res_var["area_mm2"] - expected_area) < 0.001
 
 
 def test_scoring_zero_hpfs_safe():
     """Validates #373: zero HPFs returns 0 area and score 1 without zero division."""
-    res = compute_nottingham_mitotic_score(count_total=0, n_hpf=0, radius_um=262.0)
+    res = compute_nottingham_mitotic_score(
+        count_total=0, n_hpf=0, radius_um=262.0, scoring=get_pipeline_config().mitosis.scoring
+    )
     assert res["score"] == 1
     assert res["area_mm2"] == 0.0
     assert res["mitoses_per_mm2"] == 0.0

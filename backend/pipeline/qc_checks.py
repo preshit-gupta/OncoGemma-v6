@@ -1,59 +1,21 @@
-import os
-import yaml
-import hashlib
+"""Stage 1 automated QC checks. Thresholds come from the injected ``QcConfig``
+(configs/qc.yaml, SPEC-01 §3.8); the caller records the pipeline ``config_hash``."""
 import cv2
 import numpy as np
 
-def resolve_config_path(path: str) -> str:
-    """Resolve config file path relative to repo root or backend parent directory."""
-    if os.path.isabs(path) and os.path.exists(path):
-        return path
-    if os.path.exists(path):
-        return os.path.abspath(path)
+from app.core.pipeline_config import QcConfig
 
-    parent_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../", path))
-    if os.path.exists(parent_path):
-        return parent_path
+# HSV channels have no upper bound when a range leaves s_max or v_max out.
+HSV_CHANNEL_MAX = 255
 
-    return os.path.abspath(path)
-
-def load_qc_config(config_path: str = "configs/qc.yaml") -> tuple[dict, str]:
-    """Load QC thresholds configuration YAML and calculate MD5 config hash."""
-    config_path = resolve_config_path(config_path)
-    if not os.path.exists(config_path):
-        # Fallback default configuration dictionary per PRD 02 §3.1
-        default_cfg = {
-            "tissue_coverage": {"fail_threshold": 0.02, "warn_threshold": 0.05},
-            "focus": {"vol_threshold": 45.0, "fail_blurry_ratio": 0.30, "warn_blurry_ratio": 0.10, "sample_max_tiles": 400},
-            "pen_marks": {
-                "min_component_area_mm2": 1.0,
-                "hsv_ranges": {
-                    "green": {"h_min": 35, "h_max": 85, "s_min": 60, "v_min": 60},
-                    "blue": {"h_min": 90, "h_max": 130, "s_min": 60, "v_min": 60},
-                    "black": {"h_min": 0, "h_max": 180, "s_min": 0, "s_max": 50, "v_min": 0, "v_max": 50}
-                }
-            },
-            "folds": {"min_skeleton_length_mm": 2.0, "saturation_min": 160, "brightness_max": 100},
-            "stain_sanity": {"min_concentration": 0.15, "he_ratio_min": 0.1, "he_ratio_max": 5.0}
-        }
-        return default_cfg, "default_hash"
-
-    with open(config_path, "r", encoding="utf-8") as f:
-        content = f.read()
-
-    config_dict = yaml.safe_load(content) or {}
-    config_hash = hashlib.md5(content.encode("utf-8")).hexdigest()[:12]
-    return config_dict, config_hash
-
-def check_tissue_coverage(tissue_mask_1bit: np.ndarray, config: dict) -> dict:
+def check_tissue_coverage(tissue_mask_1bit: np.ndarray, config: QcConfig) -> dict:
     """
     Check 1: Tissue Coverage
-    tissue mask area / total thumbnail area.
-    < 2% -> fail; < 5% -> warn.
+    tissue mask area / total thumbnail area, against the configured fail and warn fractions.
     """
-    cfg = config.get("tissue_coverage", {})
-    fail_thresh = cfg.get("fail_threshold", 0.02)
-    warn_thresh = cfg.get("warn_threshold", 0.05)
+    cfg = config.tissue_coverage
+    fail_thresh = cfg.fail_threshold
+    warn_thresh = cfg.warn_threshold
 
     total_pixels = tissue_mask_1bit.size
     tissue_pixels = np.count_nonzero(tissue_mask_1bit)
@@ -81,17 +43,19 @@ def check_focus_sharpness(
     tissue_mask_1bit: np.ndarray,
     mpp_x: float = 0.25,
     mpp_y: float = 0.25,
-    config: dict = None
+    *,
+    config: QcConfig
 ) -> dict:
     """
     Check 2: Focus Sharpness
-    Variance of Laplacian (OpenCV, grayscale) per 512^2 tile at 10x, on <= 400 sampled tissue tiles.
+    Variance of Laplacian (OpenCV, grayscale) per 512^2 tile at 10x, on at most
+    ``focus.sample_max_tiles`` sampled tissue tiles.
     """
-    cfg = (config or {}).get("focus", {})
-    vol_thresh = cfg.get("vol_threshold", 45.0)
-    fail_blurry_ratio = cfg.get("fail_blurry_ratio", 0.30)
-    warn_blurry_ratio = cfg.get("warn_blurry_ratio", 0.10)
-    max_tiles = cfg.get("sample_max_tiles", 400)
+    cfg = config.focus
+    vol_thresh = cfg.vol_threshold
+    fail_blurry_ratio = cfg.fail_blurry_ratio
+    warn_blurry_ratio = cfg.warn_blurry_ratio
+    max_tiles = cfg.sample_max_tiles
 
     from pipeline.tiles import read_region_srgb
 
@@ -169,20 +133,17 @@ def check_pen_marks(
     tissue_mask_1bit: np.ndarray,
     mpp_x: float = 0.25,
     mpp_y: float = 0.25,
-    config: dict = None
+    *,
+    config: QcConfig
 ) -> dict:
     """
     Check 3: Pen Marks Detection
     Detects surgical/pathologist pen ink marks (green, blue, black) using HSV thresholding
     and connected component analysis. Warns if any pen mark component exceeds min_component_area_mm2.
     """
-    cfg = (config or {}).get("pen_marks", {})
-    min_area_mm2 = cfg.get("min_component_area_mm2", 1.0)
-    hsv_ranges = cfg.get("hsv_ranges", {
-        "green": {"h_min": 35, "h_max": 85, "s_min": 60, "v_min": 60},
-        "blue": {"h_min": 90, "h_max": 130, "s_min": 60, "v_min": 60},
-        "black": {"h_min": 0, "h_max": 180, "s_min": 0, "s_max": 50, "v_min": 0, "v_max": 50}
-    })
+    cfg = config.pen_marks
+    min_area_mm2 = cfg.min_component_area_mm2
+    hsv_ranges = cfg.hsv_ranges.model_dump()
 
     from pipeline.tiles import read_region_srgb
     slide_w_px = float(getattr(slide_obj, "width_px", 2048) or 2048)
@@ -213,12 +174,10 @@ def check_pen_marks(
     combined_pen_mask = np.zeros((512, 512), dtype=np.uint8)
 
     for color, rng_cfg in hsv_ranges.items():
-        h_min = rng_cfg.get("h_min", 0)
-        h_max = rng_cfg.get("h_max", 180)
-        s_min = rng_cfg.get("s_min", 0)
-        s_max = rng_cfg.get("s_max", 255)
-        v_min = rng_cfg.get("v_min", 0)
-        v_max = rng_cfg.get("v_max", 255)
+        h_min, h_max = rng_cfg["h_min"], rng_cfg["h_max"]
+        s_min, v_min = rng_cfg["s_min"], rng_cfg["v_min"]
+        s_max = HSV_CHANNEL_MAX if rng_cfg["s_max"] is None else rng_cfg["s_max"]
+        v_max = HSV_CHANNEL_MAX if rng_cfg["v_max"] is None else rng_cfg["v_max"]
 
         lower = np.array([h_min, s_min, v_min], dtype=np.uint8)
         upper = np.array([h_max, s_max, v_max], dtype=np.uint8)
@@ -257,17 +216,18 @@ def check_tissue_folds(
     tissue_mask_1bit: np.ndarray,
     mpp_x: float = 0.25,
     mpp_y: float = 0.25,
-    config: dict = None
+    *,
+    config: QcConfig
 ) -> dict:
     """
     Check 4: Tissue Fold Detection
     Detects dark, high-saturation overlapping tissue ridges (folds) within the tissue area.
     Warns if connected fold ridge length exceeds min_skeleton_length_mm.
     """
-    cfg = (config or {}).get("folds", {})
-    min_length_mm = cfg.get("min_skeleton_length_mm", 2.0)
-    sat_min = cfg.get("saturation_min", 160)
-    bright_max = cfg.get("brightness_max", 100)
+    cfg = config.folds
+    min_length_mm = cfg.min_skeleton_length_mm
+    sat_min = cfg.saturation_min
+    bright_max = cfg.brightness_max
 
     from pipeline.tiles import read_region_srgb
     slide_w_px = float(getattr(slide_obj, "width_px", 2048) or 2048)
@@ -333,7 +293,7 @@ def check_tissue_folds(
 
 def check_stain_sanity(
     stain_params: dict,
-    config: dict = None
+    config: QcConfig
 ) -> dict:
     """
     Check 5: Stain Sanity Check
@@ -342,10 +302,10 @@ def check_stain_sanity(
     2. Enforces minimum stain concentrations (faded H&E detection).
     3. Validates Hematoxylin-to-Eosin concentration ratio bounds.
     """
-    cfg = (config or {}).get("stain_sanity", {})
-    min_conc = cfg.get("min_concentration", 0.15)
-    he_ratio_min = cfg.get("he_ratio_min", 0.1)
-    he_ratio_max = cfg.get("he_ratio_max", 5.0)
+    cfg = config.stain_sanity
+    min_conc = cfg.min_concentration
+    he_ratio_min = cfg.he_ratio_min
+    he_ratio_max = cfg.he_ratio_max
 
     if not stain_params:
         return {
@@ -396,25 +356,28 @@ def run_all_qc_checks(
     mpp_x: float = 0.25,
     mpp_y: float = 0.25,
     stain_params: dict = None,
-    config_path: str = "configs/qc.yaml"
+    *,
+    config: QcConfig,
+    config_hash: str
 ) -> dict:
-    """Execute complete 5-check QC check suite per PRD 02 §3.1."""
-    config_dict, config_hash = load_qc_config(config_path)
+    """Execute complete 5-check QC check suite per PRD 02 §3.1.
 
+    ``config_hash`` is the pipeline configuration hash the result is stamped with.
+    """
     # 1. Tissue coverage
-    cov_res = check_tissue_coverage(tissue_mask_1bit, config_dict)
+    cov_res = check_tissue_coverage(tissue_mask_1bit, config)
 
     # 2. Focus sharpness
-    focus_res = check_focus_sharpness(slide_obj, tissue_mask_1bit, mpp_x=mpp_x, mpp_y=mpp_y, config=config_dict)
+    focus_res = check_focus_sharpness(slide_obj, tissue_mask_1bit, mpp_x=mpp_x, mpp_y=mpp_y, config=config)
 
     # 3. Pen marks
-    pen_res = check_pen_marks(slide_obj, tissue_mask_1bit, mpp_x=mpp_x, mpp_y=mpp_y, config=config_dict)
+    pen_res = check_pen_marks(slide_obj, tissue_mask_1bit, mpp_x=mpp_x, mpp_y=mpp_y, config=config)
 
     # 4. Tissue folds
-    fold_res = check_tissue_folds(slide_obj, tissue_mask_1bit, mpp_x=mpp_x, mpp_y=mpp_y, config=config_dict)
+    fold_res = check_tissue_folds(slide_obj, tissue_mask_1bit, mpp_x=mpp_x, mpp_y=mpp_y, config=config)
 
     # 5. Stain sanity
-    stain_res = check_stain_sanity(stain_params or {}, config=config_dict)
+    stain_res = check_stain_sanity(stain_params or {}, config=config)
 
     checks = [cov_res, focus_res, pen_res, fold_res, stain_res]
 

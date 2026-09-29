@@ -54,6 +54,7 @@ def test_request_is_constrained_by_the_strict_schema_and_the_deadline():
     raw = adapter.call(entry(), request(), timeout_s=12.5)
 
     assert raw.text == '{"a": 1}'
+    # A fake response has no model_version, so the requested ID is recorded.
     assert raw.endpoint == f"{entry().region}/{entry().model}"
     assert created == [("oncogemma-test", entry().region)]
     (sent,) = models.requests
@@ -108,3 +109,8 @@ def test_prompt_and_output_model_are_required():
     with pytest.raises(CallRejected):
         adapter.call(entry(), request(output_model=None), 5)
     assert models.requests == []
+
+
+def test_the_served_model_version_is_recorded_when_reported():
+    adapter, _, _ = adapter_with(SimpleNamespace(text="{}", model_version="gemini-2.5-flash-001"))
+    assert adapter.call(entry(), request(), 5).endpoint == f"{entry().region}/gemini-2.5-flash-001"

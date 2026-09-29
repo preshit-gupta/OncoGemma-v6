@@ -25,6 +25,7 @@ from app.core.gcs import (
 )
 from app.core.db import get_db
 from app.core.openslide_lock import OPENSLIDE_GLOBAL_LOCK
+from app.core.pipeline_config import get_pipeline_config
 from app.models.case import Case
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
@@ -220,8 +221,9 @@ def get_mitosis_stage_data(case_id: str, db: Session = Depends(get_db)):
     hpfs, total_count = calculate_hpf_mitosis_counts(candidates, hpfs)
     summary = compute_nottingham_mitotic_score(
         count_total=total_count,
-        n_hpf=len(hpfs) if hpfs else 10,
-        radius_um=hpfs[0]["radius_um"] if hpfs else 262.0,
+        n_hpf=len(hpfs),
+        radius_um=None,
+        scoring=get_pipeline_config().mitosis.scoring,
         hpfs=hpfs
     )
 
@@ -557,8 +559,9 @@ def sync_and_persist_hpf_counts(case_id: str, db: Session) -> Tuple[List[Dict[st
     updated_hpfs, total_count = calculate_hpf_mitosis_counts(cand_list, hpf_list)
     summary = compute_nottingham_mitotic_score(
         count_total=total_count,
-        n_hpf=len(updated_hpfs) if updated_hpfs else 10,
-        radius_um=updated_hpfs[0]["radius_um"] if updated_hpfs else 262.0,
+        n_hpf=len(updated_hpfs),
+        radius_um=None,
+        scoring=get_pipeline_config().mitosis.scoring,
         hpfs=updated_hpfs
     )
 
@@ -1075,12 +1078,13 @@ def confirm_mitosis_stage(payload: MitosisConfirmPayload, db: Session = Depends(
             {"seq": h.seq, "center_um": h.center_um, "radius_um": h.radius_um, "count": h.mitotic_count, "source": h.source}
             for h in hpf_rows
         ]
-        total_m, conf_score = calculate_mitotic_score_from_detections_and_hpfs(cand_dicts, hpf_dicts)
-        r_um = hpf_dicts[0]["radius_um"] if hpf_dicts else 262.0
+        mitotic_scoring = get_pipeline_config().mitosis.scoring
+        total_m, conf_score = calculate_mitotic_score_from_detections_and_hpfs(cand_dicts, hpf_dicts, mitotic_scoring)
         scoring_summary = compute_nottingham_mitotic_score(
             count_total=total_m,
-            n_hpf=len(hpf_dicts) or 10,
-            radius_um=r_um,
+            n_hpf=len(hpf_dicts),
+            radius_um=None,
+            scoring=mitotic_scoring,
             hpfs=hpf_dicts
         )
 

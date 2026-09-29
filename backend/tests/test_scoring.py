@@ -2,7 +2,13 @@
 Unit tests for Pure Nottingham Mitotic Scoring Engine (v4.3).
 """
 import pytest
+
+from app.core.pipeline_config import get_pipeline_config
 from pipeline.scoring import calculate_hpf_mitosis_counts, compute_nottingham_mitotic_score
+
+
+def scoring():
+    return get_pipeline_config().mitosis.scoring
 
 
 def test_hpf_containment_counting():
@@ -42,7 +48,7 @@ def test_hpf_containment_counting():
     (50, 10, 3),   # 23.18 / mm² -> Score 3
 ])
 def test_nottingham_scoring_boundaries(count_total, n_hpf, expected_score):
-    summary = compute_nottingham_mitotic_score(count_total=count_total, n_hpf=n_hpf, radius_um=262.0)
+    summary = compute_nottingham_mitotic_score(count_total=count_total, n_hpf=n_hpf, radius_um=262.0, scoring=scoring())
     assert summary["mitotic_score"] == expected_score
     assert summary["count_total"] == count_total
     assert summary["area_mm2"] == 2.157
@@ -50,7 +56,7 @@ def test_nottingham_scoring_boundaries(count_total, n_hpf, expected_score):
 
 def test_scoring_with_fewer_hpfs():
     # Test area normalization for small tumor (5 HPFs instead of 10)
-    summary = compute_nottingham_mitotic_score(count_total=8, n_hpf=5, radius_um=262.0)
+    summary = compute_nottingham_mitotic_score(count_total=8, n_hpf=5, radius_um=262.0, scoring=scoring())
     # Area = 5 * 0.21565 = 1.078 mm²
     # Density = 8 / 1.078 = 7.42 mitoses/mm² >= 7.30 -> Score 3
     assert summary["n_hpf"] == 5

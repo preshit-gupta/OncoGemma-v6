@@ -24,6 +24,7 @@ from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
 from app.models.audit import AuditEvent
 from pipeline.stain import fit_macenko_stain
+from worker.runtime import StageRuntime
 
 def generate_norm_dzi_pyramid(slide_obj, normalizer, local_slide_path: str, scratch_dir: str) -> str:
     """
@@ -140,7 +141,7 @@ def generate_norm_dzi_pyramid(slide_obj, normalizer, local_slide_path: str, scra
     return f"gs://{settings.GCS_PYRAMIDS_BUCKET}/{slide_id}/norm/"
 
 
-def run_preprocess(stage_execution: StageExecution, session: Session) -> tuple[str, dict]:
+def run_preprocess(stage_execution: StageExecution, session: Session, runtime: StageRuntime) -> tuple[str, dict]:
     """
     Preprocess worker handler:
     1. Downloads raw slide directly from GCS.

@@ -42,20 +42,10 @@ def production_gateway(config: PipelineConfig, log: DecisionLog) -> ModelGateway
     return ModelGateway(config, production_adapters(), log, GcsBlobStore(settings.GCS_ARTIFACTS_BUCKET))
 
 
-def _without_runtime(handler: Callable[[StageExecution, Session], tuple[str, dict]]) -> StageHandler:
-    """Handlers not yet moved onto the gateway (WP-2.3 moves them stage by stage)."""
-
-    def run(stage_execution: StageExecution, session: Session, runtime: StageRuntime) -> tuple[str, dict]:
-        return handler(stage_execution, session)
-
-    run.__name__ = handler.__name__
-    return run
-
-
 STAGE_HANDLERS: dict[str, StageHandler] = {
-    "ingest": _without_runtime(run_ingest),
-    "preprocess": _without_runtime(run_preprocess),
-    "qc": _without_runtime(run_qc),
+    "ingest": run_ingest,
+    "preprocess": run_preprocess,
+    "qc": run_qc,
     "triage": run_triage,
     "mitosis": run_mitosis,
     "grading": run_grading,

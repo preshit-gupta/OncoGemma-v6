@@ -4,46 +4,14 @@ Pure Zero-LLM Nottingham Histologic Grading Aggregation Engine.
 All arithmetic, median/mode voting, tie-breaking, and Nottingham grade synthesis
 are strictly calculated in pure deterministic Python code. The LLM never computes
 any numbers or aggregates.
+
+Thresholds and weights come from the injected ``ScoringConfig`` (configs/scoring.yaml) and
+mitotic thresholds from ``MitosisScoringConfig`` (configs/mitosis.yaml), SPEC-01 §3.8.
 """
 
 from typing import List, Dict, Any, Tuple, Optional
-import os
-import json
-import hashlib
-import yaml
 
-# Default configuration parameters
-DEFAULT_CONF_WEIGHTS = {
-    "low": 0.5,
-    "medium": 1.0,
-    "high": 1.5,
-    "default": 1.0
-}
-DEFAULT_TUBULE_SCORE1_MIN = 75.0
-DEFAULT_TUBULE_SCORE2_MIN = 10.0
-DEFAULT_GRADE1_MAX_SUM = 5
-DEFAULT_GRADE2_MAX_SUM = 7
-DEFAULT_MIN_TUMOR_PATCHES = 8
-DEFAULT_MAX_DISP = 0.30
-
-
-def load_scoring_config() -> Dict[str, Any]:
-    """Load scoring thresholds and weights from configs/scoring.yaml if present."""
-    cfg_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../configs/scoring.yaml"))
-    if os.path.exists(cfg_path):
-        try:
-            with open(cfg_path, "r", encoding="utf-8") as f:
-                return yaml.safe_load(f) or {}
-        except Exception:
-            pass
-    return {}
-
-
-def get_grading_config_hash() -> str:
-    """Compute deterministic SHA-256 hash of active scoring configuration."""
-    cfg = load_scoring_config()
-    raw = json.dumps(cfg, sort_keys=True).encode("utf-8")
-    return hashlib.sha256(raw).hexdigest()
+from app.core.pipeline_config import MitosisScoringConfig, ScoringConfig
 
 
 def weighted_median(values: List[float], weights: List[float]) -> float:
@@ -116,21 +84,15 @@ def weighted_mode(values: List[int], weights: List[float], tie_breaker=max) -> T
     return winning_score, disagreement_ratio
 
 
-def calculate_tubule_score(tubule_percent: float, cfg: Optional[Dict[str, Any]] = None) -> int:
+def calculate_tubule_score(tubule_percent: float, cfg: ScoringConfig) -> int:
     """
-    Map tubule formation percentage to Elston-Ellis Nottingham score:
-    - Score 1: > 75%
-    - Score 2: 10% - 75%
-    - Score 3: < 10%
+    Map tubule formation percentage to Elston-Ellis Nottingham score
+    (configured thresholds; Elston-Ellis: > 75% is 1, 10% - 75% is 2, < 10% is 3).
     """
-    score1_min = DEFAULT_TUBULE_SCORE1_MIN
-    score2_min = DEFAULT_TUBULE_SCORE2_MIN
-    
-    if cfg and "tubule_formation" in cfg:
-        tf_cfg = cfg["tubule_formation"].get("thresholds", {})
-        score1_min = tf_cfg.get("score1_min_percent", DEFAULT_TUBULE_SCORE1_MIN)
-        score2_min = tf_cfg.get("score2_min_percent", DEFAULT_TUBULE_SCORE2_MIN)
-        
+    thresholds = cfg.tubule_formation.thresholds
+    score1_min = thresholds.score1_min_percent
+    score2_min = thresholds.score2_min_percent
+
     if tubule_percent > score1_min:
         return 1
     elif tubule_percent >= score2_min:
@@ -143,27 +105,20 @@ def calculate_nottingham_grade(
     tubule_score: int,
     pleo_score: int,
     mitotic_score: int,
-    cfg: Optional[Dict[str, Any]] = None
+    cfg: ScoringConfig
 ) -> Tuple[int, int]:
     """
-    Calculate Nottingham sum and final Nottingham Histological Grade.
-    
-    Grade 1: Sum 3-5 (Well differentiated)
-    Grade 2: Sum 6-7 (Moderately differentiated)
-    Grade 3: Sum 8-9 (Poorly differentiated)
-    
+    Calculate Nottingham sum and final Nottingham Histological Grade
+    (configured sum bounds; Elston-Ellis: 3-5 is Grade 1, 6-7 Grade 2, 8-9 Grade 3).
+
     Returns:
         (nottingham_sum, grade)
     """
     nottingham_sum = tubule_score + pleo_score + mitotic_score
-    
-    g1_max = DEFAULT_GRADE1_MAX_SUM
-    g2_max = DEFAULT_GRADE2_MAX_SUM
-    if cfg and "nottingham_grading" in cfg:
-        ng_cfg = cfg["nottingham_grading"]
-        g1_max = ng_cfg.get("grade1_max_sum", DEFAULT_GRADE1_MAX_SUM)
-        g2_max = ng_cfg.get("grade2_max_sum", DEFAULT_GRADE2_MAX_SUM)
-        
+
+    g1_max = cfg.nottingham_grading.grade1_max_sum
+    g2_max = cfg.nottingham_grading.grade2_max_sum
+
     if nottingham_sum <= g1_max:
         grade = 1
     elif nottingham_sum <= g2_max:
@@ -180,7 +135,7 @@ def validate_grading_invariants(
     mitotic_score: int,
     nottingham_sum: int,
     grade: int,
-    cfg: Optional[Dict[str, Any]] = None
+    cfg: ScoringConfig
 ) -> None:
     """
     The v3/v4 Guard: Ensure all mathematical invariants hold strictly before DB write.
@@ -195,12 +150,8 @@ def validate_grading_invariants(
     if nottingham_sum != expected_sum:
         raise ValueError(f"Invariant Violation: nottingham_sum ({nottingham_sum}) != sum of sub-scores ({expected_sum})")
         
-    g1_max = DEFAULT_GRADE1_MAX_SUM
-    g2_max = DEFAULT_GRADE2_MAX_SUM
-    if cfg:
-        ng_cfg = cfg.get("nottingham_grading", cfg)
-        g1_max = ng_cfg.get("grade1_max_sum", DEFAULT_GRADE1_MAX_SUM)
-        g2_max = ng_cfg.get("grade2_max_sum", DEFAULT_GRADE2_MAX_SUM)
+    g1_max = cfg.nottingham_grading.grade1_max_sum
+    g2_max = cfg.nottingham_grading.grade2_max_sum
 
     expected_grade = 1 if expected_sum <= g1_max else (2 if expected_sum <= g2_max else 3)
     if grade != expected_grade:
@@ -209,29 +160,23 @@ def validate_grading_invariants(
 
 def calculate_mitotic_score_from_hpfs(
     hpf_mitotic_counts: List[int],
-    cfg: Optional[Dict[str, Any]] = None,
-    radius_um: float = 262.0
+    scoring: MitosisScoringConfig,
+    radius_um: float
 ) -> Tuple[int, int]:
     """
-    Calculate total mitoses and Nottingham Mitotic Score (1, 2, or 3) across standard HPFs
-    using area-normalized density (mitoses/mm²).
-    
-    Standard Cutoffs for 10 HPFs (0.2157 mm² per HPF, 2.157 mm² total):
-    - Score 1: < 3.65 / mm² (< 8 mitoses in 10 standard HPFs)
-    - Score 2: 3.65 - 7.30 / mm² (8 - 15 mitoses in 10 standard HPFs)
-    - Score 3: >= 7.30 / mm² (>= 16 mitoses in 10 standard HPFs)
-    
+    Calculate total mitoses and Nottingham Mitotic Score (1, 2, or 3) across HPFs of
+    ``radius_um`` using area-normalized density (mitoses/mm²) and ``scoring.thresholds``.
+
     Returns:
         (total_mitoses, mitotic_score)
     """
-    total_mitoses = sum(hpf_mitotic_counts) if hpf_mitotic_counts else 0
+    total_mitoses = sum(hpf_mitotic_counts)
     from pipeline.scoring import compute_nottingham_mitotic_score
-    n_hpf = len(hpf_mitotic_counts) if hpf_mitotic_counts else 10
     summary = compute_nottingham_mitotic_score(
         count_total=total_mitoses,
-        n_hpf=n_hpf,
+        n_hpf=len(hpf_mitotic_counts),
         radius_um=radius_um,
-        config_dict=cfg
+        scoring=scoring
     )
     return total_mitoses, summary["mitotic_score"]
 
@@ -239,7 +184,7 @@ def calculate_mitotic_score_from_hpfs(
 def calculate_mitotic_score_from_detections_and_hpfs(
     detections: List[Dict[str, Any]],
     hpfs: List[Dict[str, Any]],
-    cfg: Optional[Dict[str, Any]] = None
+    scoring: MitosisScoringConfig
 ) -> Tuple[int, int]:
     """
     Calculate total mitoses and Nottingham Mitotic Score (1, 2, or 3) across virtual HPFs,
@@ -251,12 +196,13 @@ def calculate_mitotic_score_from_detections_and_hpfs(
     """
     from pipeline.scoring import calculate_hpf_mitosis_counts, compute_nottingham_mitotic_score
     updated_hpfs, unique_total = calculate_hpf_mitosis_counts(detections, hpfs)
-    r_um = updated_hpfs[0].get("radius_um", 262.0) if updated_hpfs else 262.0
+    # Each HPF's own radius gives the area; with no HPFs the score is the zero-field state.
     summary = compute_nottingham_mitotic_score(
         count_total=unique_total,
-        n_hpf=len(updated_hpfs) if updated_hpfs else 10,
-        radius_um=r_um,
-        config_dict=cfg
+        n_hpf=len(updated_hpfs),
+        radius_um=None,
+        scoring=scoring,
+        hpfs=updated_hpfs
     )
     return unique_total, summary["mitotic_score"]
 
@@ -264,8 +210,8 @@ def calculate_mitotic_score_from_detections_and_hpfs(
 def aggregate_grading_findings(
     tubule_responses: List[Dict[str, Any]],
     pleo_responses: List[Dict[str, Any]],
-    mitotic_score: int,
-    cfg: Optional[Dict[str, Any]] = None
+    mitotic_score: Optional[int],
+    cfg: ScoringConfig
 ) -> Dict[str, Any]:
     """
     Full end-to-end pure code aggregation pipeline.
@@ -274,21 +220,26 @@ def aggregate_grading_findings(
     Args:
         tubule_responses: List of per-patch dicts with {tubule_percent, tumor_present, confidence, [user_tubule_percent], [user_tumor_present]}
         pleo_responses: List of per-patch dicts with {pleomorphism_score, rationale, confidence, [user_pleo_score]}
-        mitotic_score: Confirmed mitotic score (1, 2, or 3)
-        cfg: Scoring config dict
+        mitotic_score: Confirmed mitotic score (1, 2, or 3), or None when there is none (needs_human)
+        cfg: The scoring configuration (configs/scoring.yaml)
         
     Returns:
         Dict containing:
             tubule_percent, tubule_score, pleo_score, mitotic_score,
             nottingham_sum, grade, flags, patch_counts
     """
-    if cfg is None:
-        cfg = load_scoring_config()
-        
-    weights_map = cfg.get("grading", {}).get("confidence_weights", DEFAULT_CONF_WEIGHTS)
-    min_tumor_patches = cfg.get("grading", {}).get("min_tumor_patches", DEFAULT_MIN_TUMOR_PATCHES)
-    max_disp = cfg.get("grading", {}).get("max_disp", DEFAULT_MAX_DISP)
-    
+    weights = cfg.grading.confidence_weights
+    min_tumor_patches = cfg.grading.min_tumor_patches
+    max_disp = cfg.grading.max_disp
+
+    def _weight(r: Dict[str, Any], user_key: str) -> float:
+        # A pathologist's value gets the highest weight. A model estimate weighs as its stated
+        # confidence; the v6 estimators state none, so theirs weigh as "medium".
+        if r.get(user_key) is not None:
+            return weights.high
+        confidence = r.get("confidence")
+        return weights.medium if confidence is None else getattr(weights, str(confidence).lower())
+
     # 0. Gracefully handle empty evidence sets without fabricating scores (#366)
     if not tubule_responses or not pleo_responses:
         return {
@@ -318,10 +269,7 @@ def aggregate_grading_findings(
     if tumor_tubule:
         tubule_vals = [float(_effective(r, "user_tubule_percent", "tubule_percent")) for r in tumor_tubule]
         # Pathologist-reviewed/modified patches receive highest confidence weight
-        tubule_w = [
-            1.5 if r.get("user_tubule_percent") is not None else weights_map.get(str(r.get("confidence", "medium")).lower(), 1.0)
-            for r in tumor_tubule
-        ]
+        tubule_w = [_weight(r, "user_tubule_percent") for r in tumor_tubule]
         derived_tubule_percent = round(weighted_median(tubule_vals, tubule_w), 1)
         tubule_score = calculate_tubule_score(derived_tubule_percent, cfg)
     else:
@@ -331,16 +279,16 @@ def aggregate_grading_findings(
     # 2. Pleomorphism mode calculation across all valid responses (accounting for pathologist overrides)
     assessed_pleo = [r for r in pleo_responses if _effective(r, "user_pleo_score", "pleomorphism_score") is not None]
     pleo_vals = [int(_effective(r, "user_pleo_score", "pleomorphism_score")) for r in assessed_pleo]
-    pleo_w = [
-        1.5 if r.get("user_pleo_score") is not None else weights_map.get(str(r.get("confidence", "medium")).lower(), 1.0)
-        for r in assessed_pleo
-    ]
-    
+    pleo_w = [_weight(r, "user_pleo_score") for r in assessed_pleo]
+
     pleo_score, pleo_dispersion = weighted_mode(pleo_vals, pleo_w, tie_breaker=max)
-    
-    # 3. If no tumor patches exist or pleo could not be assessed, flag for human review
-    if tubule_score is None or pleo_score is None:
+
+    # 3. If no tumor patches exist, pleo could not be assessed or there is no mitotic score,
+    # flag for human review
+    if tubule_score is None or pleo_score is None or mitotic_score is None:
         flags: List[str] = ["needs_human"]
+        if mitotic_score is None:
+            flags.append("no_mitotic_score")
         if len(tumor_tubule) == 0:
             flags.append("no_tumor_patches")
         elif len(tumor_tubule) < min_tumor_patches:

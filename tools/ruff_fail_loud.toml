@@ -1,0 +1,40 @@
+# SPEC-01 §5 static check: no blind `except Exception`, no try/except/pass and no `global`
+# rebinding in backend code, so a failure raises instead of being swallowed or replaced.
+#
+#   python -m ruff check --config tools/ruff_fail_loud.toml backend/app backend/pipeline backend/worker backend/eval
+#
+# tools/tests/test_fail_loud.py runs it. A handler that re-raises passes BLE001.
+# This file is separate from the project's default ruff rules on purpose.
+
+[lint]
+select = ["BLE001", "S110", "PLW0603"]
+
+[lint.per-file-ignores]
+# v5 files that still swallow errors (158 findings at WP-2.3). A file leaves this list
+# when its last finding goes, and no file is added to it.
+# Slide reading, stain normalisation and tissue masks (worker/*, pipeline/{tiles,stain,qc_checks,detect})
+# are replaced by SlideReader / StainTransform / TissueMask in WP-3.1 to WP-3.4.
+"**/backend/app/core/cloud_tasks.py" = ["BLE001"]
+"**/backend/app/core/gcs.py" = ["BLE001", "S110", "PLW0603"]
+"**/backend/app/core/rehydrate.py" = ["BLE001", "S110"]
+"**/backend/app/main.py" = ["BLE001", "S110"]
+"**/backend/app/routers/admin.py" = ["BLE001"]
+"**/backend/app/routers/cases.py" = ["BLE001", "S110"]
+"**/backend/app/routers/grading.py" = ["BLE001", "S110"]
+"**/backend/app/routers/mitosis.py" = ["BLE001", "S110"]
+"**/backend/app/routers/tiles.py" = ["BLE001", "S110"]
+"**/backend/app/routers/triage.py" = ["BLE001", "S110"]
+"**/backend/app/routers/worker_webhook.py" = ["BLE001"]
+"**/backend/eval/datasets/tcga.py" = ["BLE001", "S110"]
+"**/backend/pipeline/detect.py" = ["BLE001"]
+"**/backend/pipeline/qc_checks.py" = ["BLE001", "S110"]
+"**/backend/pipeline/stain.py" = ["BLE001"]
+"**/backend/pipeline/tiles.py" = ["BLE001", "S110"]
+"**/backend/worker/cloud_job_entry.py" = ["BLE001"]
+"**/backend/worker/grading.py" = ["BLE001"]
+"**/backend/worker/ingest.py" = ["BLE001", "S110"]
+"**/backend/worker/main.py" = ["BLE001", "S110"]
+"**/backend/worker/mitosis.py" = ["BLE001"]
+"**/backend/worker/preprocess.py" = ["BLE001"]
+"**/backend/worker/qc.py" = ["BLE001"]
+"**/backend/worker/triage.py" = ["BLE001"]

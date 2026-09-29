@@ -322,10 +322,11 @@ def test_missing_adapter_is_unavailable():
 # --- EVAL pins model versions (SPEC-01 §3.7) ------------------------------------------------
 
 
-def test_eval_refuses_a_floating_gemini_alias():
-    assert get_pipeline_config().models.models["gemini_referee"].model == "gemini-2.5-flash"
+@pytest.mark.parametrize("model", ["gemini-flash-latest", "gemini-2.5-flash-latest", "gemini-pro", "gemini-3-flash-preview"])
+def test_eval_refuses_a_floating_gemini_alias(model):
+    config = with_entry(get_pipeline_config(), "gemini_referee", model=model)
     adapter = FakeAdapter()
-    gateway, log = gemini(adapter)
+    gateway, log = gemini(adapter, config)
     with pytest.raises(UnpinnedModelError, match="floating alias"):
         gateway.invoke(
             Task.TUBULE_PATCH, "gemini_referee", tubule_inputs(), decision_context(RunMode.EVAL), PATCH,
@@ -334,7 +335,16 @@ def test_eval_refuses_a_floating_gemini_alias():
     assert adapter.calls == [] and statuses(log) == ["error"]
 
 
-@pytest.mark.parametrize("model", ["gemini-2.5-flash-001", "gemini-2.5-flash-preview-05-2025"])
+def test_the_configured_gemini_is_a_pinned_release():
+    """gemini-2.5-flash is a fixed stable release with no numbered versions (Vertex, 2026-09-29)."""
+    from app.inference.gateway import is_pinned_model_id
+
+    assert is_pinned_model_id(get_pipeline_config().models.models["gemini_referee"].model)
+
+
+@pytest.mark.parametrize(
+    "model", ["gemini-2.5-flash", "gemini-2.5-flash-001", "gemini-2.5-flash-preview-05-2025", "gemini-exp-1206"]
+)
 def test_eval_accepts_pinned_gemini_versions(model):
     config = with_entry(get_pipeline_config(), "gemini_referee", model=model)
     gateway, _ = gemini(FakeAdapter(json_text(TUBULE)), config)

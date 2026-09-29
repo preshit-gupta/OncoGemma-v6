@@ -3,11 +3,13 @@ OncoGemma Stage v4.3 - Pure Nottingham Mitotic Scoring Engine.
 Computes point-in-circle containment of mitotic figures within virtual HPFs,
 calculates standardized area-normalized density (mitoses/mm²), and assigns
 Elston-Ellis Nottingham Mitotic Scores (Score 1, 2, or 3).
+
+Thresholds come from the injected ``MitosisScoringConfig`` (configs/mitosis.yaml, SPEC-01 §3.8).
 """
 import math
-import os
 from typing import List, Dict, Any, Tuple, Optional
-import yaml
+
+from app.core.pipeline_config import MitosisScoringConfig
 
 
 def calculate_hpf_mitosis_counts(
@@ -26,7 +28,7 @@ def calculate_hpf_mitosis_counts(
     for hpf in hpfs:
         hpf_copy = dict(hpf)
         cx, cy = hpf_copy["center_um"]
-        r = float(hpf_copy.get("radius_um", 262.0))
+        r = float(hpf_copy["radius_um"])
         r_sq = r * r
 
         hpf_mitosis_count = 0
@@ -47,62 +49,33 @@ def calculate_hpf_mitosis_counts(
     return updated_hpfs, total_count
 
 
-def load_scoring_config() -> Dict[str, Any]:
-    """Loads configs/scoring.yaml or configs/mitosis.yaml."""
-    cfg_paths = [
-        os.path.abspath(os.path.join(os.path.dirname(__file__), "../../configs/scoring.yaml")),
-        os.path.abspath(os.path.join(os.path.dirname(__file__), "../../configs/mitosis.yaml")),
-    ]
-    for p in cfg_paths:
-        if os.path.exists(p):
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    data = yaml.safe_load(f)
-                    if data:
-                        return data
-            except Exception:
-                pass
-    return {}
-
-
 def compute_nottingham_mitotic_score(
     count_total: int,
-    n_hpf: int = 10,
-    radius_um: float = 262.0,
-    config_dict: Optional[Dict[str, Any]] = None,
+    n_hpf: int,
+    radius_um: Optional[float],
+    scoring: MitosisScoringConfig,
     hpfs: Optional[List[Dict[str, Any]]] = None
 ) -> Dict[str, Any]:
     """
     Computes Nottingham Mitotic Score based on standardized mm² area normalization.
-    
-    Standard thresholds (Elston-Ellis):
-      - Score 1: < 3.65 mitoses/mm²  (Classic: 0 - 9 / 2.74 mm²)
-      - Score 2: 3.65 - 7.30 mitoses/mm² (Classic: 10 - 19 / 2.74 mm²)
-      - Score 3: >= 7.30 mitoses/mm² (Classic: >= 20 / 2.74 mm²)
+
+    ``scoring.thresholds`` give the mitoses/mm² at which the score becomes 2 and 3
+    (Elston-Ellis: 3.65 and 7.30 per mm², classic 10 and 20 per 2.74 mm²).
+    With ``hpfs`` the area is the sum of their own radii; otherwise ``n_hpf`` fields of ``radius_um``.
     """
-    if config_dict is None:
-        config_dict = load_scoring_config()
-
-    score2_min = 3.65
-    score3_min = 7.30
-    classic_area_mm2 = 2.74
-
-    if config_dict:
-        # Check 'mitotic_score' (scoring.yaml) or 'scoring' (mitosis.yaml)
-        m_cfg = config_dict.get("mitotic_score") or config_dict.get("scoring") or {}
-        thresh = m_cfg.get("thresholds", {})
-        score2_min = float(thresh.get("score2_min", score2_min))
-        score3_min = float(thresh.get("score3_min", score3_min))
-        classic_area_mm2 = float(m_cfg.get("classic_area_mm2", classic_area_mm2))
+    score2_min = scoring.thresholds.score2_min
+    score3_min = scoring.thresholds.score3_min
 
     # Calculate actual cumulative HPF inspection area summing per-HPF radius (#764)
-    if hpfs and len(hpfs) > 0:
+    if hpfs:
         n_fields = len(hpfs)
-        area_mm2 = sum(math.pi * ((float(h.get("radius_um", radius_um)) / 1000.0) ** 2) for h in hpfs)
-    else:
+        area_mm2 = sum(math.pi * ((float(h["radius_um"]) / 1000.0) ** 2) for h in hpfs)
+    elif n_hpf > 0:
         n_fields = n_hpf
         single_hpf_area_mm2 = math.pi * ((radius_um / 1000.0) ** 2)
         area_mm2 = float(n_fields * single_hpf_area_mm2)
+    else:
+        n_fields, area_mm2 = 0, 0.0
 
     # Clean zero-HPF state handling (#373)
     if n_fields <= 0 or area_mm2 <= 0.0:
@@ -118,7 +91,7 @@ def compute_nottingham_mitotic_score(
         }
 
     density = float(count_total) / area_mm2
-    classic_per_10hpf = density * classic_area_mm2
+    classic_per_10hpf = density * scoring.classic_area_mm2
 
     # Determine score
     if density >= score3_min:

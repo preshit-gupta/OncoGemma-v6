@@ -1,12 +1,21 @@
 import numpy as np
 import pytest
 
+from app.core.pipeline_config import QcConfig, get_config_hash, get_pipeline_config
 from pipeline.qc_checks import check_tissue_coverage, check_focus_sharpness
+
+
+def qc(**sections) -> QcConfig:
+    """The repo's configs/qc.yaml with some fields of the named sections replaced."""
+    data = get_pipeline_config().qc.model_dump()
+    for name, fields in sections.items():
+        data[name] = {**data[name], **fields}
+    return QcConfig.model_validate(data)
 
 def test_check_tissue_coverage_pass():
     """Verify tissue coverage pass status on adequate tissue mask (> 5%)."""
     mask = np.ones((512, 512), dtype=bool) # 100% coverage
-    config = {"tissue_coverage": {"fail_threshold": 0.02, "warn_threshold": 0.05}}
+    config = qc(tissue_coverage={"fail_threshold": 0.02, "warn_threshold": 0.05})
 
     res = check_tissue_coverage(mask, config)
     assert res["status"] == "pass"
@@ -15,7 +24,7 @@ def test_check_tissue_coverage_pass():
 def test_check_tissue_coverage_fail():
     """Verify tissue coverage fail status on blank tissue mask (< 2%)."""
     mask = np.zeros((512, 512), dtype=bool) # 0% coverage
-    config = {"tissue_coverage": {"fail_threshold": 0.02, "warn_threshold": 0.05}}
+    config = qc(tissue_coverage={"fail_threshold": 0.02, "warn_threshold": 0.05})
 
     res = check_tissue_coverage(mask, config)
     assert res["status"] == "fail"
@@ -27,7 +36,7 @@ def test_check_focus_sharpness_synthetic():
     
     blank_slide = Image.new("RGB", (1024, 1024), color=(240, 235, 240))
     mask = np.ones((128, 128), dtype=bool)
-    config = {"focus": {"vol_threshold": 5.0, "fail_blurry_ratio": 0.70, "warn_blurry_ratio": 0.30, "sample_max_tiles": 10}}
+    config = qc(focus={"vol_threshold": 5.0, "fail_blurry_ratio": 0.70, "warn_blurry_ratio": 0.30, "sample_max_tiles": 10})
 
     res = check_focus_sharpness(blank_slide, mask, config=config)
     assert res["name"] == "focus"
@@ -40,7 +49,7 @@ def test_check_pen_marks_clean():
     clean_slide = Image.new("RGB", (1024, 1024), color=(245, 240, 245))
     mask = np.ones((128, 128), dtype=bool)
 
-    res = check_pen_marks(clean_slide, mask)
+    res = check_pen_marks(clean_slide, mask, config=qc())
     assert res["name"] == "pen_marks"
     assert res["status"] == "pass"
     assert res["metric"] == 0.0
@@ -55,14 +64,8 @@ def test_check_pen_marks_detected():
     draw.rectangle([100, 100, 400, 400], fill=(0, 200, 50))
     mask = np.ones((128, 128), dtype=bool)
 
-    cfg = {
-        "pen_marks": {
-            "min_component_area_mm2": 0.001,
-            "hsv_ranges": {
-                "green": {"h_min": 35, "h_max": 85, "s_min": 60, "v_min": 60}
-            }
-        }
-    }
+    # The configured green range is h 35-85, s >= 60, v >= 60.
+    cfg = qc(pen_marks={"min_component_area_mm2": 0.001})
     res = check_pen_marks(slide, mask, mpp_x=1.0, mpp_y=1.0, config=cfg)
     assert res["name"] == "pen_marks"
     assert res["status"] == "warn"
@@ -78,13 +81,11 @@ def test_check_tissue_folds():
     draw.line([(100, 100), (450, 450)], fill=(80, 0, 50), width=15)
     mask = np.ones((128, 128), dtype=bool)
 
-    cfg = {
-        "folds": {
-            "min_skeleton_length_mm": 0.01,
-            "saturation_min": 50,
-            "brightness_max": 120
-        }
-    }
+    cfg = qc(folds={
+        "min_skeleton_length_mm": 0.01,
+        "saturation_min": 50,
+        "brightness_max": 120
+    })
     res = check_tissue_folds(slide, mask, config=cfg)
     assert res["name"] == "folds"
     assert res["status"] == "warn"
@@ -95,18 +96,18 @@ def test_check_stain_sanity():
 
     # 1. Valid fit
     valid_params = {"max_concentrations": [1.95, 1.10], "fit_status": "fitted"}
-    res_valid = check_stain_sanity(valid_params)
+    res_valid = check_stain_sanity(valid_params, qc())
     assert res_valid["status"] == "pass"
 
     # 2. Faded stain (concentration < 0.15)
     faded_params = {"max_concentrations": [0.08, 0.05], "fit_status": "fitted"}
-    res_faded = check_stain_sanity(faded_params)
+    res_faded = check_stain_sanity(faded_params, qc())
     assert res_faded["status"] == "warn"
     assert "Faded" in res_faded["message"]
 
     # 3. Degenerate fit
     degen_params = {"max_concentrations": [1.95, 1.10], "fit_status": "degenerate"}
-    res_degen = check_stain_sanity(degen_params)
+    res_degen = check_stain_sanity(degen_params, qc())
     assert res_degen["status"] == "warn"
     assert "Degenerate" in res_degen["message"]
 
@@ -119,8 +120,9 @@ def test_run_all_qc_checks_full_5_suite():
     mask = np.ones((128, 128), dtype=bool)
     stain_params = {"max_concentrations": [1.95, 1.10], "fit_status": "fitted"}
 
-    res = run_all_qc_checks(slide, mask, stain_params=stain_params)
+    res = run_all_qc_checks(slide, mask, stain_params=stain_params, config=qc(), config_hash=get_config_hash())
     assert len(res["checks"]) == 5
+    assert res["config_hash"] == get_config_hash()
     check_names = {c["name"] for c in res["checks"]}
     assert check_names == {"tissue_coverage", "focus", "pen_marks", "folds", "stain_sanity"}
     assert res["verdict"] in ["pass", "warn", "fail"]
@@ -135,14 +137,12 @@ def test_check_focus_sharpness_large_wsi():
     mask = np.zeros((512, 512), dtype=bool)
     mask[256:, 256:] = True  # Bottom-right quadrant has tissue
 
-    config = {
-        "focus": {
-            "vol_threshold": 5.0,
-            "fail_blurry_ratio": 0.70,
-            "warn_blurry_ratio": 0.30,
-            "sample_max_tiles": 20,
-        }
-    }
+    config = qc(focus={
+        "vol_threshold": 5.0,
+        "fail_blurry_ratio": 0.70,
+        "warn_blurry_ratio": 0.30,
+        "sample_max_tiles": 20,
+    })
 
     res = check_focus_sharpness(
         slide, mask, mpp_x=0.25, mpp_y=0.25, config=config

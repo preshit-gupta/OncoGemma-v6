@@ -246,10 +246,6 @@ resource "google_cloud_run_v2_job" "worker_job" {
           value = var.region
         }
         env {
-          name  = "USE_GEMINI_FLASH_REFEREE"
-          value = "true"
-        }
-        env {
           name  = "GEMINI_REFEREE_MODEL"
           value = "gemini-2.5-flash"
         }

@@ -296,7 +296,7 @@ def run_grading(stage_exec: StageExecution, db: Session, runtime: StageRuntime) 
     """
     config = runtime.config
     scoring = config.scoring
-    scoring_cfg = scoring.model_dump(mode="json")
+    mitotic_scoring = config.mitosis.scoring
     sampling = scoring.grading
     estimators = sampling.estimators
     gateway, ctx = runtime.gateway, runtime.ctx
@@ -332,10 +332,12 @@ def run_grading(stage_exec: StageExecution, db: Session, runtime: StageRuntime) 
     if confirmed_dets:
         cands_for_score = [{"id": d.id, "centroid_um": d.centroid_um, "label": "mitosis"} for d in confirmed_dets]
         hpfs_for_score = [{"seq": h.seq, "center_um": h.center_um, "radius_um": h.radius_um, "count": 0} for h in hpf_sites]
-        total_mitoses, mitotic_score = calculate_mitotic_score_from_detections_and_hpfs(cands_for_score, hpfs_for_score, scoring_cfg)
+        total_mitoses, mitotic_score = calculate_mitotic_score_from_detections_and_hpfs(
+            cands_for_score, hpfs_for_score, mitotic_scoring
+        )
     else:
         total_mitoses, mitotic_score = calculate_mitotic_score_from_hpfs(
-            [h.mitotic_count for h in hpf_sites], scoring_cfg, radius_um=hpf_sites[0].radius_um
+            [h.mitotic_count for h in hpf_sites], mitotic_scoring, radius_um=hpf_sites[0].radius_um
         )
 
     n_patches = sampling.n_patches
@@ -484,7 +486,7 @@ def run_grading(stage_exec: StageExecution, db: Session, runtime: StageRuntime) 
                 tubule = {
                     "tubule_percent": t_res.output.tubule_percent,
                     "tumor_present": t_res.output.tumor_present,
-                    "score": calculate_tubule_score(t_res.output.tubule_percent, scoring_cfg),
+                    "score": calculate_tubule_score(t_res.output.tubule_percent, scoring),
                     "rationale": t_res.output.rationale,
                 }
             tubule.update({"producer_id": estimators.producer, "record_id": str(t_res.record_id)})
@@ -537,7 +539,7 @@ def run_grading(stage_exec: StageExecution, db: Session, runtime: StageRuntime) 
             tubule_responses=[p["tubule"] for p in patches_output],
             pleo_responses=[p["pleo"] for p in patches_output],
             mitotic_score=mitotic_score,
-            cfg=scoring_cfg
+            cfg=scoring
         )
         needs_human_flag = bool(failed_patches) or histologic_type is None or bool(aggregate_res.get("needs_human"))
 

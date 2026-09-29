@@ -81,4 +81,9 @@ class VertexGenAIAdapter:
         # An answer without text (for example a blocked response) is recorded as such and
         # fails strict validation; it is never replaced.
         text = response.text
-        return RawResponse(text="" if text is None else text, endpoint=f"{entry.region}/{entry.model}")
+        # The version Vertex reports serving, when it reports one, is what the record names.
+        served = getattr(response, "model_version", None)
+        return RawResponse(
+            text="" if text is None else text,
+            endpoint=f"{entry.region}/{entry.model if served is None else served}",
+        )

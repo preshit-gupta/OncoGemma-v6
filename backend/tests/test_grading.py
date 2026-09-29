@@ -4,6 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import IntegrityError
 
+from app.core.pipeline_config import get_pipeline_config
 from pipeline.grading import (
     weighted_median,
     weighted_mode,
@@ -15,6 +16,10 @@ from pipeline.grading import (
 from app.models.case import Case
 from app.models.grading import Grading
 from app.core.db import Base
+
+
+def cfg():
+    return get_pipeline_config().scoring
 
 
 def test_weighted_median_basic():
@@ -58,17 +63,17 @@ def test_weighted_mode_and_tie_breaking():
 
 def test_tubule_boundary_cutoffs():
     # Score 1: > 75.0%
-    assert calculate_tubule_score(75.1) == 1
-    assert calculate_tubule_score(90.0) == 1
+    assert calculate_tubule_score(75.1, cfg()) == 1
+    assert calculate_tubule_score(90.0, cfg()) == 1
 
     # Score 2: 10.0% - 75.0%
-    assert calculate_tubule_score(75.0) == 2
-    assert calculate_tubule_score(50.0) == 2
-    assert calculate_tubule_score(10.0) == 2
+    assert calculate_tubule_score(75.0, cfg()) == 2
+    assert calculate_tubule_score(50.0, cfg()) == 2
+    assert calculate_tubule_score(10.0, cfg()) == 2
 
     # Score 3: < 10.0%
-    assert calculate_tubule_score(9.9) == 3
-    assert calculate_tubule_score(0.0) == 3
+    assert calculate_tubule_score(9.9, cfg()) == 3
+    assert calculate_tubule_score(0.0, cfg()) == 3
 
 
 def test_exhaustive_27_grade_combinations():
@@ -80,7 +85,7 @@ def test_exhaustive_27_grade_combinations():
     for t in [1, 2, 3]:
         for p in [1, 2, 3]:
             for m in [1, 2, 3]:
-                nottingham_sum, grade = calculate_nottingham_grade(t, p, m)
+                nottingham_sum, grade = calculate_nottingham_grade(t, p, m, cfg())
                 combos_tested += 1
                 
                 assert nottingham_sum == t + p + m
@@ -94,7 +99,7 @@ def test_exhaustive_27_grade_combinations():
                     pytest.fail(f"Invalid sum {nottingham_sum} for {t},{p},{m}")
 
                 # Invariant validator must pass for every valid combination
-                validate_grading_invariants(t, p, m, nottingham_sum, grade)
+                validate_grading_invariants(t, p, m, nottingham_sum, grade, cfg())
 
     assert combos_tested == 27
 
@@ -102,15 +107,15 @@ def test_exhaustive_27_grade_combinations():
 def test_invariant_validation_failure():
     # Test invalid score values
     with pytest.raises(ValueError, match="Invariant Violation"):
-        validate_grading_invariants(4, 2, 1, 7, 2)
+        validate_grading_invariants(4, 2, 1, 7, 2, cfg())
 
     # Test sum mismatch
     with pytest.raises(ValueError, match="Invariant Violation"):
-        validate_grading_invariants(1, 2, 2, 6, 2)  # 1+2+2 = 5 != 6
+        validate_grading_invariants(1, 2, 2, 6, 2, cfg())  # 1+2+2 = 5 != 6
 
     # Test grade mismatch
     with pytest.raises(ValueError, match="Invariant Violation"):
-        validate_grading_invariants(1, 1, 1, 3, 2)  # sum 3 must be Grade 1, not 2
+        validate_grading_invariants(1, 1, 1, 3, 2, cfg())  # sum 3 must be Grade 1, not 2
 
 
 def test_aggregate_grading_findings_flow():
@@ -130,7 +135,8 @@ def test_aggregate_grading_findings_flow():
     result = aggregate_grading_findings(
         tubule_responses=tubule_responses,
         pleo_responses=pleo_responses,
-        mitotic_score=3
+        mitotic_score=3,
+        cfg=cfg()
     )
 
     assert result["tubule_score"] == 2  # ~22% tubule -> Score 2
@@ -204,6 +210,6 @@ def test_mitotic_score_no_double_counting_in_overlapping_hpfs():
         {"id": "m_overlap_01", "centroid_um": [1100.0, 1000.0], "label": "mitosis"}
     ]
 
-    unique_total, score = calculate_mitotic_score_from_detections_and_hpfs(detections, hpfs)
+    unique_total, score = calculate_mitotic_score_from_detections_and_hpfs(detections, hpfs, get_pipeline_config().mitosis.scoring)
     assert unique_total == 1  # Not 2! Counted once despite being in both HPF 1 and HPF 2
     assert score == 1
