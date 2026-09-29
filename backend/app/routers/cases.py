@@ -824,6 +824,8 @@ def update_slide_mpp(
 
     slide.mpp_x = float(req.mpp_x)
     slide.mpp_y = float(req.mpp_y) if req.mpp_y is not None else float(req.mpp_x)
+    slide.mpp_source = "manual"
+    slide.native_mpp = max(slide.mpp_x, slide.mpp_y)
     slide.status = "ready"
     db.flush()
 

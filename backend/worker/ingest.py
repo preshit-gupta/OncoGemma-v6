@@ -393,6 +393,8 @@ def run_ingest(stage_execution: StageExecution, session: Session, runtime: Stage
                 case_obj.status = "needs_mpp"
         else:
             slide_obj.status = "ready"
+            slide_obj.mpp_source = "file"
+            slide_obj.native_mpp = max(slide_obj.mpp_x, slide_obj.mpp_y)
 
         # Prime local slide cache for zero-latency tile serving (Issue #635)
         try:

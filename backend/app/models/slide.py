@@ -22,6 +22,11 @@ class Slide(Base):
     
     mpp_x: Mapped[float | None] = mapped_column(Float, nullable=True)
     mpp_y: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # file | dataset_doc | manual (SPEC-02): where mpp_x/mpp_y came from; NULL for slides ingested
+    # before v6. SlideReader always uses the row's values, never the file's.
+    mpp_source: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Finest resolution the slide holds (level 0, coarser axis), in µm/px.
+    native_mpp: Mapped[float | None] = mapped_column(Float, nullable=True)
     base_mag: Mapped[float | None] = mapped_column(Float, nullable=True)
     
     width_px: Mapped[int | None] = mapped_column(Integer, nullable=True)
