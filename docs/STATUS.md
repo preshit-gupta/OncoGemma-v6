@@ -16,7 +16,7 @@ Update this file at the end of every session (SPEC plan §3 rule 8). Keep it und
   - `backend/alembic/` (`0001_v5_baseline`, `0002_drop_v5_reports`; the owner approved deleting `reports` on 2026-09-28), CI `.github/workflows/migrations.yml`. API startup (`ENV != test`) runs `upgrade_to_head` under a Postgres advisory lock and refuses unversioned databases. `create_all` and the v5 startup DDL are gone.
   - `PipelineConfig` (every `configs/*.yaml` and prompt, strict, hashed; load failure aborts startup) and `ModelRegistry` (`configs/models.yaml`; Vertex versions are verified deployments `models/<id>@<ver>@<deploy date>`; `${NAME}` from an allowlist of Settings fields).
 - **Suite fixes** (PR #3): the fake GCS store uses extended-length paths on Windows; `RUN_IN_PROCESS_WORKER` (off in conftest) stops the lifespan worker racing `TestClient`. Suite on `main` (`6611ceb`): 439 passed, 1 skipped.
-- **WP-2.3 is complete.** #6 merged into `main`; #7, #8 and #10 merged into their stacked bases, so PR #12 lands them on `main`. Merge #11 and #12, then the WP-2.3e PR.
+- **WP-2.3 is complete and on `main`** (2026-09-29): #6, then #11 (API image hotfix), #12 (lands #7, #8, #10), #13 (WP-2.3e) and #14 (TCGA metadata fails loudly). Images `api`/`worker:wp2.3e-4c1b34e` are built; the owner deploys. All other branches were deleted; only `main` remains.
 - **WP-2.3a** (PR #6): gateway foundations.
   - `0003_decision_records`, `0004_stage_run_mode` (existing rows become `clinical`), verified on Postgres 15. `app/core/{run_context,tasks,fallbacks}.py`, empty `configs/fallbacks.yaml`, registry `call_policy`, VLM `params`/`schema_retries`, Gemini `region`.
   - `app/inference/gateway.py`: contract checks (incl. decoded image size), transport-only retries with full jitter, strict parsing, cache, one record per attempt, EVAL refuses Gemini aliases, `invoke_or_fallback`. `adapters/vertex_genai.py` uses `response_json_schema`.
@@ -47,9 +47,7 @@ Lanes are in `docs/tasks/README.md`. Lane B (frontend) merged WP-4.2, 6.4, 7.7, 
 
 ## Findings to fix
 
-- **Since #9 (WP-1.3) an API image built from `main` cannot start**: it installs `requirements/api.lock.txt` (no SciPy/OpenSlide/…), but the routers need them and the API runs stages in-process. Hotfix PR #11 (worker lockfile + `models/` in the API image, plus an import check in `tools/tests`). Do not deploy the API from `main` before #11.
 - Cloud Run's front end reserves `/healthz` and answers it with a Google 404 before the request reaches the app, so the PR #2 runbook's `/healthz` check is wrong: use `/health`. The health endpoints also return the raw DB exception text to unauthenticated callers (WP-4.3).
-- `backend/eval/datasets/tcga.py:331` (WP-5.2) swallows OpenSlide errors, so a manifest row can silently lose `mpp`/magnification (allowlisted in `tools/ruff_fail_loud.toml`).
 - Production Cloud SQL is Postgres 16; the migrations CI job uses 15 (SPEC-01). Consider moving CI to 16. Also, `backend/tests` and `tools/tests` are both packages named `tests`: run them in separate `pytest` runs.
 
 ## Blockers
