@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { Upload, Plus, FileText, ArrowRight, CheckCircle2, Trash2, AlertTriangle, Clock } from "lucide-react";
-import { fetchCases, createCase, uploadSlideFile, deleteCase, clearAllCases, Case } from "@/lib/api";
+import { fetchCases, createCase, uploadSlideFile, deleteCase, clearAllCases, Case, SpecimenType } from "@/lib/api";
 import { formatISTDateTime } from "@/lib/utils";
 import { L } from "@/lib/labels";
 
@@ -13,6 +13,8 @@ export default function CasesPage() {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadStatusText, setUploadStatusText] = useState<string>(L.status.processing);
+  // Preprocess refuses a case without a specimen type (SPEC-04 §3.2), so it is chosen before upload.
+  const [specimenType, setSpecimenType] = useState<SpecimenType | "">("");
 
   useEffect(() => {
     loadCases();
@@ -31,14 +33,15 @@ export default function CasesPage() {
 
   const handleCreateAndUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    e.target.value = "";
+    if (!file || !specimenType) return;
 
     setUploading(true);
     setUploadProgress(5);
     setUploadStatusText(L.status.processing);
 
     try {
-      const newCase = await createCase();
+      const newCase = await createCase(specimenType);
       setUploadProgress(10);
       setUploadStatusText(L.status.processing);
 
@@ -152,13 +155,29 @@ export default function CasesPage() {
             </button>
           )}
 
-          <label className="inline-flex items-center space-x-2 px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-semibold cursor-pointer shadow-sm shadow-sky-600/20 transition">
+          <select
+            value={specimenType}
+            onChange={(e) => setSpecimenType(e.target.value as SpecimenType | "")}
+            disabled={uploading}
+            aria-label={L.field.specimenType}
+            title={L.help.chooseSpecimenFirst}
+            className="px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-semibold text-slate-700 focus:outline-none focus:border-sky-500"
+          >
+            <option value="" disabled>{L.field.specimenType}</option>
+            <option value="resection">{L.field.specimenResection}</option>
+            <option value="core_biopsy">{L.field.specimenCoreBiopsy}</option>
+          </select>
+
+          <label
+            title={specimenType ? L.action.uploadSlide : L.help.chooseSpecimenFirst}
+            className={`inline-flex items-center space-x-2 px-4 py-2 bg-sky-600 text-white rounded-lg text-xs font-semibold shadow-sm shadow-sky-600/20 transition ${specimenType && !uploading ? "hover:bg-sky-500 cursor-pointer" : "opacity-40 cursor-not-allowed"}`}
+          >
             <Plus className="w-4 h-4" />
             <span>{L.action.uploadSlide}</span>
             <input
               type="file"
               onChange={handleCreateAndUpload}
-              disabled={uploading}
+              disabled={uploading || !specimenType}
               accept=".svs,.ndpi,.tif,.tiff,.jpg,.jpeg,.png"
               className="hidden"
             />

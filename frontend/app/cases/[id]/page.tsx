@@ -3,7 +3,7 @@
 import React, { useEffect, useState, useRef } from "react";
 import Link from "next/link";
 import { ArrowLeft, RefreshCcw, Info, X, Microscope, AlertTriangle, CheckCircle2, RotateCcw } from "lucide-react";
-import { fetchCaseDetail, CaseDetail, retryStage, approveStage, confirmTriageStage, updateSlideMpp } from "@/lib/api";
+import { fetchCaseDetail, CaseDetail, retryStage, approveStage, confirmTriageStage, updateSlideMpp, updateCaseSpecimenType, SpecimenType } from "@/lib/api";
 import { formatISTDateTime } from "@/lib/utils";
 import dynamic from "next/dynamic";
 import { StageRail } from "@/components/viewer/StageRail";
@@ -141,6 +141,30 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
       setMppError(err?.message || "Failed to update MPP");
     } finally {
       setMppSubmitting(false);
+    }
+  };
+
+  // Preprocess refuses an 'unknown' specimen (SPEC-04 §3.2): state it, then preprocess is retried.
+  const isSpecimenUnknown = caseDetail?.specimen_type === "unknown";
+  const [specimenInput, setSpecimenInput] = useState<SpecimenType | "">("");
+  const [specimenSubmitting, setSpecimenSubmitting] = useState<boolean>(false);
+  const [specimenError, setSpecimenError] = useState<string | null>(null);
+
+  const handleSpecimenSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!specimenInput) return;
+    setSpecimenSubmitting(true);
+    setSpecimenError(null);
+    try {
+      await updateCaseSpecimenType(caseId, specimenInput);
+      if (preprocessStage?.status === "failed") {
+        await retryStage(caseId, "preprocess");
+      }
+      await loadData();
+    } catch (err: any) {
+      setSpecimenError(err?.message || L.error.genericError);
+    } finally {
+      setSpecimenSubmitting(false);
     }
   };
 
@@ -580,6 +604,41 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
                 </form>
               </div>
             </div>
+          ) : isSpecimenUnknown ? (
+            <div className="flex flex-col items-center justify-center h-full text-slate-300 space-y-4 bg-slate-950 p-8">
+              <div className="relative w-16 h-16 flex items-center justify-center bg-amber-500/10 rounded-full border border-amber-500/30">
+                <AlertTriangle className="w-8 h-8 text-amber-400" />
+              </div>
+              <div className="text-center max-w-lg">
+                <h3 className="text-base font-bold text-white tracking-tight">{L.field.specimenType}</h3>
+                <p className="text-xs text-slate-400 mt-2 leading-relaxed">
+                  {L.help.specimenTypeRequired}
+                </p>
+                <form onSubmit={handleSpecimenSubmit} className="mt-5 bg-slate-900 border border-slate-800 rounded-xl p-4 text-left space-y-3">
+                  <select
+                    required
+                    value={specimenInput}
+                    onChange={(e) => setSpecimenInput(e.target.value as SpecimenType | "")}
+                    aria-label={L.field.specimenType}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-sky-500"
+                  >
+                    <option value="" disabled>{L.field.specimenType}</option>
+                    <option value="resection">{L.field.specimenResection}</option>
+                    <option value="core_biopsy">{L.field.specimenCoreBiopsy}</option>
+                  </select>
+                  {specimenError && (
+                    <p className="text-[11px] text-rose-400 font-medium">{specimenError}</p>
+                  )}
+                  <button
+                    type="submit"
+                    disabled={specimenSubmitting || !specimenInput}
+                    className="w-full bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-xs font-semibold py-2 px-4 rounded-lg transition shadow flex items-center justify-center space-x-2"
+                  >
+                    <span>{specimenSubmitting ? L.status.processing : L.action.saveSpecimenType}</span>
+                  </button>
+                </form>
+              </div>
+            </div>
           ) : isIngestMissing && !isIngestDone ? (
             <div className="flex flex-col items-center justify-center h-full text-slate-300 space-y-4 bg-slate-950 p-8">
               <div className="relative w-16 h-16 flex items-center justify-center bg-slate-900 rounded-full border border-slate-800">
@@ -708,7 +767,13 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
               </div>
               <div className="flex justify-between border-b border-slate-800/50 py-1">
                 <span className="text-slate-400">{L.field.specimenType}:</span>
-                <span className="font-mono text-slate-200 uppercase">{slide?.format || "-"}</span>
+                <span className="font-mono text-slate-200">
+                  {caseDetail?.specimen_type === "resection"
+                    ? L.field.specimenResection
+                    : caseDetail?.specimen_type === "core_biopsy"
+                      ? L.field.specimenCoreBiopsy
+                      : L.field.specimenUnknown}
+                </span>
               </div>
               <div className="flex justify-between border-b border-slate-800/50 py-1">
                 <span className="text-slate-400">{L.field.scale}:</span>
