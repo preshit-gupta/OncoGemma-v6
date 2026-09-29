@@ -31,3 +31,22 @@ class GcsBlobStore:
     def write(self, path: str, data: bytes, content_type: str) -> str:
         gcs.upload_blob_from_bytes(self.bucket, path, data, content_type)
         return f"gs://{self.bucket}/{path}"
+
+
+class LocalBlobStore:
+    """Raw outputs and cache entries under a local directory (evaluation runs off the cloud)."""
+
+    def __init__(self, root):
+        from pathlib import Path
+
+        self.root = Path(root)
+
+    def read(self, path: str) -> bytes | None:
+        target = self.root / path
+        return target.read_bytes() if target.is_file() else None
+
+    def write(self, path: str, data: bytes, content_type: str) -> str:
+        target = self.root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        return target.resolve().as_uri()

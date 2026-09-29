@@ -1,52 +1,17 @@
 {
+  "info": {"description": "Shaped like the published MIDOG++.json (figshare 6615571, checked 2026-09-29)"},
   "images": [
-    {
-      "id": 1,
-      "file_name": "001.png",
-      "width": 2000,
-      "height": 2000,
-      "scanner": "Hamamatsu XR",
-      "tumor_type": "breast",
-      "patient_id": "case_001"
-    },
-    {
-      "id": 2,
-      "file_name": "002.png",
-      "width": 2000,
-      "height": 2000,
-      "scanner": "Leica CS2",
-      "tumor_type": "breast",
-      "patient_id": "case_002"
-    }
+    {"license": 1, "file_name": "001.tiff", "id": 1, "width": 2000, "height": 2000, "tumor_type": "human breast cancer"},
+    {"license": 1, "file_name": "002.tiff", "id": 2, "width": 2000, "height": 2000, "tumor_type": "human breast cancer"},
+    {"license": 1, "file_name": "201.tiff", "id": 201, "width": 2000, "height": 2000, "tumor_type": "canine lung cancer"}
   ],
   "categories": [
-    {
-      "id": 1,
-      "name": "mitotic figure"
-    },
-    {
-      "id": 2,
-      "name": "non-mitotic figure"
-    }
+    {"id": 1, "name": "mitotic figure"},
+    {"id": 2, "name": "not mitotic figure"}
   ],
   "annotations": [
-    {
-      "id": 101,
-      "image_id": 1,
-      "category_id": 1,
-      "bbox": [100.0, 200.0, 50.0, 60.0]
-    },
-    {
-      "id": 102,
-      "image_id": 1,
-      "category_id": 2,
-      "bbox": [300.0, 400.0, 40.0, 40.0]
-    },
-    {
-      "id": 201,
-      "image_id": 2,
-      "category_id": 1,
-      "bbox": [500.0, 600.0, 20.0, 20.0]
-    }
+    {"bbox": [100, 200, 150, 250], "category_id": 1, "image_id": 1, "labels": [1, 1], "id": 101},
+    {"bbox": [300, 400, 350, 450], "category_id": 2, "image_id": 1, "labels": [2, 2], "id": 102},
+    {"bbox": [500, 600, 550, 650], "category_id": 1, "image_id": 2, "labels": [1, 1, 1], "id": 201}
   ]
 }

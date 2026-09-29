@@ -21,17 +21,10 @@ datasets:
     license_ref: null
 
   midogpp:
-    scanner_mpp:
-      "Hamamatsu XR": 0.23
-      "Hamamatsu S360": 0.23
-      "Leica CS2": 0.25
-      "XR": 0.23
-      "S360": 0.23
-      "CS2": 0.25
+    # Resolution comes from each image's TIFF tags (midogpp.image_mpp); MIDOG++.json has none.
     categories:
       "mitotic figure": "MF"
-      "non-mitotic figure": "imposter"
-      "hard negative": "imposter"
+      "not mitotic figure": "imposter" # the name in the published MIDOG++.json
 
   bcss:
     class_map:

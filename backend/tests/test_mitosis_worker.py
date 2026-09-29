@@ -81,12 +81,19 @@ def cycling_referee():
     return answer
 
 
-def configured():
-    """The repo config with the detector endpoint set (tests have no VERTEX_MITOSIS_ENDPOINT_ID)."""
+def configured(referee=True):
+    """The repo config with the detector endpoint set (tests have no VERTEX_MITOSIS_ENDPOINT_ID).
+
+    The referee is on by default here so its path stays covered; production has it off.
+    """
     config = get_pipeline_config()
     registry = config.models
     kongnet = registry.models["kongnet_det_midog_1"].model_copy(update={"endpoint_id": "456"})
-    return config.model_copy(update={"models": registry.model_copy(update={"models": {**registry.models, "kongnet_det_midog_1": kongnet}})})
+    mitosis = config.mitosis.model_copy(update={"referee": config.mitosis.referee.model_copy(update={"enabled": referee})})
+    return config.model_copy(update={
+        "models": registry.model_copy(update={"models": {**registry.models, "kongnet_det_midog_1": kongnet}}),
+        "mitosis": mitosis,
+    })
 
 
 @pytest.fixture
@@ -264,3 +271,19 @@ def test_unreadable_tile_fails_instead_of_dropping_it(db_session, monkeypatch):
     slide.read_region = broken
     with pytest.raises(SlideReadError, match="JPEG decode failed"):
         run_mitosis(stage, db_session, runtime_for(stage))
+
+
+def test_with_the_referee_off_the_detector_decides(db_session, monkeypatch):
+    """SPEC-06 arm A1 (production since the MIDOG++ baseline): no VLM call, candidates >= det_threshold count."""
+    stage, raw_uri = seed(db_session)
+    install_fake_slide(monkeypatch, FakeOpenSlide(SIDE_PX, SIDE_PX), raw_uri)
+    referee, log = FakeAdapter(), DecisionLog()  # any call fails the test
+    runtime = runtime_for(stage, referee=referee, config=configured(referee=False), log=log)
+
+    _, model_versions = run_mitosis(stage, db_session, runtime)
+
+    assert referee.calls == [] and {r["task"] for r in log.pending()} == {"mitosis_detect"}
+    assert list(model_versions) == ["kongnet_det_midog_1"]
+    found = detections(db_session, stage)
+    assert found and all(d.label == "mitosis" and d.label_source == "detector:kongnet_det_midog_1" for d in found)
+    assert not get_pipeline_config().mitosis.referee.enabled

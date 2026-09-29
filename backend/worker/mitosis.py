@@ -282,10 +282,18 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
                 cand["medgemma_rationale"] = verdict.rationale
             cand["medgemma_confidence"] = None
 
-        if candidates:
+        if referee_cfg.enabled:
             print(f"[Worker:Mitosis] Adjudicating {len(candidates)} candidates via {referee_cfg.producer} with {MODEL_CALL_THREADS} worker threads...")
             with ThreadPoolExecutor(max_workers=MODEL_CALL_THREADS) as pool:
                 list(pool.map(_adjudicate, candidates))
+        else:
+            # SPEC-06 arm A1: the detector at det_threshold decides; no VLM call is made.
+            for cand in candidates:
+                cand.update({
+                    "label": "mitosis", "label_source": f"detector:{det_cfg.producer}", "needs_human": False,
+                    "referee_record_id": None, "vlm": None,
+                    "medgemma_verdict": None, "medgemma_rationale": None, "medgemma_confidence": None,
+                })
 
         # Post-referee physical NMS to eliminate any residual coinciding/overlapping detections
         candidates = apply_global_nms(candidates, nms_radius_um=det_cfg.nms_radius_um)
@@ -497,7 +505,8 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
             )
             db.add(hpf_row)
 
-        model_versions = {key: registry.version_of(key) for key in (det_cfg.producer, referee_cfg.producer)}
+        producers = (det_cfg.producer, referee_cfg.producer) if referee_cfg.enabled else (det_cfg.producer,)
+        model_versions = {key: registry.version_of(key) for key in producers}
 
         output_payload = {
             "case_id": case_id,

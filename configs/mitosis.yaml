@@ -12,13 +12,18 @@ detector:
   stride_px: 448 # 64 px overlap across tiles
   overlap_px: 64
   min_prob: 0.01 # sent to the detector; candidates are stored raw from here (threshold sweeps)
-  det_threshold: 0.35 # applied to the raw candidates
+  # Set from the MIDOG++ 094 baseline (reports/baseline/mitosis_midogpp_094.md, 2026-09-30): best F1
+  # 0.862 at tau 0.75 with NMS 5-12.5 um; the old 0.35 / 20 um gave 0.831 (20 um merges true figures).
+  det_threshold: 0.75 # applied to the raw candidates
   region_margin_um: 16.0 # sweep region = hotspot bounding box grown by this (SPEC-06 §5.1)
   min_tissue_fraction: 0.20 # tiles with less tissue in the preprocess mask are not swept
-  nms_radius_um: 20.0 # Cross-tile greedy NMS suppression radius (MIDOG standard: 15-20 um cell diameter)
+  nms_radius_um: 7.5 # greedy NMS radius (SPEC-06 §5.7 candidates 5-12.5 um; all equal on 094)
 
-# Every candidate is adjudicated by this VLM (SPEC-06 arm A2: v5 prompt, strict MitosisVerdict).
+# The VLM referee for every candidate, when enabled (SPEC-06 arm A2: v5 prompt, strict MitosisVerdict).
 referee:
+  # Off (SPEC-06 arm A1). On MIDOG++ 094 the referee (v5 prompt) cut F1 from 0.862 to 0.676: it
+  # rejected 25 true figures (recall 0.915 -> 0.610) and removed one net false positive (McNemar p < 0.001).
+  enabled: false
   producer: gemini_referee
   prompt: mitosis_confirmation@v1.md
   focus_px: 128 # focus crop at the slide's own resolution

@@ -181,8 +181,12 @@ class MitosisDetectorConfig(StrictModel):
 
 
 class MitosisRefereeConfig(StrictModel):
-    """The VLM that adjudicates every detected candidate (SPEC-06 arm A2: v5 prompt, strict schema)."""
+    """The VLM that adjudicates every detected candidate (SPEC-06 arm A2: v5 prompt, strict schema).
 
+    ``enabled: false`` is arm A1: the detector's thresholded candidates are the decision.
+    """
+
+    enabled: bool
     producer: RegistryKey
     prompt: PromptFileName
     # Image 1: a focus_px square at the slide's own resolution around the candidate.
