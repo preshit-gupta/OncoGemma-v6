@@ -1,16 +1,20 @@
 # OncoGemma Automated Slide Quality Control (QC) Configuration
 # PRD 02-stage-v4.1-preprocess-qc §3.1 Automated Pre-Flight Checks
 
-tissue_coverage:
-  fail_threshold: 0.02  # < 2% tissue coverage triggers hard fail
-  warn_threshold: 0.05  # < 5% tissue coverage triggers warning
+# Tissue area and the focus thresholds depend on the specimen type: configs/specimen_profiles.yaml (qc).
+
+overview:
+  mpp: 8.0  # pen-mark and fold checks read the whole slide at this resolution
 
 focus:
-  vol_threshold: 45.0   # Variance of Laplacian (VoL) threshold below which a 512x512 tile is considered blurry (PRD §3.1)
-  tile_size_px: 512
-  sample_max_tiles: 400
-  fail_blurry_ratio: 0.30  # > 30% blurry tissue tiles triggers hard fail (PRD §3.1)
-  warn_blurry_ratio: 0.10  # > 10% blurry tissue tiles triggers warning (PRD §3.1)
+  mpp: 1.0  # tiles are read at ~10x
+  tile_size_px: 512  # 512 x 512 µm tiles at 1.0 µm/px
+  sample_max_tiles: 400  # sampled uniformly over the tissue mask
+  min_tissue_fraction: 0.5  # a tile must be at least half tissue
+
+resolution:
+  warn_native_mpp: 0.30  # coarser than this: the slide is upsampled for mitosis detection (SPEC-04 §3.7)
+  fail_native_mpp: 0.55  # coarser than this (below ~20x): mitosis counting is not supported
 
 pen_marks:
   min_component_area_mm2: 1.0  # Connected components > 1.0 mm² trigger warning

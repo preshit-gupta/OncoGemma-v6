@@ -1,123 +1,97 @@
-"""Stage 1 automated QC checks. Thresholds come from the injected ``QcConfig``
-(configs/qc.yaml, SPEC-01 §3.8); the caller records the pipeline ``config_hash``."""
+"""Stage 1 automated QC checks (SPEC-04 §3.7).
+
+Thresholds come from the injected ``QcConfig`` (configs/qc.yaml) and the case's specimen profile
+(configs/specimen_profiles.yaml, ``SpecimenQcConfig``); the caller records the pipeline
+``config_hash``. Every pixel is read through ``read_region_at_mpp``, tissue comes from the
+registered ``TissueMask``, and a check that cannot run raises or says it did not assess anything:
+nothing is replaced by a grey thumbnail or a made-up value.
+"""
 import cv2
 import numpy as np
 
-from app.core.pipeline_config import QcConfig
+from app.core.pipeline_config import QcConfig, SpecimenQcConfig
+from pipeline.slide_io import SlideReader, read_extent, read_region_at_mpp
+from pipeline.tissue_mask import TissueMask
 
 # HSV channels have no upper bound when a range leaves s_max or v_max out.
 HSV_CHANNEL_MAX = 255
+# Millimetres per micrometre.
+MM_PER_UM = 1e-3
 
-def check_tissue_coverage(tissue_mask_1bit: np.ndarray, config: QcConfig) -> dict:
-    """
-    Check 1: Tissue Coverage
-    tissue mask area / total thumbnail area, against the configured fail and warn fractions.
-    """
-    cfg = config.tissue_coverage
-    fail_thresh = cfg.fail_threshold
-    warn_thresh = cfg.warn_threshold
 
-    total_pixels = tissue_mask_1bit.size
-    tissue_pixels = np.count_nonzero(tissue_mask_1bit)
-    coverage_ratio = float(tissue_pixels / max(1, total_pixels))
+def check_tissue_coverage(mask: TissueMask, specimen_qc: SpecimenQcConfig) -> dict:
+    """
+    Check 1: Tissue area
+    Absolute tissue area of the registered mask in mm², against the specimen profile's fail and warn areas:
+    what matters for grading is how much tissue there is, not how full the glass is.
+    """
+    fail_area = specimen_qc.tissue_area_fail_mm2
+    warn_area = specimen_qc.tissue_area_warn_mm2
+    area = mask.area_mm2
 
     status = "pass"
-    if coverage_ratio < fail_thresh:
+    if area < fail_area:
         status = "fail"
-        msg = f"Critical low tissue coverage: {coverage_ratio * 100:.1f}% (threshold < {fail_thresh * 100:.0f}%)"
-    elif coverage_ratio < warn_thresh:
+        msg = f"Critical low tissue area: {area:.2f} mm² (threshold < {fail_area:g} mm²)"
+    elif area < warn_area:
         status = "warn"
-        msg = f"Low tissue coverage: {coverage_ratio * 100:.1f}% (threshold < {warn_thresh * 100:.0f}%)"
+        msg = f"Low tissue area: {area:.2f} mm² (threshold < {warn_area:g} mm²)"
     else:
-        msg = f"Adequate tissue coverage: {coverage_ratio * 100:.1f}%"
+        msg = f"Adequate tissue area: {area:.2f} mm²"
 
     return {
         "name": "tissue_coverage",
         "status": status,
-        "metric": round(coverage_ratio, 4),
+        "metric": round(area, 4),
         "message": msg
     }
 
+
 def check_focus_sharpness(
-    slide_obj,
-    tissue_mask_1bit: np.ndarray,
-    mpp_x: float = 0.25,
-    mpp_y: float = 0.25,
+    reader: SlideReader,
+    mask: TissueMask,
     *,
-    config: QcConfig
+    config: QcConfig,
+    specimen_qc: SpecimenQcConfig,
+    seed: int
 ) -> dict:
     """
     Check 2: Focus Sharpness
-    Variance of Laplacian (OpenCV, grayscale) per 512^2 tile at 10x, on at most
-    ``focus.sample_max_tiles`` sampled tissue tiles.
+    Variance of Laplacian (OpenCV, grayscale) per tile at ``focus.mpp``, on at most
+    ``focus.sample_max_tiles`` tiles drawn uniformly (seeded) from the tiles that are mostly tissue.
     """
     cfg = config.focus
-    vol_thresh = cfg.vol_threshold
-    fail_blurry_ratio = cfg.fail_blurry_ratio
-    warn_blurry_ratio = cfg.warn_blurry_ratio
-    max_tiles = cfg.sample_max_tiles
+    tile_um = cfg.tile_size_px * cfg.mpp
+    tiles = list(mask.tiles(tile_um, cfg.min_tissue_fraction))
+    if len(tiles) > cfg.sample_max_tiles:
+        chosen = np.random.default_rng(seed).choice(len(tiles), size=cfg.sample_max_tiles, replace=False)
+        tiles = [tiles[i] for i in sorted(chosen)]
 
-    from pipeline.tiles import read_region_srgb
+    if not tiles:
+        return {
+            "name": "focus",
+            "status": "warn",
+            "metric": None,
+            "message": (
+                f"Focus not assessed: no {tile_um:g} µm tile is at least {cfg.min_tissue_fraction * 100:.0f}% tissue"
+            ),
+        }
 
-    slide_w_px = float(getattr(slide_obj, "width_px", 2048) or 2048)
-    slide_h_px = float(getattr(slide_obj, "height_px", 2048) or 2048)
-    if hasattr(slide_obj, "dimensions"):
-        slide_w_px, slide_h_px = float(slide_obj.dimensions[0]), float(slide_obj.dimensions[1])
-    elif hasattr(slide_obj, "size"):
-        slide_w_px, slide_h_px = float(slide_obj.size[0]), float(slide_obj.size[1])
-
-    slide_w_um = slide_w_px * mpp_x
-    slide_h_um = slide_h_px * mpp_y
-
-    patch_size_um = 512.0
-    mask_h, mask_w = tissue_mask_1bit.shape
-
-    tissue_coords = np.argwhere(tissue_mask_1bit)  # [row, col] -> [y, x]
-    max_x_um = max(0.0, slide_w_um - patch_size_um)
-    max_y_um = max(0.0, slide_h_um - patch_size_um)
-
-    if len(tissue_coords) > 0:
-        rng = np.random.default_rng(42)
-        sample_size = min(max_tiles, len(tissue_coords))
-        chosen_idx = rng.choice(len(tissue_coords), size=sample_size, replace=(len(tissue_coords) < sample_size))
-        chosen = tissue_coords[chosen_idx]
-        candidate_xs = np.clip((chosen[:, 1] / float(mask_w)) * slide_w_um - patch_size_um / 2.0, 0, max_x_um)
-        candidate_ys = np.clip((chosen[:, 0] / float(mask_h)) * slide_h_um - patch_size_um / 2.0, 0, max_y_um)
-        positions = list(zip(candidate_xs, candidate_ys))
-    else:
-        step_um = patch_size_um * 2
-        xs = np.arange(0, max(patch_size_um, slide_w_um - patch_size_um), step_um)
-        ys = np.arange(0, max(patch_size_um, slide_h_um - patch_size_um), step_um)
-        positions = [(x, y) for x in xs for y in ys]
-        if len(positions) > max_tiles:
-            rng = np.random.default_rng(42)
-            idx_sample = rng.choice(len(positions), size=max_tiles, replace=False)
-            positions = [positions[i] for i in idx_sample]
-    blurry_tile_count = 0
-    total_sampled_tiles = 0
-
-    for x_um, y_um in positions:
-        try:
-            tile_rgb, _ = read_region_srgb(slide_obj, x_um, y_um, patch_size_um, patch_size_um, out_px=512, mpp_x=mpp_x, mpp_y=mpp_y)
-            if np.std(tile_rgb) > 5.0:
-                gray = cv2.cvtColor(tile_rgb, cv2.COLOR_RGB2GRAY)
-                vol = cv2.Laplacian(gray, cv2.CV_64F).var()
-                
-                total_sampled_tiles += 1
-                if vol < vol_thresh:
-                    blurry_tile_count += 1
-        except Exception:
-            pass
-
-    blurry_ratio = float(blurry_tile_count / max(1, total_sampled_tiles)) if total_sampled_tiles > 0 else 0.0
+    blurry = 0
+    for tile in tiles:
+        rgb = read_region_at_mpp(reader, tile.x_um, tile.y_um, tile_um, tile_um, cfg.mpp).rgb
+        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+        if cv2.Laplacian(gray, cv2.CV_64F).var() < specimen_qc.focus_vol_threshold:
+            blurry += 1
+    blurry_ratio = blurry / len(tiles)
 
     status = "pass"
-    if total_sampled_tiles > 0 and blurry_ratio > fail_blurry_ratio:
+    if blurry_ratio > specimen_qc.focus_fail_ratio:
         status = "fail"
-        msg = f"Critical focus blur: {blurry_ratio * 100:.1f}% of tissue tiles blurry (threshold > {fail_blurry_ratio * 100:.0f}%)"
-    elif total_sampled_tiles > 0 and blurry_ratio > warn_blurry_ratio:
+        msg = f"Critical focus blur: {blurry_ratio * 100:.1f}% of tissue tiles blurry (threshold > {specimen_qc.focus_fail_ratio * 100:.0f}%)"
+    elif blurry_ratio > specimen_qc.focus_warn_ratio:
         status = "warn"
-        msg = f"{blurry_ratio * 100:.1f}% of tissue tiles below sharpness threshold (VoL < {vol_thresh})"
+        msg = f"{blurry_ratio * 100:.1f}% of tissue tiles below sharpness threshold (VoL < {specimen_qc.focus_vol_threshold})"
     else:
         msg = f"Slide focus sharp ({blurry_ratio * 100:.1f}% blurry tiles)"
 
@@ -128,50 +102,22 @@ def check_focus_sharpness(
         "message": msg
     }
 
-def check_pen_marks(
-    slide_obj,
-    tissue_mask_1bit: np.ndarray,
-    mpp_x: float = 0.25,
-    mpp_y: float = 0.25,
-    *,
-    config: QcConfig
-) -> dict:
+
+def check_pen_marks(overview_rgb: np.ndarray, overview_mpp: float, *, config: QcConfig) -> dict:
     """
     Check 3: Pen Marks Detection
     Detects surgical/pathologist pen ink marks (green, blue, black) using HSV thresholding
     and connected component analysis. Warns if any pen mark component exceeds min_component_area_mm2.
+    ``overview_rgb`` is the whole slide at ``overview_mpp`` µm/px.
     """
     cfg = config.pen_marks
     min_area_mm2 = cfg.min_component_area_mm2
     hsv_ranges = cfg.hsv_ranges.model_dump()
 
-    from pipeline.tiles import read_region_srgb
-    slide_w_px = float(getattr(slide_obj, "width_px", 2048) or 2048)
-    slide_h_px = float(getattr(slide_obj, "height_px", 2048) or 2048)
-    if hasattr(slide_obj, "dimensions"):
-        slide_w_px, slide_h_px = float(slide_obj.dimensions[0]), float(slide_obj.dimensions[1])
-    elif hasattr(slide_obj, "size"):
-        slide_w_px, slide_h_px = float(slide_obj.size[0]), float(slide_obj.size[1])
+    hsv = cv2.cvtColor(overview_rgb, cv2.COLOR_RGB2HSV)
+    pixel_area_mm2 = (overview_mpp * MM_PER_UM) ** 2
 
-    thumb_w_um = min(50000.0, slide_w_px * mpp_x)
-    thumb_h_um = min(50000.0, slide_h_px * mpp_y)
-
-    try:
-        thumb_arr, _ = read_region_srgb(slide_obj, 0, 0, thumb_w_um, thumb_h_um, out_px=(512, 512), mpp_x=mpp_x, mpp_y=mpp_y)
-    except Exception:
-        if hasattr(slide_obj, "resize"):
-            thumb_arr = np.array(slide_obj.convert("RGB").resize((512, 512)))
-        else:
-            thumb_arr = np.ones((512, 512, 3), dtype=np.uint8) * 240
-
-    hsv = cv2.cvtColor(thumb_arr, cv2.COLOR_RGB2HSV)
-
-    # Pixel area in mm2 for 512x512 thumbnail
-    px_w_mm = (thumb_w_um / 512.0) * 1e-3
-    px_h_mm = (thumb_h_um / 512.0) * 1e-3
-    pixel_area_mm2 = px_w_mm * px_h_mm
-
-    combined_pen_mask = np.zeros((512, 512), dtype=np.uint8)
+    combined_pen_mask = np.zeros(overview_rgb.shape[:2], dtype=np.uint8)
 
     for color, rng_cfg in hsv_ranges.items():
         h_min, h_max = rng_cfg["h_min"], rng_cfg["h_max"]
@@ -211,58 +157,27 @@ def check_pen_marks(
         "message": msg
     }
 
-def check_tissue_folds(
-    slide_obj,
-    tissue_mask_1bit: np.ndarray,
-    mpp_x: float = 0.25,
-    mpp_y: float = 0.25,
-    *,
-    config: QcConfig
-) -> dict:
+
+def check_tissue_folds(overview_rgb: np.ndarray, overview_tissue: np.ndarray, overview_mpp: float, *, config: QcConfig) -> dict:
     """
     Check 4: Tissue Fold Detection
     Detects dark, high-saturation overlapping tissue ridges (folds) within the tissue area.
     Warns if connected fold ridge length exceeds min_skeleton_length_mm.
+    ``overview_tissue`` is the registered mask on the overview's pixel grid.
     """
     cfg = config.folds
     min_length_mm = cfg.min_skeleton_length_mm
     sat_min = cfg.saturation_min
     bright_max = cfg.brightness_max
 
-    from pipeline.tiles import read_region_srgb
-    slide_w_px = float(getattr(slide_obj, "width_px", 2048) or 2048)
-    slide_h_px = float(getattr(slide_obj, "height_px", 2048) or 2048)
-    if hasattr(slide_obj, "dimensions"):
-        slide_w_px, slide_h_px = float(slide_obj.dimensions[0]), float(slide_obj.dimensions[1])
-    elif hasattr(slide_obj, "size"):
-        slide_w_px, slide_h_px = float(slide_obj.size[0]), float(slide_obj.size[1])
-
-    thumb_w_um = min(50000.0, slide_w_px * mpp_x)
-    thumb_h_um = min(50000.0, slide_h_px * mpp_y)
-
-    try:
-        thumb_arr, _ = read_region_srgb(slide_obj, 0, 0, thumb_w_um, thumb_h_um, out_px=(512, 512), mpp_x=mpp_x, mpp_y=mpp_y)
-    except Exception:
-        if hasattr(slide_obj, "resize"):
-            thumb_arr = np.array(slide_obj.convert("RGB").resize((512, 512)))
-        else:
-            thumb_arr = np.ones((512, 512, 3), dtype=np.uint8) * 240
-
-    hsv = cv2.cvtColor(thumb_arr, cv2.COLOR_RGB2HSV)
-
-    px_w_mm = (thumb_w_um / 512.0) * 1e-3
-    px_h_mm = (thumb_h_um / 512.0) * 1e-3
-
-    if tissue_mask_1bit.shape != (512, 512):
-        t_mask = cv2.resize(tissue_mask_1bit.astype(np.uint8), (512, 512), interpolation=cv2.INTER_NEAREST).astype(bool)
-    else:
-        t_mask = tissue_mask_1bit
+    hsv = cv2.cvtColor(overview_rgb, cv2.COLOR_RGB2HSV)
+    px_mm = overview_mpp * MM_PER_UM
 
     sat = hsv[:, :, 1]
     val = hsv[:, :, 2]
 
-    fold_candidates = (sat >= sat_min) & (val <= bright_max) & t_mask
-    fold_mask = fold_candidates.astype(np.uint8) * 255
+    fold_candidates = (sat >= sat_min) & (val <= bright_max) & overview_tissue
+    fold_mask = fold_candidates.astype(np.uint8) * HSV_CHANNEL_MAX
 
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
     fold_clean = cv2.morphologyEx(fold_mask, cv2.MORPH_OPEN, kernel)
@@ -273,7 +188,7 @@ def check_tissue_folds(
     for i in range(1, num_labels):
         w_px = stats[i, cv2.CC_STAT_WIDTH]
         h_px = stats[i, cv2.CC_STAT_HEIGHT]
-        length_mm = float(np.hypot(w_px * px_w_mm, h_px * px_h_mm))
+        length_mm = float(np.hypot(w_px * px_mm, h_px * px_mm))
         if length_mm > max_skeleton_length_mm:
             max_skeleton_length_mm = length_mm
 
@@ -291,15 +206,14 @@ def check_tissue_folds(
         "message": msg
     }
 
-def check_stain_sanity(
-    stain_params: dict,
-    config: QcConfig
-) -> dict:
+
+def check_stain_sanity(stain_profile, config: QcConfig) -> dict:
     """
     Check 5: Stain Sanity Check
-    Validates per-slide stain profile:
-    1. Checks for degenerate fit or missing tissue patches.
-    2. Enforces minimum stain concentrations (faded H&E detection).
+    Validates the slide's persisted stain profile (a ``StainProfile`` row):
+    1. A degenerate fit (no valid patches, or two stains that cannot be told apart) is a warning,
+       ``stain_fit_degenerate``: stages that need normalised colour then refuse the slide.
+    2. Enforces minimum stain concentrations (faded H&E detection), on the slide's own maxima.
     3. Validates Hematoxylin-to-Eosin concentration ratio bounds.
     """
     cfg = config.stain_sanity
@@ -307,31 +221,19 @@ def check_stain_sanity(
     he_ratio_min = cfg.he_ratio_min
     he_ratio_max = cfg.he_ratio_max
 
-    if not stain_params:
+    if stain_profile.fit_status == "degenerate":
         return {
             "name": "stain_sanity",
             "status": "warn",
             "metric": 0.0,
-            "message": "Missing stain parameters artifact"
+            "message": (
+                "stain_fit_degenerate: the stain fit is degenerate "
+                f"({stain_profile.n_patches} valid patches); colour normalisation is unavailable"
+            ),
         }
 
-    fit_status = stain_params.get("fit_status", "fitted")
-    if fit_status == "degenerate":
-        return {
-            "name": "stain_sanity",
-            "status": "warn",
-            "metric": 0.0,
-            "message": "Degenerate stain profile: insufficient tissue patches sampled to fit stain normalizer"
-        }
-
-    max_conc = stain_params.get("max_concentrations") or [1.95, 1.10]
-    try:
-        h_conc = float(max_conc[0])
-        e_conc = float(max_conc[1])
-    except (IndexError, TypeError, ValueError):
-        h_conc, e_conc = 1.95, 1.10
-
-    he_ratio = h_conc / max(1e-4, e_conc)
+    h_conc, e_conc = (float(c) for c in stain_profile.maxc_src)
+    he_ratio = h_conc / e_conc
 
     status = "pass"
     if h_conc < min_conc or e_conc < min_conc:
@@ -341,7 +243,7 @@ def check_stain_sanity(
         status = "warn"
         msg = f"Abnormal H:E stain concentration ratio: {he_ratio:.2f} (expected {he_ratio_min} - {he_ratio_max})"
     else:
-        msg = f"Stain profile verified (H={h_conc:.2f}, E={e_conc:.2f}, H:E ratio={he_ratio:.2f})"
+        msg = f"Stain profile verified (H={h_conc:.2f}, E={e_conc:.2f}, H:E ratio={he_ratio:.2f}, {stain_profile.fit_status} fit)"
 
     return {
         "name": "stain_sanity",
@@ -350,36 +252,60 @@ def check_stain_sanity(
         "message": msg
     }
 
+
+def check_resolution(native_mpp: float, config: QcConfig) -> dict:
+    """
+    Check 6: Native resolution
+    Warns when the slide's finest resolution is coarser than ``warn_native_mpp`` (it will be upsampled
+    for mitosis detection) and fails beyond ``fail_native_mpp`` (mitosis counting is not supported).
+    """
+    cfg = config.resolution
+    status = "pass"
+    if native_mpp > cfg.fail_native_mpp:
+        status = "fail"
+        msg = f"Resolution too coarse for mitosis counting: {native_mpp:.3f} µm/px (threshold > {cfg.fail_native_mpp:g})"
+    elif native_mpp > cfg.warn_native_mpp:
+        status = "warn"
+        msg = f"Coarse resolution: {native_mpp:.3f} µm/px will be upsampled for mitosis detection (threshold > {cfg.warn_native_mpp:g})"
+    else:
+        msg = f"Native resolution {native_mpp:.3f} µm/px"
+
+    return {
+        "name": "resolution",
+        "status": status,
+        "metric": round(native_mpp, 4),
+        "message": msg
+    }
+
+
 def run_all_qc_checks(
-    slide_obj,
-    tissue_mask_1bit: np.ndarray,
-    mpp_x: float = 0.25,
-    mpp_y: float = 0.25,
-    stain_params: dict = None,
+    reader: SlideReader,
+    mask: TissueMask,
+    stain_profile,
     *,
     config: QcConfig,
+    specimen_qc: SpecimenQcConfig,
+    seed: int,
     config_hash: str
 ) -> dict:
-    """Execute complete 5-check QC check suite per PRD 02 §3.1.
+    """Execute the QC check suite (PRD 02 §3.1, SPEC-04 §3.7).
 
-    ``config_hash`` is the pipeline configuration hash the result is stamped with.
+    ``stain_profile`` is the slide's persisted ``StainProfile``, ``seed`` seeds the focus tile sample,
+    and ``config_hash`` is the pipeline configuration hash the result is stamped with.
     """
-    # 1. Tissue coverage
-    cov_res = check_tissue_coverage(tissue_mask_1bit, config)
+    overview_mpp = config.overview.mpp
+    overview_rgb = read_extent(reader, overview_mpp)
+    height_px, width_px = overview_rgb.shape[:2]
+    overview_tissue = mask.at_mpp(overview_mpp, width_px, height_px)
 
-    # 2. Focus sharpness
-    focus_res = check_focus_sharpness(slide_obj, tissue_mask_1bit, mpp_x=mpp_x, mpp_y=mpp_y, config=config)
-
-    # 3. Pen marks
-    pen_res = check_pen_marks(slide_obj, tissue_mask_1bit, mpp_x=mpp_x, mpp_y=mpp_y, config=config)
-
-    # 4. Tissue folds
-    fold_res = check_tissue_folds(slide_obj, tissue_mask_1bit, mpp_x=mpp_x, mpp_y=mpp_y, config=config)
-
-    # 5. Stain sanity
-    stain_res = check_stain_sanity(stain_params or {}, config=config)
-
-    checks = [cov_res, focus_res, pen_res, fold_res, stain_res]
+    checks = [
+        check_tissue_coverage(mask, specimen_qc),
+        check_focus_sharpness(reader, mask, config=config, specimen_qc=specimen_qc, seed=seed),
+        check_pen_marks(overview_rgb, overview_mpp, config=config),
+        check_tissue_folds(overview_rgb, overview_tissue, overview_mpp, config=config),
+        check_stain_sanity(stain_profile, config=config),
+        check_resolution(reader.native_mpp, config=config),
+    ]
 
     statuses = [c["status"] for c in checks]
     if "fail" in statuses:
@@ -392,5 +318,6 @@ def run_all_qc_checks(
     return {
         "verdict": overall_verdict,
         "checks": checks,
+        "native_mpp": reader.native_mpp,
         "config_hash": config_hash
     }

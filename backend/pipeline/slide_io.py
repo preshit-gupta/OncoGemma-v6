@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 import threading
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Iterator, Literal, Protocol
 from uuid import UUID
 
 import numpy as np
@@ -32,6 +32,12 @@ DEFAULT_MPP_TOLERANCE = 0.02
 # Memory guard, not a clinical value: the most pixels one read may take from a level or produce.
 # A request beyond it means no pyramid level is coarse enough for the resolution asked for.
 MAX_READ_PIXELS = 2**28
+
+# Leading hex digits of the slide checksum that seed its samplers (32 bits).
+CHECKSUM_SEED_HEX_DIGITS = 8
+
+# Memory guard: a whole-slide overview is read in strips of at most this many output pixels.
+STRIP_MAX_PIXELS = 2**24
 
 
 class StainApplier(Protocol):
@@ -83,6 +89,23 @@ def _round_half_up(value: float) -> int:
     return int(math.floor(value + 0.5))
 
 
+def require_mpp(slide) -> tuple[float, float]:
+    """The resolution recorded on a ``Slide`` row, or MissingMppError when it has none (status 'needs_mpp')."""
+    mpp_x, mpp_y = getattr(slide, "mpp_x", None), getattr(slide, "mpp_y", None)
+    if not mpp_x or mpp_x <= 0 or not mpp_y or mpp_y <= 0:
+        raise MissingMppError(
+            f"Slide {getattr(slide, 'id', '?')} is missing valid MPP (status='needs_mpp'); it cannot be read."
+        )
+    return float(mpp_x), float(mpp_y)
+
+
+def seed_from_checksum(checksum: str | None) -> int:
+    """A reproducible sampling seed from a slide's SHA-256; a slide without a checksum has no seed."""
+    if not checksum or len(checksum) < CHECKSUM_SEED_HEX_DIGITS:
+        raise ValueError("the slide has no checksum (ingest records it), so its sampling has no seed")
+    return int(checksum[:CHECKSUM_SEED_HEX_DIGITS], 16)
+
+
 class SlideReader:
     """Thread-safe reader of one slide file. One OpenSlide handle per thread; no global lock.
 
@@ -109,12 +132,8 @@ class SlideReader:
     @classmethod
     def from_slide_row(cls, path: str, slide) -> "SlideReader":
         """A reader with the resolution recorded on the ``Slide`` row; a slide without one cannot be read."""
-        mpp_x, mpp_y = getattr(slide, "mpp_x", None), getattr(slide, "mpp_y", None)
-        if not mpp_x or mpp_x <= 0 or not mpp_y or mpp_y <= 0:
-            raise MissingMppError(
-                f"Slide {getattr(slide, 'id', '?')} is missing valid MPP (status='needs_mpp'); it cannot be read."
-            )
-        return cls(path, float(mpp_x), float(mpp_y), getattr(slide, "format", None))
+        mpp_x, mpp_y = require_mpp(slide)
+        return cls(path, mpp_x, mpp_y, getattr(slide, "format", None))
 
     # -- handles ---------------------------------------------------------------------
 
@@ -166,6 +185,11 @@ class SlideReader:
         if any(fine.downsample >= coarse.downsample for fine, coarse in zip(levels, levels[1:])):
             raise SlideReadError(f"{self.path}: level downsamples must increase, got {[lv.downsample for lv in levels]}")
         return levels
+
+    @property
+    def has_icc_profile(self) -> bool:
+        """Whether the slide embeds an ICC profile (its regions are converted to sRGB)."""
+        return self._icc_profile is not None
 
     @property
     def levels(self) -> list[LevelInfo]:
@@ -340,3 +364,23 @@ def read_region_at_mpp(
         color=color,
         stain_profile_id=stain_profile_id,
     )
+
+
+def iter_extent_strips(reader: SlideReader, mpp: float) -> Iterator[tuple[int, np.ndarray]]:
+    """The slide's full extent at ``mpp`` as horizontal strips: ``(first row, RGB rows)``.
+
+    The overview is ``ceil(extent / mpp)`` pixels wide and high, so the slide's aspect ratio is kept
+    and nothing is capped. Each strip is at most ``STRIP_MAX_PIXELS`` pixels.
+    """
+    extent_w, extent_h = reader.extent_um()
+    width_px, height_px = math.ceil(extent_w / mpp), math.ceil(extent_h / mpp)
+    rows_per_strip = max(1, STRIP_MAX_PIXELS // width_px)
+    for row0 in range(0, height_px, rows_per_strip):
+        rows = min(rows_per_strip, height_px - row0)
+        yield row0, read_region_at_mpp(reader, 0.0, row0 * mpp, width_px * mpp, rows * mpp, mpp).rgb
+
+
+def read_extent(reader: SlideReader, mpp: float) -> np.ndarray:
+    """The slide's full extent at ``mpp`` as one RGB array (see ``iter_extent_strips``)."""
+    strips = [rgb for _, rgb in iter_extent_strips(reader, mpp)]
+    return np.concatenate(strips, axis=0)
