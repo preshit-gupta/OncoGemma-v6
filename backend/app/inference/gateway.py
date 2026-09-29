@@ -58,10 +58,21 @@ from app.inference.records import DecisionLog
 MIME_TYPES = {"png": "image/png", "jpeg": "image/jpeg"}
 _PIL_FORMATS = {"PNG": "png", "JPEG": "jpeg"}
 
-# A Gemini model ID is pinned when it names a numbered or dated release
-# (gemini-2.0-flash-001, gemini-2.5-flash-preview-05-2025), not a floating alias such
-# as gemini-2.5-flash. EVAL refuses aliases (SPEC-01 §3.7).
-PINNED_MODEL_ID = re.compile(r"-(\d{3}|\d{2}-\d{4})$")
+# EVAL refuses Gemini model IDs that Google may repoint (SPEC-01 §3.7). Stable IDs are fixed
+# releases: gemini-2.5-flash has no numbered versions (Vertex models.get reports version
+# "default"; checked 2026-09-29), and gemini-2.0-flash-001 names one. Floating are the
+# "-latest" aliases, IDs without a version number (gemini-pro), and undated previews or
+# experiments (gemini-3-flash-preview); dated ones (gemini-2.5-flash-preview-05-2025) are fixed.
+_PREVIEW = re.compile(r"-(preview|exp)(-|$)")
+_RELEASE_DATE = re.compile(r"-(\d{2}-\d{4}|\d{4}|\d{3})$")
+
+
+def is_pinned_model_id(model_id: str) -> bool:
+    if model_id.endswith("-latest") or not re.search(r"\d", model_id):
+        return False
+    if _PREVIEW.search(model_id):
+        return bool(_RELEASE_DATE.search(model_id))
+    return True
 
 _PROMPT_VARIABLE = re.compile(r"\{\{([a-z_][a-z0-9_]*)\}\}")
 
@@ -439,7 +450,7 @@ class ModelGateway:
 
     def _check_pinned(self, call: _Call, entry) -> None:
         if call.ctx.run_mode is RunMode.EVAL and isinstance(entry, VertexGenAIModel):
-            if not PINNED_MODEL_ID.search(entry.model):
+            if not is_pinned_model_id(entry.model):
                 self._fail(
                     call,
                     UnpinnedModelError,
