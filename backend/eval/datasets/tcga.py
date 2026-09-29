@@ -10,7 +10,7 @@ from typing import Any, Callable
 import httpx
 import pandas as pd
 
-from .base import DatasetAdapter, FetchedFile, FetchIntegrityError, load_config
+from .base import DatasetAdapter, FetchedFile, FetchIntegrityError, SlideMetadataError, load_config
 from .manifest import empty_manifest, validate_manifest
 from .storage import LocalStorage, Storage
 
@@ -307,6 +307,7 @@ class TCGABRCAAdapter(DatasetAdapter):
         """
         Read slide metadata (mpp, native_mag, scanner, tss).
         Injectable via self.slide_reader or reads OpenSlide properties from slide_path.
+        Raises SlideMetadataError when slide_path is given but OpenSlide cannot open it.
         """
         if self.slide_reader is not None:
             return self.slide_reader(row, slide_path)
@@ -315,21 +316,24 @@ class TCGABRCAAdapter(DatasetAdapter):
         native_mag: float | None = None
         scanner: str | None = None
 
-        if slide_path and Path(slide_path).exists():
+        if slide_path:
+            import openslide  # type: ignore
             try:
-                import openslide  # type: ignore
-                slide = openslide.OpenSlide(str(slide_path))
-                props = slide.properties
-                mpp_val = props.get("openslide.mpp-x") or props.get("aperio.MPP")
-                if mpp_val:
-                    mpp = float(mpp_val)
-                mag_val = props.get("aperio.AppMag")
-                if mag_val:
-                    native_mag = float(mag_val)
-                scanner = props.get("openslide.vendor") or props.get("aperio.Scanner")
-                slide.close()
-            except Exception:
-                pass
+                with openslide.OpenSlide(str(slide_path)) as slide:
+                    props = dict(slide.properties)
+            except (
+                openslide.OpenSlideError,
+                openslide.OpenSlideUnsupportedFormatError,
+                FileNotFoundError,
+            ) as exc:
+                raise SlideMetadataError(str(slide_path), f"{type(exc).__name__}: {exc}") from exc
+            mpp_val = props.get("openslide.mpp-x") or props.get("aperio.MPP")
+            if mpp_val:
+                mpp = float(mpp_val)
+            mag_val = props.get("aperio.AppMag")
+            if mag_val:
+                native_mag = float(mag_val)
+            scanner = props.get("openslide.vendor") or props.get("aperio.Scanner")
 
         tss = row.get("tss")
         if not tss and "submitter_id" in row and pd.notna(row["submitter_id"]):
