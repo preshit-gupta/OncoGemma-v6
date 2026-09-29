@@ -124,10 +124,14 @@ class SlideReader:
         self._closed = False
 
         first = self._handle()
-        self._levels = self._describe_levels(first)
-        self._icc_profile = getattr(first, "color_profile", None)
-        # Opening the transform now fails a slide with an unusable profile before any region is read.
-        self._icc_transform()
+        try:
+            self._levels = self._describe_levels(first)
+            self._icc_profile = getattr(first, "color_profile", None)
+            # Opening the transform now fails a slide with an unusable profile before any region is read.
+            self._icc_transform()
+        except BaseException:
+            self.close()  # a half-built reader must not keep the file open (Windows cannot delete it)
+            raise
 
     @classmethod
     def from_slide_row(cls, path: str, slide) -> "SlideReader":
