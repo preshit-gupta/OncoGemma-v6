@@ -1,7 +1,7 @@
-"""Mitosis stage on the model gateway (SPEC-01 §3.4, §3.9; SPEC-06 §9; WP-2.3c).
+"""Mitosis stage on the model gateway (SPEC-01 §3.4, §3.9; SPEC-06 §5.1-5.2, §9; WP-2.3c, WP-7.2).
 
-KongNet is a fake endpoint behind the real VertexEndpointAdapter (kongnet_midog_v1 codec);
-the referee is a fake Gemini returning strict MitosisVerdict JSON.
+KongNet is a fake endpoint behind the real VertexEndpointAdapter (kongnet_midog_v2 codec,
+raw predict, pinned weights); the referee is a fake Gemini returning strict MitosisVerdict JSON.
 """
 import json
 import threading
@@ -18,7 +18,7 @@ from app.core.gcs import download_blob_as_bytes
 from app.core.pipeline_config import get_pipeline_config
 from app.inference.adapters.base import TransientCallError
 from app.inference.adapters.vertex_endpoint import VertexEndpointAdapter
-from app.inference.errors import InputContractError, ModelUnavailableError, SchemaInvalidError
+from app.inference.errors import ModelCallError, ModelUnavailableError, SchemaInvalidError
 from app.inference.records import DecisionLog
 from app.models import Case, Detection, Hotspot, Slide, StageExecution
 from pipeline.errors import SlideReadError
@@ -43,29 +43,31 @@ def verdict(name):
 
 
 class KongNetEndpoint:
-    """One detection in each tile's first patch, plus one below min_prob.
+    """The v2 service over raw predict: in each request's first tile, one detection above
+    det_threshold and one between min_prob and det_threshold; answers name the pinned weights.
 
     The position shifts per call so candidates fall on different parts of the procedural
     slide; identical crops would be served from the gateway cache.
     """
 
-    def __init__(self, failure=None):
+    def __init__(self, failure=None, weights=None):
         self.failure = failure
+        self.weights = weights
         self.calls = []
         self._lock = threading.Lock()
 
-    def predict(self, instances, parameters=None, timeout=None):
+    def raw_predict(self, body, headers=None, timeout=None):
+        sent = json.loads(body)
         with self._lock:  # the worker sweeps tiles on several threads
-            self.calls.append(instances)
-            shift = 13.0 * len(self.calls)
+            self.calls.append(sent)
+            shift = 13.0 * (len(self.calls) % 20)
         if self.failure is not None:
             raise self.failure
-        predictions = [{"boxes": []} for _ in instances]
-        predictions[0]["boxes"] = [
-            {"cx": 200.0 + shift, "cy": 256.0, "width": 48.0, "height": 48.0, "confidence": 0.9},
-            {"cx": 100.0, "cy": 100.0, "width": 48.0, "height": 48.0, "confidence": 0.2},
-        ]
-        return SimpleNamespace(predictions=predictions)
+        predictions = [{"points": [], "error": None} for _ in sent["instances"]]
+        predictions[0]["points"] = [{"x": 200.0 + shift, "y": 256.0, "prob": 0.9}, {"x": 100.0, "y": 100.0, "prob": 0.2}]
+        weights = self.weights or get_pipeline_config().models.models["kongnet_det_midog_1"].weights_sha256
+        payload = {"predictions": predictions, "model_sha256": weights}
+        return SimpleNamespace(status_code=200, json=lambda: payload, text=json.dumps(payload))
 
 
 def cycling_referee():
@@ -114,7 +116,7 @@ def seed(db_session, mpp=MPP):
 
 def runtime_for(stage, endpoint=None, referee=None, config=None, log=None):
     adapters = {
-        "vertex_endpoint_predict": VertexEndpointAdapter("p", endpoint_factory=lambda *args: endpoint or KongNetEndpoint()),
+        "vertex_endpoint_raw_predict": VertexEndpointAdapter("p", endpoint_factory=lambda *args: endpoint or KongNetEndpoint()),
         "vertex_genai": referee or FakeAdapter(then=cycling_referee()),
     }
     return make_runtime(stage, adapters, config=config or configured(), log=log)
@@ -142,16 +144,22 @@ def test_mitosis_runs_on_the_gateway_and_labels_come_from_the_referee(db_session
     detects = [r for r in rows if r["task"] == "mitosis_detect"]
     referees = [r for r in rows if r["task"] == "mitosis_referee"]
 
-    # Tiles go out as 512 px PNG patches at the slide's 0.25 µm/px, within the registry limits.
+    # Tiles go out as 512 px PNG patches at the slide's 0.25 µm/px, within the registry limits,
+    # asking for every candidate down to min_prob (v2 contract).
     limits = registry.models["kongnet_det_midog_1"].limits
     assert detects and all(len(r["input_spec"]["images"]) <= limits.max_batch for r in detects)
     assert all(s == {"mpp": 0.25, "size_px": [512, 512], "color": "raw", "format": "png", "stain_profile_id": None}
                for r in detects for s in r["input_spec"]["images"])
-    assert all(r["params"] == {"min_prob": 0.35} for r in detects)
-    sent = [inst for call in endpoint.calls for inst in call]
-    assert all(inst["confidence_threshold"] == 0.35 for inst in sent)
+    assert all(r["params"] == {"min_prob": 0.01} for r in detects)
+    assert all(call["parameters"] == {"min_prob": 0.01} for call in endpoint.calls)
+    assert all(set(inst) == {"image_png_b64", "mpp"} and inst["mpp"] == 0.25 for call in endpoint.calls for inst in call["instances"])
 
-    # One candidate per tile survives (the 0.2 detection is below det_threshold); each is refereed once.
+    # Raw Stage A keeps the 0.2 detections (>= min_prob) for offline threshold sweeps.
+    stage_a = json.loads(download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{stage.case_id}/mitosis/stage_a.json"))
+    assert stage_a["weights_sha256"] == registry.models["kongnet_det_midog_1"].weights_sha256
+    assert stage_a["min_prob"] == 0.01 and {p["prob"] for p in stage_a["points"]} == {0.9, 0.2}
+
+    # One candidate per request survives (the 0.2 detection is below det_threshold); each is refereed once.
     found = detections(db_session, stage)
     assert found and len(referees) == len(found)
     assert all(len(r["input_spec"]["images"]) == 2 and r["prompt_id"] == "mitosis_confirmation@v1.md" for r in referees)
@@ -189,14 +197,33 @@ def test_detector_outage_fails_the_stage_without_detections(db_session, monkeypa
     assert detections(db_session, stage) == []
 
 
-def test_20x_slide_is_refused_by_the_detector_contract(db_session, monkeypatch):
-    """SPEC-01 AC5: a 0.5 µm/px tile never reaches KongNet unresampled."""
+def test_20x_slide_is_resampled_to_the_detector_resolution(db_session, monkeypatch):
+    """SPEC-06 §5.1 / AC5: KongNet only ever receives 0.25 µm/px; a 0.5 µm/px slide is resampled."""
     stage, raw_uri = seed(db_session, mpp=0.5)
-    install_fake_slide(monkeypatch, FakeOpenSlide(SIDE_PX // 2, SIDE_PX // 2), raw_uri)
+    slide = install_fake_slide(monkeypatch, FakeOpenSlide(SIDE_PX // 2, SIDE_PX // 2), raw_uri)
+    reads = []
+    read_region = slide.read_region
+
+    def recording(location, level, size):
+        reads.append(size)
+        return read_region(location, level, size)
+
+    slide.read_region = recording
     endpoint = KongNetEndpoint()
-    with pytest.raises(InputContractError, match="mpp 0.5 is outside 0.25"):
-        run_mitosis(stage, db_session, runtime_for(stage, endpoint=endpoint))
-    assert endpoint.calls == []
+    run_mitosis(stage, db_session, runtime_for(stage, endpoint=endpoint))
+
+    assert endpoint.calls and all(inst["mpp"] == 0.25 for call in endpoint.calls for inst in call["instances"])
+    # Each 512 px tile at 0.25 µm/px covers 128 µm, a 256 px window of the 20x slide.
+    assert (256, 256) in reads
+    assert detections(db_session, stage)
+
+
+def test_a_detector_answering_with_other_weights_fails_the_stage(db_session, monkeypatch):
+    stage, raw_uri = seed(db_session)
+    install_fake_slide(monkeypatch, FakeOpenSlide(SIDE_PX, SIDE_PX), raw_uri)
+    with pytest.raises(ModelCallError, match="the registry pins"):
+        run_mitosis(stage, db_session, runtime_for(stage, endpoint=KongNetEndpoint(weights="0" * 64)))
+    assert detections(db_session, stage) == []
 
 
 def test_v5_shaped_referee_answer_fails_the_stage(db_session, monkeypatch):

@@ -256,10 +256,12 @@ class VertexEndpointAdapter:
             raise CallRejected(f"wire format {entry.wire_format} is not implemented")
         instances = codec.instances(entry, request)
         parameters = codec.parameters(request)
+        served_weights = None
         try:
             endpoint = self._endpoint(entry)
             if entry.provider == "vertex_endpoint_raw_predict":
-                predictions = self._raw_predict(endpoint, instances, parameters, timeout_s)
+                payload = self._raw_predict(endpoint, instances, parameters, timeout_s)
+                predictions, served_weights = payload["predictions"], payload.get("model_sha256")
             else:
                 predictions = endpoint.predict(instances=instances, parameters=parameters, timeout=timeout_s).predictions
         except GoogleAPICallError as exc:
@@ -270,11 +272,14 @@ class VertexEndpointAdapter:
             raise TransientCallError(str(exc)) from exc
         except GoogleAuthError as exc:
             raise CallRejected(f"Google credentials: {exc}") from exc
+        if entry.weights_sha256 is not None and served_weights != entry.weights_sha256:
+            raise CallRejected(f"endpoint serves weights {served_weights!r}; the registry pins {entry.weights_sha256}")
         raw = codec.parse(predictions, request)
         return RawResponse(text=raw.text, data=raw.data, endpoint=f"{entry.region}/{entry.endpoint_id}")
 
     @staticmethod
-    def _raw_predict(endpoint, instances: list[dict[str, Any]], parameters: dict | None, timeout_s: float) -> Any:
+    def _raw_predict(endpoint, instances: list[dict[str, Any]], parameters: dict | None, timeout_s: float) -> dict:
+        """The container's JSON response: ``predictions`` plus any top-level fields it adds."""
         body = {"instances": instances}
         if parameters is not None:
             body["parameters"] = parameters
@@ -293,4 +298,4 @@ class VertexEndpointAdapter:
             raise CallRejected(f"response is not JSON: {response.text[:200]!r}") from exc
         if not isinstance(payload, dict) or "predictions" not in payload:
             raise CallRejected(f"response has no predictions: {str(payload)[:200]}")
-        return payload["predictions"]
+        return payload

@@ -124,3 +124,44 @@ def enumerate_hotspot_tiles(
 
     return tiles
 
+
+
+# A polygon has at least three vertices (geometry, not a tunable).
+POLYGON_MIN_VERTICES = 3
+
+
+def hotspot_geometry(hotspot_polygon_um: List[List[float]]):
+    """The hotspot polygon as a valid shapely geometry (SPEC-06 §5.1 sweep region)."""
+    from shapely.geometry import Polygon
+
+    if len(hotspot_polygon_um) < POLYGON_MIN_VERTICES:
+        raise ValueError(f"a hotspot polygon needs at least {POLYGON_MIN_VERTICES} points, got {len(hotspot_polygon_um)}")
+    polygon = Polygon(hotspot_polygon_um)
+    return polygon if polygon.is_valid else polygon.buffer(0)
+
+
+def hotspot_region_um(
+    geometry, margin_um: float, slide_dimensions_um: Tuple[float, float]
+) -> Tuple[float, float, float, float]:
+    """The hotspot's bounding box grown by ``margin_um`` and clipped to the slide: (x0, y0, x1, y1)."""
+    x0, y0, x1, y1 = geometry.bounds
+    width_um, height_um = slide_dimensions_um
+    return (
+        max(0.0, x0 - margin_um),
+        max(0.0, y0 - margin_um),
+        min(width_um, x1 + margin_um),
+        min(height_um, y1 + margin_um),
+    )
+
+
+def tissue_fraction(
+    tissue_mask: np.ndarray, slide_dimensions_um: Tuple[float, float], box_um: Tuple[float, float, float, float]
+) -> float:
+    """Fraction of tissue-mask pixels inside a slide box given in µm."""
+    mask_h, mask_w = tissue_mask.shape
+    width_um, height_um = slide_dimensions_um
+    x0, y0, x1, y1 = box_um
+    cols = sorted(min(mask_w - 1, max(0, int(round(v / width_um * (mask_w - 1))))) for v in (x0, x1))
+    rows = sorted(min(mask_h - 1, max(0, int(round(v / height_um * (mask_h - 1))))) for v in (y0, y1))
+    window = tissue_mask[rows[0]:rows[1] + 1, cols[0]:cols[1] + 1]
+    return float((window > 0).sum() / window.size)

@@ -1,13 +1,20 @@
 # OncoGemma Stage v4.3 - Mitosis Detection, Virtual HPFs & Scoring Configuration
 
+# Stage A (SPEC-06 §5.1-5.2). Tiles are the detector's 512 px inputs at 0.25 um/px (slides at
+# another resolution are resampled). Each tile owns the half of every 64 px overlap nearest to it,
+# so a detection is kept once. KongNet serves at native 40x: F1 0.87 on MIDOG++ image 094, versus
+# at most 0.27 at the 0.5 um/px of its TIAToolbox IO config (2026-09-29).
 detector:
-  producer: kongnet_det_midog_1 # configs/models.yaml; each tile is split into its 512 px inputs
-  tile_size_px: 1024
+  producer: kongnet_det_midog_1 # configs/models.yaml
+  tile_size_px: 512
   mpp: 0.25 # 40x magnification (~0.25 um/pixel)
-  tile_size_um: 256.0 # 1024 * 0.25
-  stride_px: 960 # 64 px overlap across tiles
+  tile_size_um: 128.0 # 512 * 0.25
+  stride_px: 448 # 64 px overlap across tiles
   overlap_px: 64
-  det_threshold: 0.35 # Candidate sweep threshold, sent to the detector as min_prob
+  min_prob: 0.01 # sent to the detector; candidates are stored raw from here (threshold sweeps)
+  det_threshold: 0.35 # applied to the raw candidates
+  region_margin_um: 16.0 # sweep region = hotspot bounding box grown by this (SPEC-06 §5.1)
+  min_tissue_fraction: 0.20 # tiles with less tissue in the preprocess mask are not swept
   nms_radius_um: 20.0 # Cross-tile greedy NMS suppression radius (MIDOG standard: 15-20 um cell diameter)
 
 # Every candidate is adjudicated by this VLM (SPEC-06 arm A2: v5 prompt, strict MitosisVerdict).

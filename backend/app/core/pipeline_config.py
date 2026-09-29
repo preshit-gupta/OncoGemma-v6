@@ -151,15 +151,23 @@ class QcConfig(StrictModel):
 # --- mitosis.yaml -----------------------------------------------------------
 
 class MitosisDetectorConfig(StrictModel):
-    # Registry key of the detector; each tile is split into its input-sized patches.
+    """Stage A (SPEC-06 §5.1-5.2): tiles of the detector's input size at its resolution, with ownership."""
+
+    # Registry key of the detector; each tile is one detector input.
     producer: RegistryKey
     tile_size_px: PositiveInt
     mpp: Mpp
     tile_size_um: PositiveFloat
     stride_px: PositiveInt
     overlap_px: NonNegativeInt
+    # Sent to the detector: every candidate at or above it comes back and is stored raw.
+    min_prob: Fraction
+    # Applied by the pipeline to the raw candidates.
     det_threshold: Fraction
     nms_radius_um: PositiveFloat
+    # Sweep region: each hotspot's bounding box grown by this margin; tiles with less tissue skipped.
+    region_margin_um: NonNegativeFloat
+    min_tissue_fraction: Fraction
 
     @model_validator(mode="after")
     def _consistent(self) -> "MitosisDetectorConfig":
@@ -168,6 +176,7 @@ class MitosisDetectorConfig(StrictModel):
             math.isclose(self.tile_size_um, self.tile_size_px * self.mpp, rel_tol=1e-6),
             "tile_size_um must equal tile_size_px * mpp",
         )
+        _require(self.min_prob <= self.det_threshold, "min_prob must not exceed det_threshold")
         return self
 
 
@@ -414,8 +423,8 @@ class PipelineConfig(StrictModel):
         )
         patch_w, patch_h = contract.size_px
         _require(
-            patch_w == patch_h and detector.tile_size_px % patch_w == 0,
-            f"mitosis.yaml detector.tile_size_px must be a multiple of the detector's {contract.size_px} input",
+            patch_w == patch_h == detector.tile_size_px,
+            f"mitosis.yaml detector.tile_size_px must equal the detector's {contract.size_px} input",
         )
         _require(
             math.isclose(detector.mpp, contract.mpp),
