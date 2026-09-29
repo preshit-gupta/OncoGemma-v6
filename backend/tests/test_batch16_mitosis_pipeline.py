@@ -32,6 +32,7 @@ from app.models.detection import Detection
 from app.models.hpf_site import HpfSite
 from app.models.hotspot import Hotspot
 from pipeline.detect import enumerate_hotspot_tiles
+from pipeline.tissue_mask import TissueMask
 from pipeline.heuristics.od_sweep import detect_hyperchromatic_features
 from app.core.pipeline_config import get_pipeline_config
 from pipeline.scoring import compute_nottingham_mitotic_score
@@ -108,20 +109,33 @@ def test_enumerate_hotspot_tiles_clamping_and_polygon_check():
         [1500.0, 1500.0],
         [1000.0, 1500.0]
     ]
+    tissue = TissueMask(np.ones((200, 200), dtype=bool), 10.0)  # a 2 x 2 mm slide of tissue
     tiles = enumerate_hotspot_tiles(
         hotspot_polygon_um=hotspot_polygon_um,
-        tile_size_px=1024,
-        mpp=0.25,
-        stride_px=960,
-        slide_dimensions_um=(2000.0, 2000.0)
+        tile_um=256.0,
+        stride_um=240.0,
+        tissue=tissue,
+        min_tissue_fraction=0.2,
     )
 
     assert len(tiles) > 0
     for t in tiles:
-        assert t["origin_px"][0] >= 0
-        assert t["origin_px"][1] >= 0
         assert t["origin_um"][0] >= 0
         assert t["origin_um"][1] >= 0
+        assert t["size_um"] == [256.0, 256.0]
+
+
+def test_enumerate_hotspot_tiles_skips_glass_and_tiles_off_the_polygon():
+    """A tile needs enough registered tissue and must touch the hotspot polygon."""
+    polygon = [[0.0, 0.0], [1000.0, 0.0], [1000.0, 500.0], [0.0, 500.0]]
+    cells = np.zeros((100, 200), dtype=bool)
+    cells[:, :100] = True  # tissue on the left half of a 2 x 1 mm slide
+    tissue = TissueMask(cells, 10.0)
+    tiles = enumerate_hotspot_tiles(polygon, tile_um=250.0, stride_um=250.0, tissue=tissue, min_tissue_fraction=0.5)
+    assert tiles and all(t["origin_um"][0] + 250.0 <= 1000.0 + 1e-9 for t in tiles)  # none over the glass
+    assert all(t["origin_um"][1] < 500.0 for t in tiles)  # none below the polygon
+    with pytest.raises(ValueError, match="at least 3 vertices"):
+        enumerate_hotspot_tiles([[0.0, 0.0], [10.0, 10.0]], tile_um=250.0, stride_um=250.0, tissue=tissue, min_tissue_fraction=0.5)
 
 
 # =========================================================================

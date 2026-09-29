@@ -31,11 +31,6 @@
   },
   {
     "path": "backend/app/routers/cases.py",
-    "rule": "L1",
-    "line_hash": "e8a955ec9a8c1f7aaf58604c2f7da65992c84ed5"
-  },
-  {
-    "path": "backend/app/routers/cases.py",
     "rule": "L2",
     "line_hash": "639223902bb8bc292955d874f775bfd5ecf4a7e2"
   },
@@ -161,11 +156,6 @@
   },
   {
     "path": "backend/app/routers/triage.py",
-    "rule": "L1",
-    "line_hash": "e8a955ec9a8c1f7aaf58604c2f7da65992c84ed5"
-  },
-  {
-    "path": "backend/app/routers/triage.py",
     "rule": "L2",
     "line_hash": "639223902bb8bc292955d874f775bfd5ecf4a7e2"
   },
@@ -208,11 +198,6 @@
     "path": "backend/pipeline/detect.py",
     "rule": "L3",
     "line_hash": "0555884261f756f64de8402137420d62b94be96e"
-  },
-  {
-    "path": "backend/pipeline/detect.py",
-    "rule": "L4",
-    "line_hash": "4768bbb4c551fee692d2d484925d6b19057aea73"
   },
   {
     "path": "backend/pipeline/grading.py",
@@ -297,97 +282,12 @@
   {
     "path": "backend/pipeline/hpf.py",
     "rule": "L3",
-    "line_hash": "7e564520abfd62d43dc08db26e08cf2b7ea7a00a"
-  },
-  {
-    "path": "backend/pipeline/hpf.py",
-    "rule": "L3",
     "line_hash": "f06979219ad2ecac43febf711cc8c1d762bf67fb"
   },
   {
     "path": "backend/pipeline/hpf.py",
     "rule": "L4",
     "line_hash": "c98174a5cfe0f70c4fc5cc69b670a6180fc299d8"
-  },
-  {
-    "path": "backend/pipeline/stain.py",
-    "rule": "L1",
-    "line_hash": "9508cb86956e10a8f50fc3a3e30d6e320b4dd5fe"
-  },
-  {
-    "path": "backend/pipeline/stain.py",
-    "rule": "L1",
-    "line_hash": "baf088170612b56a894503bb5efcd829859ef8bb"
-  },
-  {
-    "path": "backend/pipeline/stain.py",
-    "rule": "L3",
-    "line_hash": "2d8c352a876dda0c9c88cdeb737f51681e9662ef"
-  },
-  {
-    "path": "backend/pipeline/stain.py",
-    "rule": "L3",
-    "line_hash": "3b9f0ca70dc1ac082ed5905b7043e0aab1c741f9"
-  },
-  {
-    "path": "backend/pipeline/stain.py",
-    "rule": "L4",
-    "line_hash": "19a2a597d8dd6f111e8a7022bc61e615608c8f54"
-  },
-  {
-    "path": "backend/pipeline/stain.py",
-    "rule": "L4",
-    "line_hash": "275266cd5212c2ac3fba30e86965da5896e0bfb1"
-  },
-  {
-    "path": "backend/pipeline/stain.py",
-    "rule": "L4",
-    "line_hash": "5b7e15edf4d5acee089d28f266352a6395d954b0"
-  },
-  {
-    "path": "backend/pipeline/stain.py",
-    "rule": "L4",
-    "line_hash": "5e86433f6c7dc219c730d97079adbae066401c15"
-  },
-  {
-    "path": "backend/pipeline/stain.py",
-    "rule": "L4",
-    "line_hash": "845bdc17c5e038c484278d3ab2d32a3a33c57dea"
-  },
-  {
-    "path": "backend/pipeline/stain.py",
-    "rule": "L4",
-    "line_hash": "845bdc17c5e038c484278d3ab2d32a3a33c57dea"
-  },
-  {
-    "path": "backend/pipeline/stain.py",
-    "rule": "L4",
-    "line_hash": "bf37fe0235d6948106ebac550d8eac446716f253"
-  },
-  {
-    "path": "backend/pipeline/stain.py",
-    "rule": "L4",
-    "line_hash": "d0c9f2730be03e9797195558f3b5d519d0815690"
-  },
-  {
-    "path": "backend/pipeline/stain.py",
-    "rule": "L4",
-    "line_hash": "f53b1c8c267ac8bd5d66c5592ddf8333075f7fb9"
-  },
-  {
-    "path": "backend/pipeline/stain.py",
-    "rule": "L4",
-    "line_hash": "f8e4b56a3949bab22539279ad741cfd1ec7c16fa"
-  },
-  {
-    "path": "backend/pipeline/tiles.py",
-    "rule": "L3",
-    "line_hash": "2d8c352a876dda0c9c88cdeb737f51681e9662ef"
-  },
-  {
-    "path": "backend/pipeline/tiles.py",
-    "rule": "L3",
-    "line_hash": "3b9f0ca70dc1ac082ed5905b7043e0aab1c741f9"
   },
   {
     "path": "backend/pipeline/tiles.py",
@@ -403,11 +303,6 @@
     "path": "backend/pipeline/tiles.py",
     "rule": "L4",
     "line_hash": "7d835850d4283c7924efe4f23d7202e4c7dcbdf6"
-  },
-  {
-    "path": "backend/pipeline/tiles.py",
-    "rule": "L4",
-    "line_hash": "94e6270332d4c6d501ba5edf27b661309d2d2a13"
   },
   {
     "path": "backend/pipeline/tiles.py",
@@ -433,11 +328,6 @@
     "path": "backend/worker/grading.py",
     "rule": "L1",
     "line_hash": "e8a955ec9a8c1f7aaf58604c2f7da65992c84ed5"
-  },
-  {
-    "path": "backend/worker/grading.py",
-    "rule": "L3",
-    "line_hash": "4278a5a2425519feae2767048a5939b48addc278"
   },
   {
     "path": "backend/worker/grading.py",

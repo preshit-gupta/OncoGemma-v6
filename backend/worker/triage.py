@@ -5,7 +5,8 @@ with its tumour classifier (both through the model gateway), extracts hotspot ca
 has the configured VLM check them, and renders the viridis heatmap overlay.
 
 Every model call is a DecisionRecord (SPEC-01 §3.3). A slide that cannot be read fails the
-stage (SlideReadError); nothing is synthesised in its place (SPEC-01 §3.9).
+stage (SlideReadError); nothing is synthesised in its place (SPEC-01 §3.9). Tissue comes from
+the registered mask and colour from the slide's persisted stain profile (SPEC-04).
 """
 import os
 import io
@@ -16,7 +17,6 @@ import shutil
 import numpy as np
 import matplotlib
 import matplotlib.cm as cm
-import openslide
 from PIL import Image
 from sqlalchemy.orm import Session
 
@@ -24,22 +24,26 @@ from app.core.config import settings
 from app.core.gcs import (
     parse_gcs_uri,
     upload_blob_from_bytes,
-    download_blob_as_bytes,
     download_blob_to_filename,
     get_gcs_artifact_direct_url,
     resolve_slide_raw_uri
 )
+from app.core.stain_profiles import usable_stain_transform
 from app.core.tasks import EntityType, Task
+from app.core.tissue_mask_store import load_tissue_mask
 from app.inference.batching import plan_batches
 from app.inference.gateway import EntityRef, FallbackResult, ImageInput, InputSpec, ModelInputs
 from app.inference.outputs import ClassProbabilities, EmbeddingBatch
 from app.inference.schemas import TumorVerdict
+from app.models.case import Case
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
 from app.models.audit import AuditEvent
-from pipeline.errors import SlideReadError
+from pipeline.errors import DegenerateStainProfileError, SlideReadError
 from pipeline.hotspots import extract_hotspots
 from pipeline.probe import l2_normalize
+from pipeline.slide_io import SlideReader, centered_origin_um, normalize_region, read_region_at_mpp, require_mpp
+from pipeline.stain import StainTransform
 from worker.runtime import StageRuntime
 
 # Class label of "tumour" in the tumour classifier's predict_proba columns.
@@ -84,30 +88,33 @@ def render_viridis_heatmap_png(
     return output_path
 
 
-def _read_region(os_slide, location: tuple[int, int], size: tuple[int, int]) -> Image.Image:
-    try:
-        return os_slide.read_region(location, 0, size).convert("RGB")
-    except openslide.OpenSlideError as exc:
-        raise SlideReadError(f"could not read {size} px at {location}: {exc}") from exc
-
-
-def _png(image: Image.Image) -> bytes:
+def _png(rgb: np.ndarray) -> bytes:
     buf = io.BytesIO()
-    image.save(buf, "PNG")
+    Image.fromarray(rgb).save(buf, "PNG")
     return buf.getvalue()
 
 
-def _centered_crop(os_slide, cx_px: int, cy_px: int, crop_w_px: int, crop_h_px: int) -> Image.Image:
-    dim_w, dim_h = os_slide.dimensions
-    x0 = max(0, min(dim_w - crop_w_px, cx_px - crop_w_px // 2))
-    y0 = max(0, min(dim_h - crop_h_px, cy_px - crop_h_px // 2))
-    return _read_region(os_slide, (x0, y0), (crop_w_px, crop_h_px))
+def _image_input(region, image_format: str = "png") -> ImageInput:
+    height_px, width_px = region.rgb.shape[:2]
+    spec = InputSpec(mpp=region.target_mpp, size_px=(width_px, height_px), color=region.color, format=image_format)
+    return ImageInput(_png(region.rgb), spec)
+
+
+def _centered_region(reader: SlideReader, cx_um: float, cy_um: float, field_um: float, size_px: int):
+    """A ``field_um`` square centred on a point (shifted inside the slide), at ``field_um / size_px`` µm/px."""
+    x_um, y_um = centered_origin_um(reader, cx_um, cy_um, field_um, field_um)
+    return read_region_at_mpp(reader, x_um, y_um, field_um, field_um, field_um / size_px)
+
+
+def _stain_transform(session: Session, slide_id, od_beta: float) -> StainTransform | None:
+    """The slide's persisted stain transform, or None when its fit is degenerate (colour cannot be normalised)."""
+    return usable_stain_transform(session, slide_id, od_beta=od_beta)  # StainProfileMissingError: run preprocess again
 
 
 def run_triage(stage_execution: StageExecution, session: Session, runtime: StageRuntime) -> tuple[str, dict]:
     """
     Triage stage worker handler execution:
-    1. Downloads preprocess mask & stain params from GCS.
+    1. Loads the registered tissue mask and the slide's persisted stain profile.
     2. Downloads raw slide to transient temp file for high-res patch sampling.
     3. Embeds tissue tiles and scores them with the tumour classifier (gateway).
     4. Has the configured VLM check hotspot candidates (gateway).
@@ -139,42 +146,30 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
     if not slide_obj:
         raise ValueError(f"Slide record '{slide_id}' not found in database for case '{case_id}'.")
 
-    if not getattr(slide_obj, "mpp_x", None) or slide_obj.mpp_x <= 0 or not getattr(slide_obj, "mpp_y", None) or slide_obj.mpp_y <= 0:
-        raise ValueError(f"Slide {slide_obj.id} is missing valid MPP (status='needs_mpp'). Cannot execute triage stage.")
+    require_mpp(slide_obj)
     if not slide_obj.width_px or not slide_obj.height_px:
         raise ValueError(f"Slide {slide_obj.id} has no pixel dimensions; ingest must record them before triage.")
 
-    mpp_x = float(slide_obj.mpp_x)
-    mpp_y = float(slide_obj.mpp_y)
     width_px = int(slide_obj.width_px)
     height_px = int(slide_obj.height_px)
-
-    # Compute grid dimensions
-    width_um = width_px * mpp_x
-    height_um = height_px * mpp_y
+    width_um = width_px * float(slide_obj.mpp_x)
+    height_um = height_px * float(slide_obj.mpp_y)
+    od_beta = config.specimen_profiles.for_type(session.get(Case, case_id).specimen_type).stain_fit.od_beta
+    tissue = load_tissue_mask(case_id)
 
     # Issue #86: Define triage overview grid dimensions matching slide aspect ratio
     nx = 80
     ny = max(1, int(round(nx * (height_px / max(width_px, 1)))))
 
-    stride_x_um = (width_px * mpp_x) / nx
-    stride_y_um = (height_px * mpp_y) / ny
+    stride_x_um = width_um / nx
+    stride_y_um = height_um / ny
     grid_origin_um = (0.0, 0.0)
 
     scratch_dir = tempfile.mkdtemp(prefix="og_triage_")
-    os_slide = None
+    reader = None
 
     try:
-        # Check for preprocess tissue mask in GCS (Issue #86)
-        tissue_mask = None
-        try:
-            mask_bytes = download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_id}/preprocess/tissue_mask.png")
-            mask_img = Image.open(io.BytesIO(mask_bytes)).convert("L").resize((nx, ny), Image.Resampling.NEAREST)
-            tissue_mask = np.array(mask_img) > 10
-        except Exception:
-            tissue_mask = None
-
-        # 1. Download raw slide from GCS to transient scratch file for patch and thumbnail extraction
+        # 1. Download raw slide from GCS to transient scratch file for patch and overview extraction
         gcs_uri_original = resolve_slide_raw_uri(case_id, slide_obj) or slide_obj.gcs_uri_original or f"gs://{settings.GCS_RAW_BUCKET}/cases/{case_id}/{slide_id}.svs"
         raw_bucket_name, blob_name = parse_gcs_uri(gcs_uri_original)
         ext = os.path.splitext(blob_name)[1] or ".svs"
@@ -182,40 +177,25 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
 
         try:
             download_blob_to_filename(raw_bucket_name, blob_name, local_slide_path)
-            os_slide = openslide.OpenSlide(local_slide_path)
-        except (openslide.OpenSlideError, OSError) as exc:
-            raise SlideReadError(f"could not open slide {gcs_uri_original}: {exc}") from exc
+        except OSError as exc:
+            raise SlideReadError(f"could not download slide {gcs_uri_original}: {exc}") from exc
+        reader = SlideReader.from_slide_row(local_slide_path, slide_obj)
 
-        thumb = os_slide.get_thumbnail((nx, ny)).convert("RGB")
-        thumb = thumb.resize((nx, ny), Image.Resampling.BILINEAR)
-        arr = np.array(thumb).astype(float)
-        r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
-        is_glass = (r > 215) & (g > 215) & (b > 215)
-        # Issue #86: Prioritize preprocessed QC tissue mask if available
-        if tissue_mask is not None and tissue_mask.sum() > 0:
-            tissue_mask_overview = tissue_mask & ~is_glass
-        else:
-            tissue_mask_overview = ~is_glass
+        # The overview: one cell of the heatmap grid per pixel, read at that resolution.
+        overview = read_region_at_mpp(reader, 0.0, 0.0, width_um, height_um, stride_x_um).rgb
+        if overview.shape[:2] != (ny, nx):  # the grid rounds its row count; squash the sub-cell difference
+            overview = np.array(Image.fromarray(overview).resize((nx, ny), Image.Resampling.BOX))
+        arr = overview.astype(float)
         od = np.maximum(0, -np.log10(np.clip(arr / 255.0, 1e-4, 1.0)))
         stain_map = od.sum(axis=-1)
 
-        # Morphological sanitization: remove dust specks, glass borders, and isolated noise
+        # A cell is tissue when the registered mask covers enough of it; no clean-up erodes it (SPEC-04 §1).
+        cell_tissue_fraction = tissue.fraction_grid(stride_x_um, stride_y_um, nx, ny)
+        tissue_mask_overview = cell_tissue_fraction >= triage_cfg.tissue_threshold_pct
+        if not tissue_mask_overview.any():
+            raise ValueError(f"The registered tissue mask has no heatmap cell with {triage_cfg.tissue_threshold_pct:.0%} tissue on slide {slide_obj.id}.")
+
         from scipy import ndimage
-        opened_tissue = ndimage.binary_opening(tissue_mask_overview, structure=np.ones((3, 3)))
-        lbl_t, n_comp_t = ndimage.label(opened_tissue)
-        if n_comp_t > 0:
-            comp_sizes = ndimage.sum(tissue_mask_overview, lbl_t, range(1, n_comp_t + 1))
-            clean_tissue = np.zeros_like(tissue_mask_overview)
-            for c_idx, c_sz in enumerate(comp_sizes, 1):
-                if c_sz >= 25:  # Keep coherent tissue structures (biopsy cores / fragments >= 25 cells)
-                    clean_tissue[lbl_t == c_idx] = True
-            if np.any(clean_tissue):
-                tissue_mask_overview = clean_tissue
-
-        # Fallback to center region if mask is still entirely blank
-        if tissue_mask_overview.sum() == 0:
-            tissue_mask_overview[int(ny*0.2):int(ny*0.8), int(nx*0.2):int(nx*0.8)] = True
-
         dist_from_edge = ndimage.distance_transform_edt(tissue_mask_overview)
         margin_factor = np.clip(dist_from_edge / 2.0, 0.15, 1.0)
 
@@ -228,38 +208,24 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
 
         # 2. Smart Scout: High-resolution, cellularity-guided non-overlapping patch sampling
         max_sample_patches = triage_cfg.max_sample_patches
-        tile_px = triage_cfg.patch_size_px
-        tile_um = tile_px * triage_cfg.mpp_target
-        patch_dim_px = int(round(tile_um / mpp_x))
-        # The tile is resampled from patch_dim_px to tile_px, so this is the resolution sent.
-        tile_mpp = patch_dim_px * mpp_x / tile_px
-        cols = width_px // patch_dim_px
-        rows = height_px // patch_dim_px
+        tile_um = triage_cfg.patch_size_px * triage_cfg.mpp_target
 
-        # Enumerate strictly non-overlapping patch tile slots across the whole slide
+        # Strictly non-overlapping tiles of the registered grid that are tissue enough (exact mask area)
         candidate_slots = []
-        for r in range(rows):
-            for c in range(cols):
-                x0 = c * patch_dim_px
-                y0 = r * patch_dim_px
-                cx_px = x0 + patch_dim_px // 2
-                cy_px = y0 + patch_dim_px // 2
-                ix = min(nx - 1, max(0, int(cx_px / (width_px / nx))))
-                iy = min(ny - 1, max(0, int(cy_px / (height_px / ny))))
-
-                if tissue_mask_overview[iy, ix]:
-                    cellularity_score = float(stain_map[iy, ix])
-                    candidate_slots.append({
-                        "c": c,
-                        "r": r,
-                        "x0": x0,
-                        "y0": y0,
-                        "cx_px": cx_px,
-                        "cy_px": cy_px,
-                        "ix": ix,
-                        "iy": iy,
-                        "score": cellularity_score
-                    })
+        for tile in tissue.tiles(tile_um, triage_cfg.tissue_threshold_pct):
+            cx_um = tile.x_um + tile_um / 2
+            cy_um = tile.y_um + tile_um / 2
+            ix = min(nx - 1, max(0, int(cx_um / stride_x_um)))
+            iy = min(ny - 1, max(0, int(cy_um / stride_y_um)))
+            candidate_slots.append({
+                "c": tile.col,
+                "r": tile.row,
+                "x_um": tile.x_um,
+                "y_um": tile.y_um,
+                "ix": ix,
+                "iy": iy,
+                "score": float(stain_map[iy, ix])
+            })
 
         # Smart Scout Selection: Prioritize high-cellularity tumor nests while maintaining slide coverage
         if len(candidate_slots) <= max_sample_patches:
@@ -289,13 +255,8 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
         # Extract strictly non-overlapping tiles
         tile_ids = [f"t_{s['c']}_{s['r']}" for s in selected_slots]
         sampled_cells = [(s["ix"], s["iy"]) for s in selected_slots]
-        tile_spec = InputSpec(mpp=tile_mpp, size_px=(tile_px, tile_px), color="raw", format="png")
         tiles = [
-            ImageInput(
-                _png(_read_region(os_slide, (s["x0"], s["y0"]), (patch_dim_px, patch_dim_px))
-                     .resize((tile_px, tile_px), Image.Resampling.BILINEAR)),
-                tile_spec,
-            )
+            _image_input(read_region_at_mpp(reader, s["x_um"], s["y_um"], tile_um, tile_um, triage_cfg.mpp_target))
             for s in selected_slots
         ]
 
@@ -373,26 +334,23 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
 
         # VLM check of each candidate (SPEC-05 §5.4 arm). A failure fails the stage unless
         # configs/fallbacks.yaml allows it in a clinical run; then the candidate is unverified.
-        crop_w_px = max(1, int(round(referee_cfg.field_um / mpp_x)))
-        crop_h_px = max(1, int(round(referee_cfg.field_um / mpp_y)))
-        crop_spec = InputSpec(
-            mpp=referee_cfg.field_um / referee_cfg.size_px,
-            size_px=(referee_cfg.size_px, referee_cfg.size_px),
-            color="raw",
-            format="png",
-        )
+        # The persisted stain transform; None when the slide's fit is degenerate. A model that must see
+        # normalised colour cannot be run without it.
+        stain = _stain_transform(session, slide_obj.id, od_beta)
+        if referee_cfg.color == "normalized" and stain is None:
+            raise DegenerateStainProfileError(
+                f"the tumour referee is configured for normalized colour but slide {slide_obj.id}'s stain fit is degenerate"
+            )
         verified_candidates = []
         for n_cand, cand in enumerate(raw_candidates):
             poly = np.array(cand["polygon_um"])
-            cx_px = int(float(poly[:, 0].mean()) / mpp_x)
-            cy_px = int(float(poly[:, 1].mean()) / mpp_y)
-            crop = _centered_crop(os_slide, cx_px, cy_px, crop_w_px, crop_h_px).resize(
-                (referee_cfg.size_px, referee_cfg.size_px), Image.Resampling.BILINEAR
-            )
+            crop = _centered_region(reader, float(poly[:, 0].mean()), float(poly[:, 1].mean()), referee_cfg.field_um, referee_cfg.size_px)
+            if referee_cfg.color == "normalized":
+                crop = normalize_region(crop, stain)
             result = gateway.invoke_or_fallback(
                 Task.TUMOR_REFEREE,
                 referee_cfg.producer,
-                ModelInputs(images=(ImageInput(_png(crop), crop_spec),), prompt_id=referee_cfg.prompt),
+                ModelInputs(images=(_image_input(crop),), prompt_id=referee_cfg.prompt),
                 ctx,
                 EntityRef(EntityType.HOTSPOT, f"cand_{n_cand + 1:02d}"),
                 TumorVerdict,
@@ -460,28 +418,15 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
                 "application/octet-stream"
             )
 
-        # Stain normalizer for patch extraction
-        stain_normalizer = None
-        try:
-            stain_json_bytes = download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_id}/preprocess/stain_params.json")
-            stain_p = json.loads(stain_json_bytes.decode("utf-8"))
-            from pipeline.stain import PureNumpyMacenkoNormalizer
-            norm_obj = PureNumpyMacenkoNormalizer()
-            norm_obj.stain_matrix_target = np.array(stain_p["stain_matrix"])
-            norm_obj.max_conc_target = np.array(stain_p["max_concentrations"])
-            stain_normalizer = norm_obj
-        except Exception as ne:
-            print(f"[Triage Worker Note] Stain normalizer load note: {ne}")
-
+        # Review thumbnails of every hotspot at three magnifications (10x: 512 um, 20x: 256 um, 40x: 128 um),
+        # as scanned and, when the slide's stain fit allows it, normalised. A degenerate fit leaves no
+        # normalised variant (and the output says so); it is never replaced by the raw image.
         for hs in hotspots:
             hs_id = hs["id"]
             poly = np.array(hs["polygon_um"])
             cx_um = float(poly[:, 0].mean())
             cy_um = float(poly[:, 1].mean())
-            cx_px = int(cx_um / mpp_x)
-            cy_px = int(cy_um / mpp_y)
 
-            # Generate all 3 magnification levels (10x: 512um, 20x: 256um, 40x: 128um)
             mag_configs = [
                 ("10x", 512.0),
                 ("20x", 256.0),
@@ -489,30 +434,17 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
             ]
 
             for mag_name, field_um in mag_configs:
-                field_w_px = max(1, int(round(field_um / mpp_x)))
-                field_h_px = max(1, int(round(field_um / mpp_y)))
-                patch_orig = _centered_crop(os_slide, cx_px, cy_px, field_w_px, field_h_px).resize(
-                    (512, 512), Image.Resampling.BILINEAR
-                )
-
-                # Save Orig variant
+                patch_orig = _centered_region(reader, cx_um, cy_um, field_um, referee_cfg.size_px)
                 upload_blob_from_bytes(
                     settings.GCS_ARTIFACTS_BUCKET,
                     f"cases/{case_id}/triage/patches/{hs_id}_{mag_name}_orig.png",
-                    _png(patch_orig),
+                    _png(patch_orig.rgb),
                     "image/png"
                 )
+                if stain is None:
+                    continue
 
-                # Generate Norm variant
-                patch_norm = patch_orig
-                if stain_normalizer:
-                    try:
-                        norm_arr = stain_normalizer.transform(np.array(patch_orig))
-                        patch_norm = Image.fromarray(norm_arr)
-                    except Exception:
-                        patch_norm = patch_orig
-
-                norm_bytes = _png(patch_norm)
+                norm_bytes = _png(normalize_region(patch_orig, stain).rgb)
                 upload_blob_from_bytes(
                     settings.GCS_ARTIFACTS_BUCKET,
                     f"cases/{case_id}/triage/patches/{hs_id}_{mag_name}_norm.png",
@@ -529,8 +461,9 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
                         "image/png"
                     )
 
-            hs["thumbnail_uri"] = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/triage/patches/{hs_id}_10x_norm.png"
-            hs["thumbnail_url"] = get_gcs_artifact_direct_url(f"cases/{case_id}/triage/patches/{hs_id}_10x_norm.png")
+            thumb_variant = "orig" if stain is None else "norm"
+            hs["thumbnail_uri"] = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/triage/patches/{hs_id}_10x_{thumb_variant}.png"
+            hs["thumbnail_url"] = get_gcs_artifact_direct_url(f"cases/{case_id}/triage/patches/{hs_id}_10x_{thumb_variant}.png")
 
         model_versions = {key: registry.version_of(key) for key in (embed_key, tumor_key, referee_cfg.producer)}
         wall_time_s = round(time.time() - start_time, 2)
@@ -548,6 +481,7 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
                 "ny": ny
             },
             "hotspots": hotspots,
+            "stain_normalization": "unavailable" if stain is None else "available",
             "model_versions": model_versions,
             "audit": {
                 "endpoint_calls_made": tiles_sent,
@@ -601,6 +535,6 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
         return output_ref, model_versions
 
     finally:
-        if os_slide is not None:
-            os_slide.close()
+        if reader is not None:
+            reader.close()
         shutil.rmtree(scratch_dir, ignore_errors=True)

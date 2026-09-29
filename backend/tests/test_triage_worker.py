@@ -25,6 +25,7 @@ from pipeline.errors import SlideReadError
 from tests.fakes.gateway import FakeAdapter, InMemoryBlobStore, json_text
 from tests.fakes.runtime import make_runtime
 from tests.fakes.slide import FakeOpenSlide, install_fake_slide
+from tests.fakes.stage2 import seed_stage2
 from worker.triage import run_triage
 
 WIDTH_PX, HEIGHT_PX, MPP = 2400, 1800, 0.5
@@ -54,6 +55,7 @@ def seed(db_session, **slide_overrides):
     )
     db_session.add_all([Case(id=case_id, created_by="triage_test"), Slide(**slide_values), stage])
     db_session.commit()
+    seed_stage2(db_session, case_id, slide_id, WIDTH_PX * MPP, HEIGHT_PX * MPP)
     return stage, raw_uri
 
 

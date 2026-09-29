@@ -7,6 +7,10 @@ candidate with a strict MitosisVerdict. Each call is a DecisionRecord, and each 
 label names the producer that decided it. A detector or referee failure fails the stage
 unless configs/fallbacks.yaml allows the referee's in a clinical run; then the candidate
 stays unreviewed and needs a human (SPEC-01 §3.6, §3.9).
+
+Every read goes through read_region_at_mpp: detector tiles are resampled to the detector's
+resolution (a 20x scan is upsampled and reported as such), tissue comes from the registered
+mask and colour from the slide's persisted stain profile (SPEC-04).
 """
 import os
 import io
@@ -16,7 +20,6 @@ import shutil
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Tuple
 import numpy as np
-import openslide
 from PIL import Image
 from sqlalchemy import select, delete, not_
 from sqlalchemy.orm import Session
@@ -25,12 +28,12 @@ from app.core.config import settings
 from app.core.gcs import (
     parse_gcs_uri,
     upload_blob_from_bytes,
-    download_blob_as_bytes,
     download_blob_to_filename,
     resolve_slide_raw_uri
 )
-from app.core.openslide_lock import OPENSLIDE_GLOBAL_LOCK
+from app.core.stain_profiles import usable_stain_transform
 from app.core.tasks import EntityType, Task
+from app.core.tissue_mask_store import load_tissue_mask
 from app.inference.batching import plan_batches
 from app.inference.gateway import EntityRef, FallbackResult, ImageInput, InputSpec, ModelInputs
 from app.inference.outputs import DetectionList
@@ -42,10 +45,12 @@ from app.models.detection import Detection
 from app.models.hpf_site import HpfSite
 from app.models.audit import AuditEvent
 from pipeline.detect import apply_global_nms, enumerate_hotspot_tiles
-from pipeline.errors import SlideReadError
+from pipeline.errors import DegenerateStainProfileError, SlideReadError
 from pipeline.verify import mitosis_referee_images
 from pipeline.hpf import generate_mitosis_density_map, greedy_place_hpfs
 from pipeline.scoring import calculate_hpf_mitosis_counts, compute_nottingham_mitotic_score
+from pipeline.slide_io import SlideReader, centered_origin_um, normalize_region, read_region_at_mpp, require_mpp
+from pipeline.stain import StainTransform
 from worker.runtime import StageRuntime
 
 # Detection label for each referee verdict. EQUIVOCAL is never counted (SPEC-06 §5.6).
@@ -58,18 +63,15 @@ LABEL_FOR_VERDICT = {
 MODEL_CALL_THREADS = 4
 
 
-def _read_rgb(openslide_slide, location, size) -> Image.Image:
-    try:
-        with OPENSLIDE_GLOBAL_LOCK:
-            return openslide_slide.read_region(location, 0, size).convert("RGB")
-    except openslide.OpenSlideError as exc:
-        raise SlideReadError(f"could not read {size} px at {location}: {exc}") from exc
-
-
-def _png(image: Image.Image) -> bytes:
+def _png(rgb: np.ndarray) -> bytes:
     buf = io.BytesIO()
-    image.save(buf, format="PNG")
+    Image.fromarray(rgb).save(buf, format="PNG")
     return buf.getvalue()
+
+
+def _stain_transform(db: Session, slide_id, od_beta: float) -> StainTransform | None:
+    """The slide's persisted stain transform, or None when its fit is degenerate (colour cannot be normalised)."""
+    return usable_stain_transform(db, slide_id, od_beta=od_beta)  # StainProfileMissingError: run preprocess again
 
 
 def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[str, Dict[str, str]]:
@@ -97,8 +99,7 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
         raise ValueError(f"No slide found for case {case_id}")
 
     slide_id = str(slide_obj.id)
-    if not getattr(slide_obj, "mpp_x", None) or slide_obj.mpp_x <= 0 or not getattr(slide_obj, "mpp_y", None) or slide_obj.mpp_y <= 0:
-        raise ValueError(f"Slide {slide_id} is missing valid MPP (status='needs_mpp'). Cannot execute mitosis stage.")
+    require_mpp(slide_obj)
     if not slide_obj.width_px or not slide_obj.height_px:
         raise ValueError(f"Slide {slide_id} has no pixel dimensions; ingest must record them before mitosis.")
 
@@ -108,7 +109,8 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
     height_px = int(slide_obj.height_px)
 
     tile_size_px = det_cfg.tile_size_px
-    stride_px = det_cfg.stride_px
+    tile_um = det_cfg.tile_size_um
+    stride_um = det_cfg.stride_px * det_cfg.mpp
     patch_px = detector_entry.input.size_px[0]
     radius_um = hpf_cfg.radius_um
     hpf_count = hpf_cfg.count
@@ -137,21 +139,15 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
             "Stage 3 Triage must be confirmed by a pathologist before running Stage 4 Mitosis detection."
         )
 
+    slide_dimensions_um = (float(width_px * mpp_x), float(height_px * mpp_y))
+    od_beta = config.specimen_profiles.for_type(case_obj.specimen_type).stain_fit.od_beta
+    tissue = load_tissue_mask(case_id)  # TissueMaskMissingError: run preprocess again
+    print(f"[Worker:Mitosis] Loaded registered tissue mask ({tissue.width_px}x{tissue.height_px} px at {tissue.mpp} um/px, {tissue.area_mm2:.1f} mm2)")
+
     scratch_dir = tempfile.mkdtemp(prefix="og_mitosis_")
-    openslide_slide = None
+    reader = None
 
     try:
-
-        # Download preprocess tissue mask from GCS
-        slide_dimensions_um = (float(width_px * mpp_x), float(height_px * mpp_y))
-        tissue_mask = None
-        try:
-            mask_bytes = download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_id}/preprocess/tissue_mask.png")
-            mask_img = Image.open(io.BytesIO(mask_bytes)).convert("L")
-            tissue_mask = np.array(mask_img) > 10
-            print(f"[Worker:Mitosis] Successfully loaded preprocess tissue mask ({tissue_mask.shape[1]}x{tissue_mask.shape[0]}, {tissue_mask.sum()} tissue px)")
-        except Exception as tme:
-            print(f"[Worker:Mitosis Note] Could not load preprocess tissue_mask from GCS: {tme}")
 
         # Prioritize confirmed hotspots by tumor cellularity & tissue density (prob_mean descending)
         hotspots.sort(key=lambda h: (h.get("prob_mean") or 0.0), reverse=True)
@@ -165,34 +161,27 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
 
         try:
             download_blob_to_filename(raw_bucket_name, blob_name, local_slide_path)
-            with OPENSLIDE_GLOBAL_LOCK:
-                openslide_slide = openslide.OpenSlide(local_slide_path)
-        except (openslide.OpenSlideError, OSError) as exc:
-            raise SlideReadError(f"could not open slide {gcs_uri_original} for case {case_id}: {exc}") from exc
+        except OSError as exc:
+            raise SlideReadError(f"could not download slide {gcs_uri_original} for case {case_id}: {exc}") from exc
+        reader = SlideReader.from_slide_row(local_slide_path, slide_obj)
 
-        # Fallback to OpenSlide thumbnail tissue mask if GCS mask was not found
-        if tissue_mask is None:
-            try:
-                with OPENSLIDE_GLOBAL_LOCK:
-                    thumb = openslide_slide.get_thumbnail((512, 512)).convert("RGB")
-                arr = np.array(thumb).astype(float)
-                r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
-                tissue_mask = ~((r > 215) & (g > 215) & (b > 215))
-                print(f"[Worker:Mitosis] Generated fallback tissue mask from OpenSlide thumbnail ({tissue_mask.sum()} tissue px)")
-            except Exception as te:
-                print(f"[Worker:Mitosis Note] Thumbnail fallback note: {te}")
+        # The persisted stain transform; None when the slide's fit is degenerate. A model that must see
+        # normalised colour cannot be run without it.
+        stain = _stain_transform(db, slide_obj.id, od_beta)
+        if referee_cfg.color == "normalized" and stain is None:
+            raise DegenerateStainProfileError(
+                f"the mitosis referee is configured for normalized colour but slide {slide_id}'s stain fit is degenerate"
+            )
 
         # Enumerate all candidate tiles across confirmed hotspots, skipping empty glass
         all_tiles_to_sweep = []
         for hs in hotspots:
             hs_tiles = enumerate_hotspot_tiles(
                 hs["polygon_um"],
-                tile_size_px=tile_size_px,
-                mpp=mpp_x,
-                stride_px=stride_px,
-                tissue_mask=tissue_mask,
-                slide_dimensions_um=slide_dimensions_um,
-                min_tissue_ratio=0.20
+                tile_um=tile_um,
+                stride_um=stride_um,
+                tissue=tissue,
+                min_tissue_fraction=det_cfg.min_tissue_fraction,
             )
             for t in hs_tiles:
                 t["hotspot_id"] = hs["id"]
@@ -200,19 +189,20 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
 
         print(f"[Worker:Mitosis] Sweeping {len(all_tiles_to_sweep)} tiles across {len(hotspots)} hotspots with {MODEL_CALL_THREADS} workers...")
 
-        # Tiles are read at the slide's own resolution; the gateway refuses one outside the
-        # detector's input contract (SPEC-01 AC5) instead of sending it unresampled.
-        patch_spec = InputSpec(mpp=mpp_x, size_px=(patch_px, patch_px), color="raw", format="png")
+        # Tiles are resampled to the detector's resolution (a 20x scan is upsampled, and the output says so);
+        # the gateway refuses anything outside the detector's input contract (SPEC-01 AC5).
+        patch_spec = InputSpec(mpp=det_cfg.mpp, size_px=(patch_px, patch_px), color="raw", format="png")
         limits = detector_entry.limits
 
         def _sweep_single_tile(n_tile_and_tile):
             n_tile, tile = n_tile_and_tile
             tx_um, ty_um = tile["origin_um"]
-            tx_px, ty_px = tile["origin_px"]
-            tile_img = _read_rgb(openslide_slide, (tx_px, ty_px), (tile_size_px, tile_size_px))
+            tile_img = read_region_at_mpp(reader, tx_um, ty_um, tile_um, tile_um, det_cfg.mpp).rgb
+            if tile_img.shape[:2] != (tile_size_px, tile_size_px):
+                raise ValueError(f"a {tile_um} um tile at {det_cfg.mpp} um/px came out {tile_img.shape[:2]}, not {tile_size_px} px square")
             offsets = [(ox, oy) for oy in range(0, tile_size_px, patch_px) for ox in range(0, tile_size_px, patch_px)]
             patches = [
-                ImageInput(_png(tile_img.crop((ox, oy, ox + patch_px, oy + patch_px))), patch_spec)
+                ImageInput(_png(tile_img[oy:oy + patch_px, ox:ox + patch_px]), patch_spec)
                 for ox, oy in offsets
             ]
             patch_ids = [f"t{n_tile:04d}_{ox}_{oy}" for ox, oy in offsets]
@@ -235,8 +225,8 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
                         if point.prob < det_cfg.det_threshold:
                             continue
                         found.append((
-                            tx_um + (ox + point.x) * mpp_x,
-                            ty_um + (oy + point.y) * mpp_y,
+                            tx_um + (ox + point.x) * det_cfg.mpp,
+                            ty_um + (oy + point.y) * det_cfg.mpp,
                             float(point.prob),
                             tile["hotspot_id"],
                             str(result.record_id),
@@ -266,14 +256,10 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
         candidates = apply_global_nms(raw_candidates, nms_radius_um=det_cfg.nms_radius_um)
         print(f"[Worker:Mitosis] Detected {len(raw_candidates)} candidates -> {len(candidates)} after {det_cfg.nms_radius_um}um NMS.")
 
-        # Referee inputs are read sequentially under the OpenSlide lock; the calls run concurrently.
+        # Referee inputs are read up front; the model calls then run concurrently.
         for cand in candidates:
             cx_um, cy_um = cand["centroid_um"]
-            focus, context = mitosis_referee_images(
-                openslide_slide, int(cx_um / mpp_x), int(cy_um / mpp_y), mpp_x,
-                referee_cfg.focus_px, referee_cfg.context_um, referee_cfg.context_px,
-            )
-            cand["_referee_images"] = (focus, context)
+            cand["_referee_images"] = mitosis_referee_images(reader, cx_um, cy_um, referee_cfg, stain)
             cand["crop_uri"] = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/mitosis/crops/{cand['id']}.png"
             cand["crop_orig_uri"] = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/mitosis/crops/{cand['id']}_orig.png"
 
@@ -281,7 +267,9 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
             result = gateway.invoke_or_fallback(
                 Task.MITOSIS_REFEREE,
                 referee_cfg.producer,
-                ModelInputs(images=cand["_referee_images"], prompt_id=referee_cfg.prompt),
+                ModelInputs(
+                    images=(cand["_referee_images"].focus, cand["_referee_images"].context), prompt_id=referee_cfg.prompt
+                ),
                 ctx,
                 EntityRef(EntityType.CANDIDATE, cand["id"]),
                 MitosisVerdict,
@@ -313,14 +301,14 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
         candidates = apply_global_nms(candidates, nms_radius_um=det_cfg.nms_radius_um)
         print(f"[Worker:Mitosis] Retained {len(candidates)} spatially distinct candidates after refereeing and {det_cfg.nms_radius_um}um NMS.")
 
-        # Upload each candidate's focus crop
+        # Upload each candidate's focus crop: what the referee saw, and as scanned
         def _upload_single_crop(c_item):
-            focus, _ = c_item.pop("_referee_images")
-            for suffix in ("", "_orig"):
+            images = c_item.pop("_referee_images")
+            for suffix, data in (("", images.focus.data), ("_orig", images.focus_raw_png)):
                 upload_blob_from_bytes(
                     settings.GCS_ARTIFACTS_BUCKET,
                     f"cases/{case_id}/mitosis/crops/{c_item['id']}{suffix}.png",
-                    focus.data,
+                    data,
                     "image/png"
                 )
 
@@ -351,83 +339,42 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
             radius_um=radius_um,
             min_separation_um=hpf_cfg.min_separation_um,
             relaxed_min_separation_um=hpf_cfg.relaxed_min_separation_um,
-            tissue_mask=tissue_mask,
+            tissue=tissue,
             slide_dimensions_um=slide_dimensions_um,
             min_tissue_coverage=hpf_cfg.min_tissue_coverage,
             hotspot_priorities=hotspot_prios
         )
 
-        # Pre-render and upload all 10 HPF patch variants (10x, 20x, 40x @ norm/orig) to GCS
-        stain_normalizer = None
-        try:
-            from pipeline.stain import PureNumpyMacenkoNormalizer
-            sp_bytes = download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_id}/preprocess/stain_params.json")
-            sp_data = json.loads(sp_bytes.decode("utf-8"))
-            if "stain_matrix" in sp_data and "max_concentrations" in sp_data:
-                stain_normalizer = PureNumpyMacenkoNormalizer()
-                stain_normalizer.stain_matrix_target = np.array(sp_data["stain_matrix"], dtype=float)
-                stain_normalizer.max_conc_target = np.array(sp_data["max_concentrations"], dtype=float)
-        except Exception as se:
-            print(f"[Worker:Mitosis Note] Failed to load stain normalizer: {se}")
-
+        # Pre-render and upload all HPF review images (10x, 20x, 40x, as scanned and normalised) to GCS.
+        # A degenerate stain fit leaves no normalised variant; it is never replaced by the raw image.
         hpf_uploads = []
-        dim_w, dim_h = openslide_slide.dimensions
+        review_px = hpf_cfg.review_px
 
-        # Reticle optical patch calibration:
-        # HPF radius is 262.0 um. The viewer displays a 520x520 px canvas with reticle radius = 236 px.
-        # For candidate pins (px = 260 + dx/radius * 236) to perfectly match the underlying patch imagery:
-        # 40x patch field width must be 520 * (262.0 / 236.0) = 577.29 um!
+        # Reticle optical patch calibration: the viewer canvas shows the HPF radius as a reticle, so the
+        # review image spans hpf.review_field_um (canvas width * radius / reticle radius).
         for hpf in hpfs:
             hpf_seq = hpf["seq"]
             h_cx_um, h_cy_um = hpf["center_um"]
-            h_cx_px = int(h_cx_um / mpp_x)
-            h_cy_px = int(h_cy_um / mpp_y)
+            field_um = hpf_cfg.review_field_um
+            x_um, y_um = centered_origin_um(reader, h_cx_um, h_cy_um, field_um, field_um)
+            review = read_region_at_mpp(reader, x_um, y_um, field_um, field_um, field_um / review_px)
 
-            field_um = 577.29 # Standard HPF review field (r=262 um -> width=577.29 um)
-            crop_w_px = max(1, int(round(field_um / mpp_x)))
-            crop_h_px = max(1, int(round(field_um / mpp_y)))
+            variants = {"orig": review}
+            if stain is not None:
+                variants["norm"] = normalize_region(review, stain)
 
-            x0 = max(0, min(dim_w - crop_w_px, h_cx_px - crop_w_px // 2))
-            y0 = max(0, min(dim_h - crop_h_px, h_cy_px - crop_h_px // 2))
-            patch_orig_raw = _read_rgb(openslide_slide, (x0, y0), (crop_w_px, crop_h_px))
-
-            # 40x base patch (2048x2048, 0.28 um/px)
-            patch_40x_orig = patch_orig_raw.resize((2048, 2048), Image.Resampling.BILINEAR) if patch_orig_raw.size != (2048, 2048) else patch_orig_raw
-
-            # Stain normalize 40x ONCE (downsampled versions inherit normalized palette)
-            patch_40x_norm = patch_40x_orig
-            if stain_normalizer:
-                try:
-                    norm_arr = stain_normalizer.transform(np.array(patch_40x_orig))
-                    patch_40x_norm = Image.fromarray(norm_arr)
-                except Exception:
-                    patch_40x_norm = patch_40x_orig
-
-            # Generate multi-resolution hierarchy (40x, 20x, 10x) efficiently in memory
-            for mag_name, target_dim in (("40x", 2048), ("20x", 1024), ("10x", 512)):
-                if target_dim == 2048:
-                    p_orig = patch_40x_orig
-                    p_norm = patch_40x_norm
-                else:
-                    p_orig = patch_40x_orig.resize((target_dim, target_dim), Image.Resampling.BILINEAR)
-                    p_norm = patch_40x_norm.resize((target_dim, target_dim), Image.Resampling.BILINEAR)
-
-                buf_o = io.BytesIO()
-                if mag_name == "40x":
-                    p_orig.save(buf_o, "JPEG", quality=94)
-                else:
-                    p_orig.save(buf_o, "PNG")
-                orig_bytes = buf_o.getvalue()
-
-                buf_n = io.BytesIO()
-                if mag_name == "40x":
-                    p_norm.save(buf_n, "JPEG", quality=94)
-                else:
-                    p_norm.save(buf_n, "PNG")
-                norm_bytes = buf_n.getvalue()
-
-                hpf_uploads.append((f"cases/{case_id}/mitosis/hpfs/hpf_{hpf_seq}_{mag_name}_orig.png", orig_bytes))
-                hpf_uploads.append((f"cases/{case_id}/mitosis/hpfs/hpf_{hpf_seq}_{mag_name}_norm.png", norm_bytes))
+            # Generate the multi-resolution hierarchy (40x, 20x, 10x) in memory
+            for mag_name, target_dim in (("40x", review_px), ("20x", review_px // 2), ("10x", review_px // 4)):
+                for stain_name, region in variants.items():
+                    image = Image.fromarray(region.rgb)
+                    if target_dim != review_px:
+                        image = image.resize((target_dim, target_dim), Image.Resampling.BILINEAR)
+                    buf = io.BytesIO()
+                    if mag_name == "40x":
+                        image.save(buf, "JPEG", quality=94)
+                    else:
+                        image.save(buf, "PNG")
+                    hpf_uploads.append((f"cases/{case_id}/mitosis/hpfs/hpf_{hpf_seq}_{mag_name}_{stain_name}.png", buf.getvalue()))
 
         def _upload_hpf_item(item):
             b_path, b_data = item
@@ -528,6 +475,10 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
             "hpfs": hpfs,
             "summary": scoring_summary,
             "grid": grid_meta,
+            "stain_normalization": "unavailable" if stain is None else "available",
+            # The 20x/40x slice (SPEC-00 R6): a slide coarser than the detector's resolution is upsampled.
+            "native_mpp": reader.native_mpp,
+            "detector_upsampled": reader.native_mpp > det_cfg.mpp * (1 + detector_entry.input.mpp_tolerance),
             "model_versions": model_versions
         }
 
@@ -564,7 +515,6 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
         return output_uri, model_versions
 
     finally:
-        if openslide_slide is not None:
-            with OPENSLIDE_GLOBAL_LOCK:
-                openslide_slide.close()
+        if reader is not None:
+            reader.close()
         shutil.rmtree(scratch_dir, ignore_errors=True)

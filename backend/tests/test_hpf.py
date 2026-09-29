@@ -4,6 +4,7 @@ Unit tests for HPF Placement and Spatial Density Engine (v4.3).
 import math
 import numpy as np
 import pytest
+from pipeline.tissue_mask import TissueMask
 from pipeline.hpf import (
     create_circular_disk_mask,
     generate_mitosis_density_map,
@@ -136,9 +137,10 @@ def test_greedy_place_hpfs_rejects_empty_glass():
     slide_w_um = nx * stride # 1600 um
     slide_h_um = ny * stride # 1600 um
 
-    # Tissue mask: 1 for left half, 0 for right half
-    tissue_mask = np.zeros((100, 100), dtype=np.uint8)
-    tissue_mask[:, :50] = 255 # Left half is tissue
+    # Tissue mask (one pixel per grid cell): the left half is tissue, the right half empty glass
+    tissue_cells = np.zeros((100, 100), dtype=bool)
+    tissue_cells[:, :50] = True
+    tissue = TissueMask(tissue_cells, stride)
 
     # Put high density candidates on the right half (glass) and lower on the left half (tissue)
     density_map = np.zeros((ny, nx), dtype=np.float32)
@@ -160,7 +162,7 @@ def test_greedy_place_hpfs_rejects_empty_glass():
         count=2,
         radius_um=262.0,
         min_separation_um=524.0,
-        tissue_mask=tissue_mask,
+        tissue=tissue,
         slide_dimensions_um=(slide_w_um, slide_h_um),
         min_tissue_coverage=0.70
     )
@@ -179,7 +181,7 @@ def test_greedy_place_hpfs_prioritizes_dense_hotspots():
     slide_w_um = nx * stride
     slide_h_um = ny * stride
 
-    tissue_mask = np.ones((100, 100), dtype=np.uint8) * 255
+    tissue = TissueMask(np.ones((100, 100), dtype=bool), stride)
     density_map = np.ones((ny, nx), dtype=np.float32)
 
     grid_meta = {
@@ -202,7 +204,7 @@ def test_greedy_place_hpfs_prioritizes_dense_hotspots():
         count=2,
         radius_um=262.0,
         min_separation_um=524.0,
-        tissue_mask=tissue_mask,
+        tissue=tissue,
         slide_dimensions_um=(slide_w_um, slide_h_um)
     )
 

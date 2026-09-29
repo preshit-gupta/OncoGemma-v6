@@ -9,6 +9,10 @@ aggregates the grade in deterministic code.
 A failed estimate is never replaced by a value (SPEC-01 §3.9). It fails the stage unless
 configs/fallbacks.yaml allows it in a clinical run; then that patch or the type has no
 estimate and the grading needs a human.
+
+Patches are read through read_region_at_mpp at the configured resolution, in the configured
+colour (the slide's persisted stain profile for "normalized"), and placed by the registered
+tissue mask (SPEC-04).
 """
 
 import os
@@ -21,7 +25,6 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple, Optional
 import numpy as np
-import openslide
 from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -30,12 +33,12 @@ from app.core.config import settings
 from app.core.gcs import (
     parse_gcs_uri,
     upload_blob_from_bytes,
-    download_blob_as_bytes,
     download_blob_to_filename,
     resolve_slide_raw_uri
 )
-from app.core.openslide_lock import OPENSLIDE_GLOBAL_LOCK
+from app.core.stain_profiles import usable_stain_transform
 from app.core.tasks import EntityType, Task
+from app.core.tissue_mask_store import load_tissue_mask
 from app.inference.gateway import EntityRef, FallbackResult, ImageInput, InputSpec, ModelInputs
 from app.inference.schemas import HistotypeVerdict, PleoEstimate, TubuleEstimate
 from app.models.case import Case
@@ -45,8 +48,10 @@ from app.models.hpf_site import HpfSite
 from app.models.detection import Detection
 from app.models.grading import Grading
 from app.models.audit import AuditEvent
-from pipeline.errors import SlideReadError
-from pipeline.stain import MacenkoNormalizer
+from pipeline.errors import DegenerateStainProfileError, SlideReadError
+from pipeline.slide_io import SlideReader, centered_origin_um, read_region_at_mpp, require_mpp
+from pipeline.stain import StainTransform
+from pipeline.tissue_mask import TissueMask
 from pipeline.grading import (
     aggregate_grading_findings,
     calculate_mitotic_score_from_detections_and_hpfs,
@@ -59,51 +64,34 @@ from worker.runtime import StageRuntime
 ESTIMATOR_THREADS = 4
 
 
-def extract_10x_patch(
-    slide_obj,
-    center_x: int,
-    center_y: int,
-    patch_size_px: int = 512,
-    target_mpp: float = 1.0,
-    base_mpp: float | None = None
-) -> Image.Image:
+def read_evidence_patch(
+    reader: SlideReader,
+    center_um: tuple[float, float],
+    patch_size_px: int,
+    resolution_um: float,
+    stain: StainTransform | None,
+):
     """
-    Extract 512x512 patch @ 1.0 um/pixel (10x magnification) centered at (center_x, center_y).
+    Read the ``patch_size_px`` square evidence patch at ``resolution_um`` centred on ``center_um``
+    (shifted inside the slide), normalised with ``stain`` when one is given.
     """
-    if base_mpp is None or base_mpp <= 0:
-        raise ValueError(f"Valid positive base_mpp is required for patch extraction, got: {base_mpp}")
-    downsample = target_mpp / base_mpp  # e.g., 1.0 / 0.25 = 4.0
-    crop_w_l0 = int(patch_size_px * downsample)
-    crop_h_l0 = int(patch_size_px * downsample)
-
-    dims = slide_obj.dimensions
-    top_left_x = max(0, min(dims[0] - crop_w_l0, int(center_x - crop_w_l0 / 2)))
-    top_left_y = max(0, min(dims[1] - crop_h_l0, int(center_y - crop_h_l0 / 2)))
-
-    try:
-        with OPENSLIDE_GLOBAL_LOCK:
-            rgba = slide_obj.read_region((top_left_x, top_left_y), 0, (crop_w_l0, crop_h_l0))
-            rgb = rgba.convert("RGB")
-    except openslide.OpenSlideError as exc:
-        raise SlideReadError(f"could not read the patch at ({top_left_x}, {top_left_y}): {exc}") from exc
-
-    if rgb.size != (patch_size_px, patch_size_px):
-        rgb = rgb.resize((patch_size_px, patch_size_px), Image.Resampling.LANCZOS)
-
-    return rgb
+    patch_um = patch_size_px * resolution_um
+    x_um, y_um = centered_origin_um(reader, center_um[0], center_um[1], patch_um, patch_um)
+    return read_region_at_mpp(
+        reader, x_um, y_um, patch_um, patch_um, resolution_um,
+        color="raw" if stain is None else "normalized", stain=stain,
+    )
 
 
 def select_max_density_hotspot_patches(
     hotspots: List[Any],
-    tissue_mask: np.ndarray,
-    slide_dims_um: Tuple[float, float],
+    tissue: TissueMask,
     base_mpp: float,
     case_id: str,
     n_patches: int = 24,
     patch_size_um: float = 512.0,
     min_dist_um: float = 384.0,
     min_density: float = 0.50,
-    checksum_sha256: Optional[str] = None,
     mpp_y: Optional[float] = None
 ) -> List[Dict[str, Any]]:
     """
@@ -112,24 +100,16 @@ def select_max_density_hotspot_patches(
     2. The patch with maximum tissue density within each hotspot is chosen first (preventing lumina/empty voids).
     3. Additional non-overlapping high-density sites inside hotspots or on invasive tumor margins are selected
        until exactly n_patches are obtained.
-    4. Deterministic sampling is seeded by slide checksum (Issue #145).
+    4. Tissue density is the exact tissue fraction of the patch-sized box around a point (registered mask).
     5. Centroid is calculated via true polygon area centroid and supports anisotropic mpp_y (Issue #765).
     """
-    from scipy.ndimage import uniform_filter
     from shapely.geometry import Polygon, Point
 
     eff_mpp_y = mpp_y if mpp_y and mpp_y > 0 else base_mpp
+    half_um = patch_size_um / 2.0
 
-    seed_int = int(checksum_sha256[:8], 16) if checksum_sha256 and checksum_sha256 != "default_checksum" else 42
-    rng = np.random.default_rng(seed_int)
-
-    H_m, W_m = tissue_mask.shape
-    s_x = W_m / max(slide_dims_um[0], 1.0)
-    s_y = H_m / max(slide_dims_um[1], 1.0)
-    k_x = max(3, int(round(patch_size_um * s_x)))
-    k_y = max(3, int(round(patch_size_um * s_y)))
-
-    density_map = uniform_filter(tissue_mask.astype(np.float32), size=(k_y, k_x), mode='constant', cval=0.0)
+    def tissue_density_at(x_um: float, y_um: float) -> float:
+        return tissue.fraction_in_box_um(x_um - half_um, y_um - half_um, x_um + half_um, y_um + half_um)
 
     selected = []
     selected_coords = []
@@ -167,9 +147,7 @@ def select_max_density_hotspot_patches(
         for x in gx:
             for y in gy:
                 if poly_geom.contains(Point(x, y)):
-                    pmx = int(np.clip(round(x * s_x), 0, W_m - 1))
-                    pmy = int(np.clip(round(y * s_y), 0, H_m - 1))
-                    d = float(density_map[pmy, pmx])
+                    d = tissue_density_at(x, y)
                     cand_points.append((x, y, d))
                     all_internal_cands.append((x, y, d, hs_id, prob, "hotspot_subregion"))
 
@@ -181,9 +159,7 @@ def select_max_density_hotspot_patches(
             else:
                 cx_um = float(poly_arr[:, 0].mean())
                 cy_um = float(poly_arr[:, 1].mean())
-            pmx = int(np.clip(round(cx_um * s_x), 0, W_m - 1))
-            pmy = int(np.clip(round(cy_um * s_y), 0, H_m - 1))
-            d = float(density_map[pmy, pmx])
+            d = tissue_density_at(cx_um, cy_um)
             cand_points.append((cx_um, cy_um, d))
             all_internal_cands.append((cx_um, cy_um, d, hs_id, prob, "hotspot_subregion"))
 
@@ -240,9 +216,7 @@ def select_max_density_hotspot_patches(
             for x in gx:
                 for y in gy:
                     if margin_geom.contains(Point(x, y)):
-                        pmx = int(np.clip(round(x * s_x), 0, W_m - 1))
-                        pmy = int(np.clip(round(y * s_y), 0, H_m - 1))
-                        d = float(density_map[pmy, pmx])
+                        d = tissue_density_at(x, y)
                         margin_cands.append((x, y, d, h["id"], h["prob"]))
         
         margin_cands.sort(key=lambda it: (it[2] >= min_density, it[2]), reverse=True)
@@ -312,8 +286,7 @@ def run_grading(stage_exec: StageExecution, db: Session, runtime: StageRuntime) 
     slide_id = str(slide.id)
 
     # Halt grading stage if MPP is missing per PRD 01-stage-v4.0 §2.3 step 4
-    if not slide or not getattr(slide, "mpp_x", None) or slide.mpp_x <= 0 or not getattr(slide, "mpp_y", None) or slide.mpp_y <= 0:
-        raise ValueError(f"Slide for case {case_id} is missing valid MPP (status='needs_mpp'). Cannot execute grading stage.")
+    require_mpp(slide)
     base_mpp = float(slide.mpp_x)
 
     # 1. Confirmed Stage 3 hotspots, from the database only (fail fast before downloading the slide)
@@ -345,8 +318,11 @@ def run_grading(stage_exec: StageExecution, db: Session, runtime: StageRuntime) 
     resolution_um = sampling.resolution_um
     patch_size_um = patch_size_px * resolution_um
 
+    tissue = load_tissue_mask(case_id)  # TissueMaskMissingError: run preprocess again
+    od_beta = config.specimen_profiles.for_type(case.specimen_type).stain_fit.od_beta
+
     scratch_dir = tempfile.mkdtemp(prefix="og_grading_")
-    slide_obj = None
+    reader = None
 
     try:
         gcs_uri_original = resolve_slide_raw_uri(case_id, slide) or slide.gcs_uri_original or f"gs://{settings.GCS_RAW_BUCKET}/cases/{case_id}/{slide_id}.svs"
@@ -354,73 +330,44 @@ def run_grading(stage_exec: StageExecution, db: Session, runtime: StageRuntime) 
         ext = os.path.splitext(blob_name)[1] or ".svs"
         local_slide_path = os.path.join(scratch_dir, f"slide{ext}")
 
-        # 2. Open Slide and Prepare Tissue Mask
+        # 2. Open the slide
         try:
             download_blob_to_filename(raw_bucket_name, blob_name, local_slide_path)
-            with OPENSLIDE_GLOBAL_LOCK:
-                slide_obj = openslide.OpenSlide(local_slide_path)
-        except (openslide.OpenSlideError, OSError) as exc:
-            raise SlideReadError(f"could not open slide {gcs_uri_original} for case {case_id}: {exc}") from exc
+        except OSError as exc:
+            raise SlideReadError(f"could not download slide {gcs_uri_original} for case {case_id}: {exc}") from exc
+        reader = SlideReader.from_slide_row(local_slide_path, slide)
 
-        slide_w, slide_h = slide_obj.dimensions
-        slide_dims_um = (float(slide_w * base_mpp), float(slide_h * float(slide.mpp_y)))
-
-        tissue_mask = None
-        try:
-            mask_bytes = download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_id}/preprocess/tissue_mask.png")
-            mask_img = Image.open(io.BytesIO(mask_bytes)).convert("L")
-            tissue_mask = np.array(mask_img) > 10
-            print(f"[Worker Stage 5: Grading] Loaded preprocess tissue mask ({tissue_mask.shape[1]}x{tissue_mask.shape[0]})")
-        except Exception as me:
-            print(f"[Worker Stage 5: Grading Note] Could not load preprocess tissue_mask from GCS: {me}")
-
-        if tissue_mask is None:
-            with OPENSLIDE_GLOBAL_LOCK:
-                thumb = slide_obj.get_thumbnail((512, 512)).convert("RGB")
-            arr = np.array(thumb).astype(float)
-            r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
-            tissue_mask = ~((r > 215) & (g > 215) & (b > 215))
+        # The colour the estimators are shown. "normalized" needs the slide's persisted stain transform;
+        # a degenerate fit cannot provide it, and the raw image never stands in for it.
+        stain = None
+        if estimators.color == "normalized":
+            stain = usable_stain_transform(db, slide.id, od_beta=od_beta)  # StainProfileMissingError: run preprocess again
+            if stain is None:
+                raise DegenerateStainProfileError(
+                    f"the estimators are configured for normalized colour but slide {slide_id}'s stain fit is degenerate"
+                )
 
         # 3. Maximum-Density Hotspot Patch Selection (Guarantees closest to hotspot & max tissue density)
         candidate_patches = select_max_density_hotspot_patches(
             hotspots=hotspots,
-            tissue_mask=tissue_mask,
-            slide_dims_um=slide_dims_um,
+            tissue=tissue,
             base_mpp=base_mpp,
             case_id=case_id,
             n_patches=n_patches,
             patch_size_um=patch_size_um,
-            checksum_sha256=getattr(slide, "checksum_sha256", None),
             mpp_y=float(slide.mpp_y) if getattr(slide, "mpp_y", None) else None
         )
 
-        normalizer = MacenkoNormalizer()
         extracted_patches = []
         patch_images = []
 
         for p_meta in candidate_patches:
             patch_id = p_meta["id"]
-            raw_img = extract_10x_patch(
-                slide_obj=slide_obj,
-                center_x=p_meta["center_x_px"],
-                center_y=p_meta["center_y_px"],
-                patch_size_px=patch_size_px,
-                target_mpp=resolution_um,
-                base_mpp=base_mpp
-            )
+            region = read_evidence_patch(reader, tuple(p_meta["center_um"]), patch_size_px, resolution_um, stain)
 
-            # Macenko normalization. The spec records whether it happened (M3 replaces this call site).
-            color = "normalized"
-            try:
-                norm_np = normalizer.transform(np.array(raw_img))
-            except Exception:
-                norm_np = np.array(raw_img)
-                color = "raw"
-            norm_img = Image.fromarray(norm_np)
-
-            img_buf = io.BytesIO()
-            norm_img.save(img_buf, format="PNG")
-            img_bytes = img_buf.getvalue()
+            buf = io.BytesIO()
+            Image.fromarray(region.rgb).save(buf, format="PNG")
+            img_bytes = buf.getvalue()
 
             # Upload patch directly to GCS artifacts bucket
             upload_blob_from_bytes(
@@ -432,7 +379,7 @@ def run_grading(stage_exec: StageExecution, db: Session, runtime: StageRuntime) 
 
             patch_images.append(ImageInput(
                 img_bytes,
-                InputSpec(mpp=resolution_um, size_px=(patch_size_px, patch_size_px), color=color, format="png"),
+                InputSpec(mpp=region.target_mpp, size_px=(patch_size_px, patch_size_px), color=region.color, format="png"),
             ))
             extracted_patches.append({
                 "id": patch_id,
@@ -631,7 +578,6 @@ def run_grading(stage_exec: StageExecution, db: Session, runtime: StageRuntime) 
         return output_uri, model_versions
 
     finally:
-        if slide_obj is not None:
-            with OPENSLIDE_GLOBAL_LOCK:
-                slide_obj.close()
+        if reader is not None:
+            reader.close()
         shutil.rmtree(scratch_dir, ignore_errors=True)

@@ -309,6 +309,20 @@ def test_an_unusable_icc_profile_fails_the_slide(monkeypatch):
         SlideReader("odd.svs", MPP, MPP, "svs")
 
 
+def test_a_reader_that_fails_to_build_does_not_keep_the_file_open(monkeypatch):
+    """On Windows an open handle keeps the scratch file from being deleted."""
+    slides = []
+
+    def opener(path):
+        slides.append(FakeOpenSlide(512, 512, color_profile="no such profile.icc"))
+        return slides[-1]
+
+    monkeypatch.setattr(openslide, "OpenSlide", opener)
+    with pytest.raises(IccProfileError):
+        SlideReader("odd.svs", MPP, MPP, "svs")
+    assert slides and all(slide.closed for slide in slides)
+
+
 class ScaleStain:
     """A stand-in stain transform: halves every channel."""
 

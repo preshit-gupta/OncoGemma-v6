@@ -1,10 +1,8 @@
 import uuid
 import os
-import json
 import math
 import tempfile
 from io import BytesIO
-import numpy as np
 from PIL import Image
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
@@ -16,12 +14,12 @@ from app.core.config import settings
 from app.core.gcs import (
     get_gcs_client,
     parse_gcs_uri,
-    download_blob_as_text,
     resolve_slide_raw_uri
 )
-from app.core.openslide_lock import OPENSLIDE_GLOBAL_LOCK
+from app.core.slide_access import slide_stain_transform
 from app.models.slide import Slide
-from pipeline.tiles import read_region_srgb
+from pipeline.errors import SpecimenTypeRequired, StainError
+from pipeline.slide_io import SlideReader, read_dzi_tile, require_mpp
 
 router = APIRouter(prefix="/api/v1/cases", tags=["tiles"])
 
@@ -31,93 +29,40 @@ def generate_tile_on_the_fly(
     z: int,
     c: int,
     r: int,
-    layer: str
+    layer: str,
+    db: Session | None = None
 ) -> tuple[bytes | None, str]:
     """
-    On-the-fly tile rendering fallback using OpenSlide / Pillow.
-    Computes exact tile bounding box at DeepZoom level z and returns (PNG_bytes, actual_layer).
-    Thread-safe to prevent concurrent OpenSlide C-library access violations.
+    On-the-fly tile rendering fallback through read_region_at_mpp.
+    Renders DeepZoom tile (c, r) of level z and returns (PNG_bytes, actual_layer).
+    The "norm" layer is the raw tile through the slide's persisted stain profile. A slide without a
+    usable profile (never preprocessed, degenerate fit, unknown specimen) is served as "orig", and
+    the returned layer says so; the router reports it in X-Tile-Layer.
     """
-    try:
-        # Issue #739: Validate slide dimensions are initialized
-        if getattr(slide_obj, "width_px", None) is None or getattr(slide_obj, "height_px", None) is None or slide_obj.width_px <= 0 or slide_obj.height_px <= 0:
-            return None, layer
-
-        with OPENSLIDE_GLOBAL_LOCK:
-            try:
-                import openslide
-                slide = openslide.OpenSlide(slide_file_path)
-            except Exception:
-                slide = Image.open(slide_file_path)
-
-            slide_w = float(slide_obj.width_px)
-            slide_h = float(slide_obj.height_px)
-            if not getattr(slide_obj, "mpp_x", None) or not getattr(slide_obj, "mpp_y", None):
-                raise HTTPException(status_code=400, detail="Slide is missing valid MPP (status='needs_mpp'). Cannot render tile.")
-            mpp_x = float(slide_obj.mpp_x)
-            mpp_y = float(slide_obj.mpp_y)
-
-            max_dim = max(slide_w, slide_h)
-            max_level = int(math.ceil(math.log2(max_dim))) if max_dim > 0 else 11
-
-            tile_size = 256
-            level_scale = 2 ** (z - max_level)
-
-            # Region bounding box at level 0 in pixels
-            w_px_0 = tile_size / level_scale
-            h_px_0 = tile_size / level_scale
-            x_px_0 = c * w_px_0
-            y_px_0 = r * h_px_0
-
-            # Convert to micrometers
-            x_um = x_px_0 * mpp_x
-            y_um = y_px_0 * mpp_y
-            w_um = w_px_0 * mpp_x
-            h_um = h_px_0 * mpp_y
-
-            tile_arr, _ = read_region_srgb(
-                slide,
-                x_um=x_um,
-                y_um=y_um,
-                w_um=w_um,
-                h_um=h_um,
-                out_px=(tile_size, tile_size),
-                mpp_x=mpp_x,
-                mpp_y=mpp_y
-            )
-
-            if hasattr(slide, "close"):
-                slide.close()
-
-        actual_layer = layer
-        if layer == "norm":
-            try:
-                stain_text = download_blob_as_text(settings.GCS_ARTIFACTS_BUCKET, f"cases/{slide_obj.case_id}/preprocess/stain_params.json")
-                stain_params = json.loads(stain_text)
-                from pipeline.stain import PureNumpyMacenkoNormalizer
-                norm_obj = PureNumpyMacenkoNormalizer()
-                norm_obj.stain_matrix_target = np.array(stain_params["stain_matrix"])
-                norm_obj.max_conc_target = np.array(stain_params["max_concentrations"])
-                if stain_params.get("stain_matrix_src") is not None:
-                    norm_obj.stain_matrix_src = np.array(stain_params["stain_matrix_src"])
-                if stain_params.get("max_conc_src") is not None:
-                    norm_obj.max_conc_src = np.array(stain_params["max_conc_src"])
-                tile_arr = norm_obj.transform(tile_arr)
-            except Exception as norm_err:
-                # Issue #640: If stain normalization fails, fall back to 'orig' rather than mislabeling as 'norm'
-                print(f"[Tile Router Warning] On-the-fly norm transform fallback note: {norm_err}")
-                actual_layer = "orig"
-
-        img = Image.fromarray(tile_arr)
-        buf = BytesIO()
-        img.save(buf, format="PNG")
-        return buf.getvalue(), actual_layer
-    except Exception as e:
-        print(f"[Tile Router Warning] Dynamic tile extraction error for z={z}, c={c}, r={r}: {e}")
+    # Issue #739: Validate slide dimensions are initialized
+    if getattr(slide_obj, "width_px", None) is None or getattr(slide_obj, "height_px", None) is None or slide_obj.width_px <= 0 or slide_obj.height_px <= 0:
         return None, layer
 
+    require_mpp(slide_obj)
 
-def stream_slide_tile(slide: Slide, layer: str, z: int, filename: str, case_id: uuid.UUID | None = None) -> Response:
+    actual_layer = layer
+    stain = None
+    if layer == "norm":
+        try:
+            stain = slide_stain_transform(db, slide_obj)
+        except (StainError, SpecimenTypeRequired) as unavailable:
+            print(f"[Tile Router Warning] normalised tile unavailable, serving the original layer: {unavailable}")
+            actual_layer = "orig"
+
+    with SlideReader.from_slide_row(slide_file_path, slide_obj) as reader:
+        region = read_dzi_tile(reader, z, c, r, color="raw" if stain is None else "normalized", stain=stain)
+
+    buf = BytesIO()
+    Image.fromarray(region.rgb).save(buf, format="PNG")
+    return buf.getvalue(), actual_layer
+
+
+def stream_slide_tile(slide: Slide, layer: str, z: int, filename: str, case_id: uuid.UUID | None = None, db: Session | None = None) -> Response:
     # Issue #211: Validate layer parameter
     if layer not in ("orig", "norm"):
         raise HTTPException(
@@ -212,7 +157,7 @@ def stream_slide_tile(slide: Slide, layer: str, z: int, filename: str, case_id: 
         gcs_uri_original = resolve_slide_raw_uri(cid, slide) or slide.gcs_uri_original or f"gs://{settings.GCS_RAW_BUCKET}/cases/{cid}/{slide.id}.svs"
         raw_bucket_name, blob_name = parse_gcs_uri(gcs_uri_original)
         slide_ext = os.path.splitext(blob_name)[1] or ".svs"
-        
+
         cache_dir = os.path.join(tempfile.gettempdir(), "og_slides_cache")
         local_slide_path = os.path.join(cache_dir, f"{slide.id}{slide_ext}")
 
@@ -223,7 +168,8 @@ def stream_slide_tile(slide: Slide, layer: str, z: int, filename: str, case_id: 
                 z=target_z,
                 c=c,
                 r=r,
-                layer=target_layer
+                layer=target_layer,
+                db=db
             )
             if tile_bytes:
                 tile_headers = dict(no_cache_headers)
@@ -267,7 +213,7 @@ def get_tile(
     slide = db.scalars(select(Slide).where(Slide.case_id == case_id)).first()
     if not slide:
         raise HTTPException(status_code=404, detail="Slide not found for case")
-    return stream_slide_tile(slide, layer, z, filename, case_id=case_id)
+    return stream_slide_tile(slide, layer, z, filename, case_id=case_id, db=db)
 
 
 @router.get("/tiles/{slide_id}/{layer}/{z}/{filename}")
@@ -281,5 +227,4 @@ def get_tile_direct(
     slide = db.get(Slide, slide_id)
     if not slide:
         raise HTTPException(status_code=404, detail="Slide not found")
-    return stream_slide_tile(slide, layer, z, filename)
-
+    return stream_slide_tile(slide, layer, z, filename, db=db)

@@ -147,12 +147,20 @@ class TissueMask:
         tissue = self.array[row0:row1, col0:col1]
         return float((weight * tissue).sum() / (math.pi * radius**2))
 
+    def fraction_grid(
+        self, cell_w_um: float, cell_h_um: float, n_cols: int, n_rows: int, origin_um: tuple[float, float] = (0.0, 0.0)
+    ) -> np.ndarray:
+        """Tissue fraction of every cell of a grid starting at ``origin_um``, shape (n_rows, n_cols).
+
+        Each cell is exact (see ``fraction_in_box_um``); the grid may extend past the slide, and the
+        part off the slide counts as non-tissue.
+        """
+        x0, y0 = np.meshgrid(origin_um[0] + np.arange(n_cols) * cell_w_um, origin_um[1] + np.arange(n_rows) * cell_h_um)
+        return self.fractions_of_boxes_um(x0, y0, x0 + cell_w_um, y0 + cell_h_um)
+
     def at_mpp(self, mpp: float, width_px: int, height_px: int) -> np.ndarray:
         """The mask on another pixel grid over the same origin: True where at least half the pixel is tissue."""
-        columns, rows = np.arange(width_px), np.arange(height_px)
-        x0, y0 = np.meshgrid(columns * mpp, rows * mpp)
-        fractions = self.fractions_of_boxes_um(x0, y0, x0 + mpp, y0 + mpp)
-        return fractions >= 0.5
+        return self.fraction_grid(mpp, mpp, width_px, height_px) >= 0.5
 
     def tiles(self, tile_um: float, min_fraction: float) -> Iterator[TileRef]:
         """Whole tiles of a grid from the slide origin, in row-major order, with at least ``min_fraction`` tissue."""
