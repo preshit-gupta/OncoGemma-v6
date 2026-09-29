@@ -29,6 +29,7 @@ from app.core.config_types import (
     PositiveInt,
     StrictModel,
 )
+from app.core.fallbacks import FallbackPolicy
 from app.core.model_registry import ModelRegistry
 
 # Settings fields that configs/models.yaml may reference as ${NAME}. Anything
@@ -41,6 +42,7 @@ REGISTRY_VARIABLES = (
     "VERTEX_MEDGEMMA_ENDPOINT_ID",
     "VERTEX_MEDGEMMA_LOCATION",
     "GEMINI_REFEREE_MODEL",
+    "GCP_REGION",
 )
 
 # Each Nottingham component is scored 1-3, so the sum of the three lies in 3..9.
@@ -341,6 +343,7 @@ class PricingConfig(StrictModel):
 class PipelineConfig(StrictModel):
     """One field per ``configs/<name>.yaml`` file, plus the prompt templates."""
 
+    fallbacks: FallbackPolicy
     mitosis: MitosisConfig
     models: ModelRegistry
     pricing: PricingConfig

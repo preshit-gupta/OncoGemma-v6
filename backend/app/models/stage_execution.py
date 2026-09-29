@@ -1,10 +1,11 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, Integer, Text, DateTime, ForeignKey, UniqueConstraint, Index, JSON
+from sqlalchemy import String, Integer, Text, DateTime, ForeignKey, UniqueConstraint, Index, JSON, CheckConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import JSONB
 
 from app.core.db import Base
+from app.core.run_context import RunMode
 from app.models.base import GUID
 
 JSONType = JSON().with_variant(JSONB, "postgresql")
@@ -25,6 +26,10 @@ class StageExecution(Base):
     
     model_versions: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     config_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    # clinical | eval | shadow (SPEC-01 §3.2). Handlers read it through DecisionContext only.
+    run_mode: Mapped[str] = mapped_column(
+        String, nullable=False, default=RunMode.CLINICAL.value, server_default=RunMode.CLINICAL.value
+    )
     
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -39,4 +44,5 @@ class StageExecution(Base):
     __table_args__ = (
         UniqueConstraint("case_id", "stage", "attempt", name="uq_stage_execution_attempt"),
         Index("ix_stage_poll", "status", "stage"),
+        CheckConstraint("run_mode IN ('clinical', 'eval', 'shadow')", name="ck_stage_executions_run_mode"),
     )

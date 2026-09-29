@@ -7,6 +7,8 @@ Finding #405: Guarantees that the test suite runs 100% offline and isolated by d
 - Sets ENV="test" to ensure test runtime configuration.
 - Sets RUN_IN_PROCESS_WORKER="false" so TestClient lifespans do not start the polling
   worker, which would share the in-memory SQLite connection with requests from another thread.
+- Fails any test that asks for real Google credentials (forbid_real_google_credentials).
+  Model calls in tests go through gateway fakes (tests/fakes), never a live client.
 """
 
 import os
@@ -42,6 +44,42 @@ def pipeline_config():
     from app.core.pipeline_config import init_pipeline_config
 
     return init_pipeline_config()
+
+
+class RealGoogleCredentialsRequested(RuntimeError):
+    """A test reached code that would authenticate to Google with real credentials."""
+
+
+@pytest.fixture(scope="session")
+def empty_gcloud_config(tmp_path_factory):
+    return tmp_path_factory.mktemp("no_gcloud_config")
+
+
+@pytest.fixture(autouse=True)
+def forbid_real_google_credentials(monkeypatch, empty_gcloud_config):
+    """Fail the test if anything asks for Application Default Credentials.
+
+    Every Google client (Vertex AI, Gemini, Cloud Storage) authenticates through
+    ``google.auth.default``. The refusal is recorded as well as raised, because v5 code
+    paths still catch broad exceptions and would otherwise hide it.
+    """
+    import google.auth
+    import google.auth._default
+
+    requests = []
+
+    def refuse(*args, **kwargs):
+        requests.append(kwargs.get("scopes"))
+        raise RealGoogleCredentialsRequested("tests must use gateway fakes, not real Google credentials")
+
+    monkeypatch.setattr(google.auth, "default", refuse)
+    monkeypatch.setattr(google.auth._default, "default", refuse)
+    # Belt and braces for references bound before the patch: hide the developer's gcloud ADC.
+    monkeypatch.setenv("CLOUDSDK_CONFIG", str(empty_gcloud_config))
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    yield
+    if requests:
+        pytest.fail(f"test requested real Google credentials {len(requests)} time(s); use gateway fakes")
 
 
 @pytest.fixture(autouse=True)

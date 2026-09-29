@@ -254,7 +254,7 @@ def test_worker_stamps_config_hash_on_the_execution():
         db.commit()
 
     with patch("worker.main.SessionLocal", Session), \
-         patch("worker.main.HANDLERS", {"qc": lambda st, db: ("gs://out.json", {})}):
+         patch("worker.main.HANDLERS", {"qc": lambda st, db, rt: ("gs://out.json", {})}):
         assert poll_and_execute_single_task() is True
 
     with Session() as db:
