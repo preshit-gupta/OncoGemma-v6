@@ -2,11 +2,14 @@ import { apiFetch, getCookie } from "./api/auth";
 
 export const API_BASE = "";
 
+export type SpecimenType = "resection" | "core_biopsy";
+
 export interface Case {
   id: string;
   created_by: string;
   status: string;
   created_at: string;
+  specimen_type: SpecimenType | "unknown";
 }
 
 export interface CaseDetail extends Case {
@@ -86,13 +89,28 @@ export async function fetchCases(): Promise<Case[]> {
   return res.json();
 }
 
-export async function createCase(): Promise<Case> {
+export async function createCase(specimenType: SpecimenType): Promise<Case> {
   const res = await apiFetch(`${API_BASE}/api/v1/cases`, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ specimen_type: specimenType }),
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => null);
     throw new Error(formatApiError(errData, "Failed to create case"));
+  }
+  return res.json();
+}
+
+export async function updateCaseSpecimenType(caseId: string, specimenType: SpecimenType) {
+  const res = await apiFetch(`${API_BASE}/api/v1/cases/${caseId}/specimen-type`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ specimen_type: specimenType }),
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => null);
+    throw new Error(formatApiError(errData, `Failed to set specimen type (${res.status})`));
   }
   return res.json();
 }
