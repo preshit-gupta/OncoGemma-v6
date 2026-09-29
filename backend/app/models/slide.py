@@ -42,3 +42,4 @@ class Slide(Base):
     )
 
     case = relationship("Case", back_populates="slides")
+    stain_profiles = relationship("StainProfile", cascade="all, delete-orphan", passive_deletes=True)

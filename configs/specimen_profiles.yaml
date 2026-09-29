@@ -1,0 +1,34 @@
+# Per-specimen-type settings (SPEC-04 §3.2). Values are proposals, tuned on the validation splits in P1.
+# The case's specimen_type picks the profile. This file is part of PipelineConfig and its hash.
+schema_version: 1
+
+profiles:
+  resection:
+    stain_fit:
+      n_patches: 50 # patches sampled over the tissue mask
+      patch_um: 512.0 # 512 x 512 µm ...
+      fit_mpp: 1.0 # ... read at ~10x
+      min_sat_mean: 0.05 # patch mean HSV saturation below this is glass or fat
+      sparse_below: 10 # fewer valid patches than this: fit_status 'sparse'
+      od_beta: 0.15 # stained-tissue pixel: some channel optical density >= this; the transform passes the rest through
+      angle_percentile: 1.0 # Macenko stain-vector angle percentile
+      conc_percentile: 99.0 # concentration percentile taken as each stain's maximum
+      min_angle_spread_rad: 0.25 # tissue pixels must span this angle in the stain plane, else the fit is degenerate
+      min_tissue_pixels: 5000 # fewer stained pixels than this in the mosaic: degenerate
+    stain_target:
+      ref: v5_patch@v1 # replaced by tcga_train_median@v1 once the SPEC-02 train split exists
+
+  core_biopsy:
+    stain_fit:
+      n_patches: 30
+      patch_um: 256.0
+      fit_mpp: 1.0
+      min_sat_mean: 0.05
+      sparse_below: 8
+      od_beta: 0.15
+      angle_percentile: 1.0
+      conc_percentile: 99.0
+      min_angle_spread_rad: 0.25
+      min_tissue_pixels: 5000
+    stain_target:
+      ref: v5_patch@v1

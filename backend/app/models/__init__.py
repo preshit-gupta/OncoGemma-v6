@@ -7,6 +7,7 @@ from app.models.detection import Detection
 from app.models.hpf_site import HpfSite
 from app.models.grading import Grading
 from app.models.decision_record import DecisionRecord
+from app.models.stain_profile import StainProfile
 
 __all__ = [
     "Case",
@@ -18,4 +19,5 @@ __all__ = [
     "HpfSite",
     "Grading",
     "DecisionRecord",
+    "StainProfile",
 ]
