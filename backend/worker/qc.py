@@ -19,12 +19,13 @@ from app.models.stage_execution import StageExecution
 from app.models.audit import AuditEvent
 from pipeline.stain import fit_macenko_stain
 from pipeline.qc_checks import run_all_qc_checks
+from worker.runtime import StageRuntime
 
-def run_qc(stage_execution: StageExecution, session: Session) -> tuple[str, dict]:
+def run_qc(stage_execution: StageExecution, session: Session, runtime: StageRuntime) -> tuple[str, dict]:
     """
     QC worker handler:
     1. Downloads slide directly from GCS.
-    2. Runs simplified QC checks suite (coverage & focus sharpness).
+    2. Runs the QC check suite with the injected ``configs/qc.yaml`` thresholds.
     3. Evaluates overall verdict ('pass', 'warn', 'fail').
     4. Uploads qc/output.json directly to GCS.
     5. Updates stage status.
@@ -90,7 +91,8 @@ def run_qc(stage_execution: StageExecution, session: Session) -> tuple[str, dict
             mpp_x=mpp_x,
             mpp_y=mpp_y,
             stain_params=stain_params,
-            config_path="configs/qc.yaml"
+            config=runtime.config.qc,
+            config_hash=runtime.ctx.config_hash
         )
 
         if hasattr(slide, "close"):

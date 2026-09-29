@@ -118,8 +118,11 @@ def test_greedy_place_hpfs_overlap_relaxation_fallback():
             assert dist >= 393.0 - 1e-2
 
     # Verify area-normalized scoring uses actual counted area per PRD 04 §4.2
+    from app.core.pipeline_config import get_pipeline_config
     from pipeline.scoring import compute_nottingham_mitotic_score
-    score_res = compute_nottingham_mitotic_score(count_total=5, n_hpf=len(hpfs), radius_um=262.0)
+    score_res = compute_nottingham_mitotic_score(
+        count_total=5, n_hpf=len(hpfs), radius_um=262.0, scoring=get_pipeline_config().mitosis.scoring
+    )
     single_hpf_area = math.pi * (0.262 ** 2)
     expected_area = round(len(hpfs) * single_hpf_area, 3)
     assert score_res["n_hpf"] == len(hpfs)

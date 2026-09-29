@@ -27,6 +27,7 @@ from app.models.case import Case
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
 from app.models.audit import AuditEvent
+from worker.runtime import StageRuntime
 
 def calculate_sha256(filepath: str) -> str:
     sha = hashlib.sha256()
@@ -299,7 +300,7 @@ def upload_dzi_tree_to_gcs(dzi_files_dir: str, slide_id: str):
     if failures:
         raise RuntimeError(f"Pyramid upload failed for {len(failures)}/{len(tile_files)} tiles: {failures[:5]}")
 
-def run_ingest(stage_execution: StageExecution, session: Session) -> tuple[str, dict]:
+def run_ingest(stage_execution: StageExecution, session: Session, runtime: StageRuntime) -> tuple[str, dict]:
     """
     Ingest handler logic for worker execution.
     1. Downloads raw WSI from GCS raw bucket.

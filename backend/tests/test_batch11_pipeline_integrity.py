@@ -18,6 +18,7 @@ from app.models.stage_execution import StageExecution
 from app.models.audit import AuditEvent
 from worker.ingest import upload_dzi_tree_to_gcs, run_ingest
 from worker.qc import run_qc
+from tests.fakes.runtime import make_runtime
 from worker.preprocess import generate_norm_dzi_pyramid
 
 client = TestClient(app)
@@ -184,7 +185,7 @@ def test_qc_pass_auto_chains_triage():
 
         try:
             # Run QC handler
-            out_ref, versions = run_qc(qc_stage, db)
+            out_ref, versions = run_qc(qc_stage, db, make_runtime(qc_stage))
         finally:
             worker.qc.run_all_qc_checks = orig_run_qc_checks
 

@@ -80,10 +80,11 @@ def _create_approved_grading_data():
         }
         for i in range(1, 25)
     ]
-    # 0 mitoses across 10 HPFs -> mitotic score = 1
+    # 0 mitoses across 10 HPFs -> mitotic score = 1 (the worker records each HPF's radius)
     hpfs = [
         {
             "seq": i,
+            "radius_um": 262.0,
             "mitotic_count": 0,
             "review_status": "approved"
         }

@@ -12,7 +12,6 @@ import math
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Literal, get_args
-import yaml
 from fastapi import APIRouter, Depends, HTTPException, status, Response
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
@@ -22,6 +21,7 @@ from app.core.config import settings
 from app.core.auth import get_current_user, CurrentUser
 from app.core.gcs import download_blob_as_bytes
 from app.core.db import get_db
+from app.core.pipeline_config import get_pipeline_config
 from app.models.case import Case
 from app.models.stage_execution import StageExecution
 from app.models.hpf_site import HpfSite
@@ -36,7 +36,6 @@ from pipeline.grading import (
     calculate_mitotic_score_from_detections_and_hpfs,
     aggregate_grading_findings,
     validate_grading_invariants,
-    load_scoring_config
 )
 
 router = APIRouter(prefix="/api/v1/stages/grading", tags=["grading"])
@@ -168,21 +167,26 @@ def _build_grading_stage_data_dict(
     db: Session
 ) -> Dict[str, Any]:
     case_uid = to_uuid(case_id)
-    scoring_cfg = load_scoring_config()
+    config = get_pipeline_config()
+    scoring_cfg, mitotic_scoring = config.scoring, config.mitosis.scoring
 
     if not grading_record or not grading_record.machine:
         hpf_sites = list(db.scalars(select(HpfSite).where(HpfSite.case_id == case_uid)).all())
         confirmed_dets = list(db.scalars(select(Detection).where(Detection.case_id == case_uid, Detection.label == "mitosis")).all())
-        m_score = 1
+        # No mitotic score until Stage 4 has HPFs or an output with a score.
+        m_score = None
         total_mitoses = 0
         if hpf_sites and confirmed_dets:
             cands_for_score = [{"id": d.id, "centroid_um": d.centroid_um, "label": "mitosis"} for d in confirmed_dets]
             hpfs_for_score = [{"seq": h.seq, "center_um": h.center_um, "radius_um": h.radius_um, "count": 0} for h in hpf_sites]
-            total_mitoses, m_score = calculate_mitotic_score_from_detections_and_hpfs(cands_for_score, hpfs_for_score)
+            total_mitoses, m_score = calculate_mitotic_score_from_detections_and_hpfs(
+                cands_for_score, hpfs_for_score, mitotic_scoring
+            )
         elif hpf_sites:
-            hpf_counts = [getattr(h, "mitotic_count", 0) for h in hpf_sites]
-            r_um = float(getattr(hpf_sites[0], "radius_um", 262.0) or 262.0)
-            total_mitoses, m_score = calculate_mitotic_score_from_hpfs(hpf_counts, radius_um=r_um)
+            hpf_counts = [h.mitotic_count for h in hpf_sites]
+            total_mitoses, m_score = calculate_mitotic_score_from_hpfs(
+                hpf_counts, mitotic_scoring, radius_um=float(hpf_sites[0].radius_um)
+            )
         else:
             try:
                 m_bytes = download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_id}/mitosis/output.json")
@@ -191,7 +195,7 @@ def _build_grading_stage_data_dict(
                     m_score = m_data["summary"]["mitotic_score"]
                     total_mitoses = m_data["summary"].get("total_mitoses", 0)
             except Exception:
-                m_score = 1
+                m_score = None
                 total_mitoses = 0
 
 
@@ -303,10 +307,13 @@ def _build_grading_stage_data_dict(
             h["user_mitotic_count"] if h.get("user_mitotic_count") is not None else h.get("mitotic_count", 0)
             for h in merged_hpfs
         ]
-        tot_mitoses, calc_mitotic_score = calculate_mitotic_score_from_hpfs(hpf_counts, scoring_cfg)
+        tot_mitoses, calc_mitotic_score = calculate_mitotic_score_from_hpfs(
+            hpf_counts, mitotic_scoring, radius_um=float(merged_hpfs[0]["radius_um"])
+        )
     else:
+        # Without HPFs the stored score stands; with none, the grade needs a human (never a default).
         tot_mitoses = 0
-        calc_mitotic_score = grading_record.mitotic_score if grading_record else 1
+        calc_mitotic_score = grading_record.mitotic_score
 
     tubule_dicts = [
         {
@@ -732,12 +739,19 @@ def recompute_grade_preview(payload: RecomputeGradePayload, db: Session = Depend
     case_uid = to_uuid(payload.case_id)
     grading_record = db.scalars(select(Grading).where(Grading.case_id == case_uid)).first()
 
-    t_score = payload.tubule_score or (grading_record.tubule_score if grading_record else 2)
-    p_score = payload.pleo_score or (grading_record.pleo_score if grading_record else 2)
-    m_score = payload.mitotic_score or (grading_record.mitotic_score if grading_record else 2)
+    t_score = payload.tubule_score or (grading_record.tubule_score if grading_record else None)
+    p_score = payload.pleo_score or (grading_record.pleo_score if grading_record else None)
+    m_score = payload.mitotic_score or (grading_record.mitotic_score if grading_record else None)
+    missing = [name for name, score in (("tubule", t_score), ("pleo", p_score), ("mitotic", m_score)) if score is None]
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot preview a grade without the {', '.join(missing)} score(s); none is assumed.",
+        )
 
-    nottingham_sum, grade = calculate_nottingham_grade(t_score, p_score, m_score)
-    validate_grading_invariants(t_score, p_score, m_score, nottingham_sum, grade)
+    scoring_cfg = get_pipeline_config().scoring
+    nottingham_sum, grade = calculate_nottingham_grade(t_score, p_score, m_score, scoring_cfg)
+    validate_grading_invariants(t_score, p_score, m_score, nottingham_sum, grade, scoring_cfg)
 
     is_overridden = False
     if grading_record:
@@ -925,7 +939,7 @@ def confirm_grading_stage(
             grading_record.type_confirmed_by = actor
 
     # 1.5 Validate consistency between tubule_percent and tubule_score (#613)
-    scoring_cfg = load_scoring_config()
+    scoring_cfg = get_pipeline_config().scoring
     eff_tubule_pct = payload.tubule_percent
     if eff_tubule_pct is None and isinstance(payload.overrides.get("tubule"), dict):
         eff_tubule_pct = payload.overrides["tubule"].get("percent")
@@ -999,7 +1013,6 @@ def confirm_grading_stage(
             })
 
     # 5. Authoritative Server-Side Recompute & Pure Code Invariant Check
-    scoring_cfg = load_scoring_config()
     computed_sum, computed_grade = calculate_nottingham_grade(
         payload.tubule_score, payload.pleo_score, payload.mitotic_score, scoring_cfg
     )

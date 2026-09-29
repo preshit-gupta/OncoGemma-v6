@@ -28,13 +28,13 @@ from sqlalchemy.pool import StaticPool
 from app.main import app
 from app.core.db import Base, get_db
 from app.core.openslide_lock import OPENSLIDE_GLOBAL_LOCK
+from app.core.pipeline_config import get_pipeline_config
 from app.models.case import Case
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
 from app.models.grading import Grading
 from app.models.hpf_site import HpfSite
 from pipeline.grading import (
-    get_grading_config_hash,
     validate_grading_invariants,
     aggregate_grading_findings,
     calculate_tubule_score,
@@ -97,29 +97,31 @@ def test_openslide_lock_reentrancy():
 # ---------------------------------------------------------------------------
 
 def test_nottingham_grading_config_hash_and_invariants():
-    """Verify get_grading_config_hash and dynamic config-driven validate_grading_invariants."""
-    h = get_grading_config_hash()
+    """Verify the pipeline config hash and dynamic config-driven validate_grading_invariants."""
+    from app.core.pipeline_config import NottinghamGradingConfig, get_config_hash
+
+    h = get_config_hash()
     assert isinstance(h, str)
-    assert len(h) in (16, 64)
+    assert len(h) == 64
+    scoring = get_pipeline_config().scoring
 
     # Valid combinations
-    validate_grading_invariants(tubule_score=1, pleo_score=1, mitotic_score=1, nottingham_sum=3, grade=1)
-    validate_grading_invariants(tubule_score=2, pleo_score=2, mitotic_score=2, nottingham_sum=6, grade=2)
-    validate_grading_invariants(tubule_score=3, pleo_score=3, mitotic_score=3, nottingham_sum=9, grade=3)
+    validate_grading_invariants(tubule_score=1, pleo_score=1, mitotic_score=1, nottingham_sum=3, grade=1, cfg=scoring)
+    validate_grading_invariants(tubule_score=2, pleo_score=2, mitotic_score=2, nottingham_sum=6, grade=2, cfg=scoring)
+    validate_grading_invariants(tubule_score=3, pleo_score=3, mitotic_score=3, nottingham_sum=9, grade=3, cfg=scoring)
 
     # Inconsistent sum
     with pytest.raises(ValueError, match="nottingham_sum"):
-        validate_grading_invariants(tubule_score=2, pleo_score=2, mitotic_score=2, nottingham_sum=7, grade=2)
+        validate_grading_invariants(tubule_score=2, pleo_score=2, mitotic_score=2, nottingham_sum=7, grade=2, cfg=scoring)
 
     # Inconsistent grade
     with pytest.raises(ValueError, match="grade"):
-        validate_grading_invariants(tubule_score=2, pleo_score=2, mitotic_score=2, nottingham_sum=6, grade=3)
+        validate_grading_invariants(tubule_score=2, pleo_score=2, mitotic_score=2, nottingham_sum=6, grade=3, cfg=scoring)
 
     # Custom config thresholds passed via cfg
-    custom_cfg = {
-        "grade1_max_sum": 6,  # Grade 1 up to sum 6
-        "grade2_max_sum": 7,
-    }
+    custom_cfg = scoring.model_copy(update={
+        "nottingham_grading": NottinghamGradingConfig(grade1_max_sum=6, grade2_max_sum=7),  # Grade 1 up to sum 6
+    })
     # Sum 6 with Grade 1 should succeed with custom_cfg
     validate_grading_invariants(
         tubule_score=2, pleo_score=2, mitotic_score=2, nottingham_sum=6, grade=1, cfg=custom_cfg
@@ -136,7 +138,7 @@ def test_grading_empty_evidence_handling():
         tubule_responses=[],
         pleo_responses=[],
         mitotic_score=1,
-        cfg={"weights": {"tubule": 0.5, "pleo": 0.5}},
+        cfg=get_pipeline_config().scoring,
     )
     assert result["needs_human"] is True
     assert "empty_evidence_set" in result["flags"]
