@@ -52,6 +52,7 @@ def test_pydantic_v2_schema_from_attributes():
         patient_id_hash = "hash_xyz"
         clinical_data = {"age": 52, "procedure": "lumpectomy"}
         status = "open"
+        specimen_type = "resection"
         current_stage = "triage"
         created_at = datetime.now(timezone.utc)
         updated_at = datetime.now(timezone.utc)
