@@ -342,22 +342,23 @@ class TCGABRCAAdapter(DatasetAdapter):
                 tss = parts[1]
 
         return {
-            "specimen_type": "resection",
+            "specimen_type": self.config.get("specimen_type", "resection"),
             "mpp_override": mpp,
-            "mpp_source": "file" if mpp is not None else "dataset_doc",
+            "mpp_source": self.config.get("default_mpp_source", "file") if mpp is not None else self.config.get("fallback_mpp_source", "dataset_doc"),
             "native_mag": native_mag,
             "scanner": scanner or self.config.get("default_scanner"),
             "tss": str(tss) if tss else None,
         }
 
-    def labels(self) -> pd.DataFrame:
+    def labels(self, label_path: Path | str | None = None) -> pd.DataFrame:
         """
         Load ground truth labels for TCGA-BRCA slides (histologic type and grades).
+        SPEC-02 §3.1.
         """
-        label_path = Path(__file__).parent / "labels" / "tcga_histotype.csv"
-        if label_path.exists():
-            return pd.read_csv(label_path)
-        return pd.DataFrame(columns=["patient_id", "slide_id", "gt_histotype", "gt_grade"])
+        path = Path(label_path) if label_path else Path(__file__).parent / "labels" / "tcga_histotype.csv"
+        if not path.exists():
+            raise FileNotFoundError(f"TCGA ground-truth histologic type file not found: {path}")
+        return pd.read_csv(path)
 
     def to_manifest(
         self,

@@ -2,10 +2,13 @@
 
 datasets:
   tcga_brca_dx:
-    chunk_size_bytes: 8388608  # 8 MiB
+    chunk_size_bytes: 8388608  # 8 MiB per SPEC-02 §3.1
     api_url: "https://api.gdc.cancer.gov"
     timeout_seconds: 60.0
     default_scanner: "Aperio"
+    specimen_type: "resection"
+    default_mpp_source: "file"
+    fallback_mpp_source: "dataset_doc"
 
   bcnb:
     mpp: null                     # µm/px of the JPG images (required)
@@ -19,12 +22,26 @@ datasets:
       format: null                # annotation format and location
     split_source: "official"
     license_ref: null
+    default_scanner: "iScan Coreo"
+    specimen_type: "core_biopsy"
+    mpp_source: "dataset_doc"
+    gt_label_source: "clinical_records"
+    gt_label_confidence: "high"
 
   midogpp:
-    # Resolution comes from each image's TIFF tags (midogpp.image_mpp); MIDOG++.json has none.
+    # Resolution comes primarily from each image's TIFF tags (midogpp.image_mpp); MIDOG++.json has none.
     categories:
       "mitotic figure": "MF"
-      "not mitotic figure": "imposter" # the name in the published MIDOG++.json
+      "not mitotic figure": "imposter" # verified against published MIDOG++.json
+    scanner_mpp:
+      "Hamamatsu XR": 0.23
+      "Hamamatsu S360": 0.23
+      "Leica CS2": 0.25
+    specimen_type: "resection"
+    mpp_source: "file"
+    fallback_mpp_source: "dataset_doc"
+    gt_label_source: "consensus"
+    gt_label_confidence: "high"
 
   bcss:
     class_map:
@@ -36,3 +53,8 @@ datasets:
       5: "benign_epithelium"
     default_mpp: 0.25
     default_scanner: "Aperio"
+    default_native_mag: 40.0
+    specimen_type: "resection"
+    mpp_source: "dataset_doc"
+    gt_label_source: "expert_consensus"
+    gt_label_confidence: "high"

@@ -83,6 +83,8 @@ def validate_manifest(df: pd.DataFrame) -> None:
             sha = str(row["sha256"]).strip()
             if not SHA256_REGEX.match(sha):
                 errors.append(f"Row {idx}: 'sha256' must be a 64-char hex string (got '{sha}')")
+            elif sha == "0" * 64:
+                errors.append(f"Row {idx}: 'sha256' cannot be a dummy placeholder string of 64 zeros")
 
         # Enum: specimen_type
         if "specimen_type" in df.columns and not pd.isna(row["specimen_type"]):

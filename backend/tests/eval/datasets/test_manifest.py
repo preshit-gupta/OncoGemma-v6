@@ -90,6 +90,13 @@ def test_validation_invalid_sha256():
         validate_manifest(df)
 
 
+def test_validation_dummy_zero_sha256_fails():
+    row = make_valid_manifest_row(sha256="0" * 64)
+    df = pd.DataFrame([row])
+    with pytest.raises(ValueError, match="dummy placeholder"):
+        validate_manifest(df)
+
+
 def test_validation_invalid_enums():
     # Invalid specimen_type
     row_st = make_valid_manifest_row(specimen_type="blood_sample")
