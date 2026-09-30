@@ -127,8 +127,6 @@ def upgrade() -> None:
     op.create_table(
         'qa_items',
         sa.Column('patient_id', sa.Text(), nullable=False),
-        sa.Column('dataset', sa.Text(), nullable=False),
-        sa.Column('protocol_version', sa.Text(), nullable=False),
         sa.Column('report_text_url', sa.Text(), nullable=False),
         sa.Column('regex_data', JSONType, server_default='{}', nullable=False),
         sa.Column('llm_data', JSONType, server_default='{}', nullable=False),
