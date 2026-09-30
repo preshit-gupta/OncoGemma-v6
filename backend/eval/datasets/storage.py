@@ -4,9 +4,13 @@ SPEC-02 §3 and WP-5.2.
 """
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import BinaryIO, Protocol
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
+from urllib.request import url2pathname
+
+COPY_CHUNK_BYTES = 8 * 1024 * 1024  # 8 MiB, the SPEC-02 §3.1 download chunk
 
 
 class Storage(Protocol):
@@ -97,6 +101,44 @@ class GcsStorage(Storage):
         return f"gs://{self.bucket_name}/{self._blob_name(relpath)}"
 
 
+def local_path_from_uri(uri: str) -> Path:
+    """Local path of a ``file://`` URI (or a plain path), correct on both POSIX and Windows.
+
+    Raises ValueError for any other scheme, such as ``gs://``.
+    """
+    parsed = urlparse(uri)
+    if parsed.scheme == "file":
+        return Path(url2pathname(unquote(parsed.path)))
+    if parsed.scheme == "" or (len(parsed.scheme) == 1 and uri[1:3] in (":/", ":\\")):
+        return Path(uri)  # plain path, including a Windows drive letter such as D:/...
+    raise ValueError(f"not a local file URI or path: {uri!r}")
+
+
+def _stream_hashes(source: Path, writer: BinaryIO | None, chunk_size: int) -> tuple[str, str, int]:
+    sha256 = hashlib.sha256()
+    md5 = hashlib.md5()
+    size = 0
+    with open(source, "rb") as src:
+        while chunk := src.read(chunk_size):
+            if writer is not None:
+                writer.write(chunk)
+            sha256.update(chunk)
+            md5.update(chunk)
+            size += len(chunk)
+    return sha256.hexdigest(), md5.hexdigest(), size
+
+
+def hash_file(source: Path, chunk_size: int = COPY_CHUNK_BYTES) -> tuple[str, str, int]:
+    """(sha256, md5, size_bytes) of a local file, read in chunks."""
+    return _stream_hashes(source, None, chunk_size)
+
+
+def copy_with_hashes(source: Path, dest: Storage, relpath: str, chunk_size: int = COPY_CHUNK_BYTES) -> tuple[str, str, int]:
+    """Stream ``source`` into ``dest`` at ``relpath``; return (sha256, md5, size_bytes) of the bytes written."""
+    with dest.open_write(relpath) as writer:
+        return _stream_hashes(source, writer, chunk_size)
+
+
 def storage_from_uri(uri: str) -> Storage:
     """Factory creating LocalStorage or GcsStorage from a target URI string."""
     if uri.startswith("gs://"):
@@ -104,11 +146,4 @@ def storage_from_uri(uri: str) -> Storage:
         bucket = parsed.netloc
         prefix = parsed.path.lstrip("/")
         return GcsStorage(bucket_name=bucket, prefix=prefix)
-    if uri.startswith("file://"):
-        # Strip scheme for local path
-        path_str = uri[7:]
-        # On Windows file:///D:/... -> D:/...
-        if path_str.startswith("/") and len(path_str) > 2 and path_str[2] == ":":
-            path_str = path_str[1:]
-        return LocalStorage(Path(path_str))
-    return LocalStorage(Path(uri))
+    return LocalStorage(local_path_from_uri(uri))

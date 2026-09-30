@@ -6,7 +6,9 @@ from pathlib import Path
 from unittest.mock import MagicMock
 import pytest
 
-from eval.datasets.storage import GcsStorage, LocalStorage, storage_from_uri
+import hashlib
+
+from eval.datasets.storage import GcsStorage, LocalStorage, copy_with_hashes, hash_file, local_path_from_uri, storage_from_uri
 
 
 def test_local_storage_write_read(tmp_path: Path):
@@ -75,3 +77,33 @@ def test_storage_from_uri(tmp_path: Path):
 
     local2 = storage_from_uri(str(tmp_path))
     assert isinstance(local2, LocalStorage)
+
+
+def test_local_path_from_uri_round_trips_a_file_uri(tmp_path: Path):
+    target = (tmp_path / "a b" / "mask.png").resolve()
+    assert local_path_from_uri(target.as_uri()) == target
+
+
+def test_local_path_from_uri_keeps_posix_root():
+    # "file:///home/ci/mask.png"[8:] is the relative "home/ci/mask.png"; the path must stay rooted.
+    assert local_path_from_uri("file:///home/ci/mask.png").as_posix() == "/home/ci/mask.png"
+
+
+def test_local_path_from_uri_accepts_plain_paths_and_rejects_gcs(tmp_path: Path):
+    assert local_path_from_uri(str(tmp_path)) == tmp_path
+    with pytest.raises(ValueError, match="not a local file URI"):
+        local_path_from_uri("gs://bucket/mask.png")
+
+
+def test_copy_with_hashes_streams_and_hashes(tmp_path: Path):
+    source = tmp_path / "src.bin"
+    payload = bytes(range(256)) * 100
+    source.write_bytes(payload)
+    storage = LocalStorage(tmp_path / "dest")
+
+    sha256, md5, size = copy_with_hashes(source, storage, "x/src.bin", chunk_size=1000)
+
+    assert (sha256, md5, size) == (hashlib.sha256(payload).hexdigest(), hashlib.md5(payload).hexdigest(), len(payload))
+    assert hash_file(source) == (sha256, md5, size)
+    with storage.open_read("x/src.bin") as f:
+        assert f.read() == payload

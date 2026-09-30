@@ -2,7 +2,7 @@
 CLI entry point for dataset discovery and fetching per SPEC-02 §5.5 and WP-5.2.
 
 Usage:
-    python -m eval.datasets <key> discover --out <parquet>
+    python -m eval.datasets <key> discover --out <parquet> [--source <dir>]
     python -m eval.datasets <key> fetch --manifest <parquet> --dest <uri> --confirm-bytes <N>
 """
 from __future__ import annotations
@@ -28,6 +28,7 @@ def main(args: list[str] | None = None) -> int:
     # Discover subcommand
     discover_parser = subparsers.add_parser("discover", help="Discover remote dataset and emit parquet listing")
     discover_parser.add_argument("--out", required=True, help="Output parquet path")
+    discover_parser.add_argument("--source", help="Local dataset directory, for datasets distributed as files (e.g. bcss masks)")
 
     # Fetch subcommand
     fetch_parser = subparsers.add_parser("fetch", help="Stream slide payloads to destination storage")
@@ -40,7 +41,7 @@ def main(args: list[str] | None = None) -> int:
 
     if parsed_args.command == "discover":
         print(f"Discovering records for dataset '{parsed_args.key}'...")
-        df = adapter.discover()
+        df = adapter.discover(parsed_args.source) if parsed_args.source else adapter.discover()
         out_path = Path(parsed_args.out)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(out_path)

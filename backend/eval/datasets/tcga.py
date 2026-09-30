@@ -10,12 +10,13 @@ from typing import Any, Callable
 import httpx
 import pandas as pd
 
-from .base import DatasetAdapter, FetchedFile, FetchIntegrityError, SlideMetadataError, load_config
+from .base import DatasetAdapter, FetchedFile, FetchIntegrityError, SlideMetadataError, load_config, require_config
 from .manifest import empty_manifest, validate_manifest
 from .storage import LocalStorage, Storage
 
 GDC_API_URL = "https://api.gdc.cancer.gov"
 CHUNK_SIZE_BYTES = 8 * 1024 * 1024  # 8 MiB per SPEC-02 §3.1
+REQUIRED_KEYS = ("specimen_type", "mpp_source_with_file_mpp", "mpp_source_without_file_mpp")
 
 
 class TCGABRCAAdapter(DatasetAdapter):
@@ -27,7 +28,8 @@ class TCGABRCAAdapter(DatasetAdapter):
         http_client: httpx.Client | None = None,
         slide_reader: Callable[[pd.Series, str | None], dict[str, Any]] | None = None,
     ) -> None:
-        self.config = config or load_config().get("tcga_brca_dx", {})
+        self.config = config if config is not None else load_config().get("tcga_brca_dx", {})
+        require_config(self.config, REQUIRED_KEYS, "tcga_brca_dx")
         self.api_url = self.config.get("api_url", GDC_API_URL)
         self.chunk_size = self.config.get("chunk_size_bytes", CHUNK_SIZE_BYTES)
         self.timeout = self.config.get("timeout_seconds", 60.0)
@@ -342,11 +344,11 @@ class TCGABRCAAdapter(DatasetAdapter):
                 tss = parts[1]
 
         return {
-            "specimen_type": self.config.get("specimen_type", "resection"),
+            "specimen_type": self.config["specimen_type"],
             "mpp_override": mpp,
-            "mpp_source": self.config.get("default_mpp_source", "file") if mpp is not None else self.config.get("fallback_mpp_source", "dataset_doc"),
+            "mpp_source": self.config["mpp_source_with_file_mpp" if mpp is not None else "mpp_source_without_file_mpp"],
             "native_mag": native_mag,
-            "scanner": scanner or self.config.get("default_scanner"),
+            "scanner": scanner,
             "tss": str(tss) if tss else None,
         }
 

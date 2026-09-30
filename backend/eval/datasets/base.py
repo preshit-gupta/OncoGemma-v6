@@ -65,6 +65,16 @@ class DatasetAdapter(Protocol):
         ...
 
 
+def require_config(config: dict[str, Any], keys: Sequence[str], section: str) -> None:
+    """Raise DatasetConfigMissing naming every key of ``keys`` that is absent or null in ``config``."""
+    missing = [key for key in keys if config.get(key) is None]
+    if missing:
+        raise DatasetConfigMissing(
+            missing_keys=missing,
+            message=f"eval/datasets/config.yaml {section} is missing required keys: {', '.join(missing)}",
+        )
+
+
 def load_registry(registry_path: Path | str | None = None) -> dict[str, Any]:
     """Load dataset registry from yaml."""
     path = Path(registry_path) if registry_path else Path(__file__).parent / "registry.yaml"

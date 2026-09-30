@@ -13,7 +13,6 @@ Nothing is defaulted: an unknown category, a missing image or missing resolution
 """
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -21,13 +20,14 @@ from typing import Any
 import pandas as pd
 from PIL import Image
 
-from .base import DatasetAdapter, FetchedFile, load_config
+from .base import DatasetAdapter, FetchedFile, load_config, require_config
 from .manifest import empty_manifest, validate_manifest
-from .storage import Storage
+from .storage import Storage, copy_with_hashes, hash_file
 
 # TIFF tags (baseline): XResolution, YResolution, ResolutionUnit; unit 2 = inch, 3 = cm.
 TIFF_X_RESOLUTION, TIFF_Y_RESOLUTION, TIFF_RESOLUTION_UNIT = 282, 283, 296
 MICRONS_PER_RESOLUTION_UNIT = {2: 25400.0, 3: 10000.0}
+REQUIRED_KEYS = ("categories", "specimen_type", "mpp_source", "gt_label_source", "gt_label_confidence")
 
 
 class MIDOGppError(ValueError):
@@ -59,15 +59,16 @@ def bbox_centre(bbox: list[float]) -> tuple[float, float]:
 class MIDOGppAdapter(DatasetAdapter):
     def __init__(self, key: str = "midogpp_breast", config: dict[str, Any] | None = None) -> None:
         self.key = key
-        self.config = config or load_config().get("midogpp", {})
-        categories = self.config.get("categories")
+        self.config = config if config is not None else load_config().get("midogpp", {})
+        require_config(self.config, REQUIRED_KEYS, "midogpp")
+        categories = self.config["categories"]
         if not categories:
-            raise MIDOGppError("eval/datasets/config.yaml midogpp.categories is missing")
+            raise MIDOGppError("eval/datasets/config.yaml midogpp.categories is empty")
         self.category_map: dict[str, str] = {name.lower(): target for name, target in categories.items()}
-        self.specimen_type: str = str(self.config.get("specimen_type", "resection"))
-        self.mpp_source: str = str(self.config.get("mpp_source", "file"))
-        self.gt_label_source: str = str(self.config.get("gt_label_source", "consensus"))
-        self.gt_label_confidence: str = str(self.config.get("gt_label_confidence", "high"))
+        self.specimen_type = str(self.config["specimen_type"])
+        self.mpp_source = str(self.config["mpp_source"])
+        self.gt_label_source = str(self.config["gt_label_source"])
+        self.gt_label_confidence = str(self.config["gt_label_confidence"])
 
     def target_class(self, category_name: str) -> str:
         target = self.category_map.get(category_name.lower())
@@ -166,45 +167,23 @@ class MIDOGppAdapter(DatasetAdapter):
             w.write(payload)
         return dest.uri(relpath)
 
-    def fetch(self, row: pd.Series, dest: Storage | None = None) -> FetchedFile:
+    def fetch(self, row: pd.Series, dest: Storage | None) -> FetchedFile:
         """
-        Record or stream a MIDOG++ image payload with real SHA-256 and MD5 hash computation.
-        If dest is provided, streams the image into destination storage.
+        Hash a downloaded MIDOG++ image (SHA-256 and MD5). With ``dest``, stream it there and
+        record that copy; with ``dest=None``, record the image where it is.
         """
         path = Path(row["path"])
         if not path.is_file():
             raise FileNotFoundError(f"MIDOG++ image {path} is not downloaded")
 
-        slide_id = str(row["image_id"])
-        relpath = f"midogpp/images/{path.name}"
-        sha256_hasher = hashlib.sha256()
-        md5_hasher = hashlib.md5()
-        total_bytes = 0
-        chunk_size = 64 * 1024  # 64 KiB streaming
-
-        if dest is not None:
-            with open(path, "rb") as src, dest.open_write(relpath) as writer:
-                while chunk := src.read(chunk_size):
-                    writer.write(chunk)
-                    sha256_hasher.update(chunk)
-                    md5_hasher.update(chunk)
-                    total_bytes += len(chunk)
-            uri = dest.uri(relpath)
-        else:
-            with open(path, "rb") as src:
-                while chunk := src.read(chunk_size):
-                    sha256_hasher.update(chunk)
-                    md5_hasher.update(chunk)
-                    total_bytes += len(chunk)
+        if dest is None:
+            sha256, md5, size = hash_file(path)
             uri = path.resolve().as_uri()
-
-        return FetchedFile(
-            slide_id=slide_id,
-            uri=uri,
-            sha256=sha256_hasher.hexdigest().lower(),
-            md5=md5_hasher.hexdigest().lower(),
-            size_bytes=total_bytes,
-        )
+        else:
+            relpath = f"midogpp/images/{path.name}"
+            sha256, md5, size = copy_with_hashes(path, dest, relpath)
+            uri = dest.uri(relpath)
+        return FetchedFile(slide_id=str(row["image_id"]), uri=uri, sha256=sha256, md5=md5, size_bytes=size)
 
     def labels(self) -> pd.DataFrame:
         """Ground-truth category definitions."""
