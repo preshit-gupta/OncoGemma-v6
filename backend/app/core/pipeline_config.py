@@ -257,11 +257,18 @@ class MitosisScoringConfig(StrictModel):
     classic_area_mm2: PositiveFloat
 
 
+class MitosisReviewConfig(StrictModel):
+    """Confirmation gate: no candidate at or above this detector or referee confidence may stay unreviewed."""
+
+    gate_min_conf: Fraction
+
+
 class MitosisConfig(StrictModel):
     detector: MitosisDetectorConfig
     referee: MitosisRefereeConfig
     hpf: MitosisHpfConfig
     scoring: MitosisScoringConfig
+    review: MitosisReviewConfig
 
 
 # --- scoring.yaml -----------------------------------------------------------

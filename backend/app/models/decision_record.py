@@ -43,7 +43,9 @@ class DecisionRecord(Base):
     stage_execution_id: Mapped[uuid.UUID] = mapped_column(
         GUID, ForeignKey("stage_executions.id", ondelete="CASCADE"), nullable=False
     )
-    run_id: Mapped[uuid.UUID | None] = mapped_column(GUID, nullable=True)  # FK added with SPEC-02 validation_runs
+    run_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID, ForeignKey("validation_runs.id", name="fk_dr_run"), nullable=True
+    )
     stage: Mapped[str] = mapped_column(Text, nullable=False)
     task: Mapped[str] = mapped_column(Text, nullable=False)
     entity_type: Mapped[str] = mapped_column(Text, nullable=False)
