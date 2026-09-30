@@ -9,6 +9,7 @@ from app.models.grading import Grading
 from app.models.decision_record import DecisionRecord
 from app.models.stain_profile import StainProfile
 from app.models.user import AuthSession, User
+from app.models.idempotency import IdempotencyKeyRecord
 from app.models.validation import ValidationItem, ValidationRun
 
 __all__ = [
@@ -24,6 +25,7 @@ __all__ = [
     "StainProfile",
     "User",
     "AuthSession",
+    "IdempotencyKeyRecord",
     "ValidationRun",
     "ValidationItem",
 ]

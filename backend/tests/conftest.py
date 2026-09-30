@@ -47,6 +47,7 @@ DEFAULT_TEST_USER_ID = "test_pathologist"
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "real_auth: use the real session dependency instead of the test identity")
+    config.addinivalue_line("markers", "strict_idempotency: enforce real Idempotency-Key validation in test")
 
 
 @pytest.fixture(scope="session")
@@ -131,16 +132,29 @@ def _test_identity(request: Request):
     return CurrentUser(id=user_id, email=f"{user_id}@example.org", role=role)
 
 
+def _test_idempotency_key(request: Request):
+    import uuid
+    key = request.headers.get("Idempotency-Key")
+    return key or f"test-key-{uuid.uuid4()}"
+
+
 @pytest.fixture(autouse=True)
 def test_identity(request):
     """Sign requests in as the test user unless the test is marked ``real_auth``."""
     from app.auth.deps import current_user
+    from app.auth.idempotency import require_idempotency_key
+    from app.auth.rate_limit import limiter
     from app.auth.sessions import session_cache
     from app.main import app
 
     session_cache.clear()
+    limiter.reset()
     if request.node.get_closest_marker("real_auth") is None:
         app.dependency_overrides[current_user] = _test_identity
+    if request.node.get_closest_marker("strict_idempotency") is None:
+        app.dependency_overrides[require_idempotency_key] = _test_idempotency_key
     yield
     app.dependency_overrides.pop(current_user, None)
+    app.dependency_overrides.pop(require_idempotency_key, None)
+    limiter.reset()
     session_cache.clear()

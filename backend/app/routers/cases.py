@@ -8,10 +8,13 @@ from sqlalchemy import select
 
 from app.core.db import get_db
 from app.auth.deps import CurrentUser, require
+from app.auth.idempotency import IdempotencyContext, IdempotentRoute, idempotent
 from app.core.config import settings
+from app.core.pipeline_config import get_pipeline_config
 from app.core.gcs import (
     upload_blob_from_file,
     generate_signed_upload_url,
+    signed_upload_headers,
     get_gcs_tile_template_url,
     parse_gcs_uri,
     blob_exists,
@@ -48,7 +51,8 @@ from app.schemas.case import (
 # Longer side of the case-list thumbnail, in pixels.
 THUMBNAIL_PX = 256
 
-router = APIRouter(prefix="/api/v1/cases", tags=["cases"])
+router = APIRouter(prefix="/api/v1/cases", tags=["cases"], route_class=IdempotentRoute)
+test_router = APIRouter(prefix="/api/v1/cases", tags=["cases"])
 
 @router.post("", response_model=CaseResponse, status_code=status.HTTP_201_CREATED)
 def create_case(
@@ -78,7 +82,7 @@ def list_cases(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(require("case:read"))
 ):
-    stmt = select(Case).order_by(Case.created_at.desc())
+    stmt = select(Case).where(Case.deleted_at.is_(None)).order_by(Case.created_at.desc())
     cases = db.scalars(stmt).all()
     if not cases:
         try:
@@ -119,10 +123,7 @@ def delete_single_case_data(case_id: uuid.UUID, db: Session):
     # 5. Delete Slide records
     db.query(Slide).filter(Slide.case_id == case_id).delete(synchronize_session=False)
 
-    # 6. Delete AuditEvents
-    db.query(AuditEvent).filter(AuditEvent.case_id == case_str).delete(synchronize_session=False)
-
-    # 7. Delete Case record
+    # 6. Delete Case record (AuditEvents are append-only permanent records and are preserved)
     db.query(Case).filter(Case.id == case_id).delete(synchronize_session=False)
     db.commit()
 
@@ -143,12 +144,12 @@ def delete_single_case_data(case_id: uuid.UUID, db: Session):
         print(f"[Delete Case GCS Exception] {gcs_err}")
 
 
-@router.delete("", status_code=status.HTTP_200_OK)
+@test_router.delete("", status_code=status.HTTP_200_OK)
 def clear_all_cases(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(require("case:delete"))
 ):
-    """Clear all diagnostic cases, associated relational child data, and storage artifacts (requires case:delete)."""
+    """Clear all diagnostic cases, associated relational child data, and storage artifacts (test-only, requires case:delete)."""
     cases = db.scalars(select(Case)).all()
     count = len(cases)
     for c in cases:
@@ -163,12 +164,20 @@ def delete_case(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(require("case:delete"))
 ):
-    """Delete a single diagnostic case and all associated child data (requires case:delete)."""
+    """Soft-delete a single diagnostic case and emit an audit event (SPEC-03 §5.3.1)."""
     case_obj = db.get(Case, case_id)
-    if not case_obj:
+    if not case_obj or case_obj.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Case not found")
-    
-    delete_single_case_data(case_id, db)
+
+    case_obj.deleted_at = datetime.now(timezone.utc)
+    audit = AuditEvent(
+        case_id=str(case_id),
+        actor=user.id,
+        event_type="case_deleted",
+        payload={"soft": True, "deleted_at": case_obj.deleted_at.isoformat()}
+    )
+    db.add(audit)
+    db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -292,7 +301,8 @@ def approve_case_stage(
     stage_name: str,
     req: ApproveStageRequest | None = None,
     db: Session = Depends(get_db),
-    user: CurrentUser = Depends(require("stage:confirm"))
+    user: CurrentUser = Depends(require("stage:confirm")),
+    _idempotency: IdempotencyContext = idempotent("cases/stages/approve"),
 ):
     """Confirm a stage and queue the next one, through the same service as the stage confirm endpoints."""
     try:
@@ -320,6 +330,18 @@ def get_slide_upload_url(
     if not case_obj:
         raise HTTPException(status_code=404, detail="Case not found")
 
+    upload_cfg = get_pipeline_config().safety.signed_upload
+    if req.size_bytes > upload_cfg.max_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File size {req.size_bytes} exceeds maximum allowed size of {upload_cfg.max_bytes} bytes"
+        )
+    if req.content_type not in upload_cfg.allowed_wsi_mimes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported content type '{req.content_type}'. Allowed: {upload_cfg.allowed_wsi_mimes}"
+        )
+
     file_uuid = uuid.uuid4()
     ext = req.filename.rsplit(".", 1)[-1].lower() if "." in req.filename else "svs"
     if f".{ext}" not in ALLOWED_WSI_EXTS:
@@ -330,11 +352,12 @@ def get_slide_upload_url(
     
     blob_name = f"cases/{case_id}/{file_uuid}.{ext}"
     gcs_uri = f"gs://{settings.GCS_RAW_BUCKET}/{blob_name}"
-    upload_url = generate_signed_upload_url(settings.GCS_RAW_BUCKET, blob_name)
+    upload_url = generate_signed_upload_url(settings.GCS_RAW_BUCKET, blob_name, content_type=req.content_type)
 
     return SlideUploadUrlResponse(
         upload_url=upload_url,
-        gcs_uri=gcs_uri
+        gcs_uri=gcs_uri,
+        upload_headers=signed_upload_headers(req.content_type),
     )
 
 @router.post("/{case_id}/slide/finalize", status_code=status.HTTP_202_ACCEPTED)
@@ -463,7 +486,7 @@ def get_case_detail(
     case_obj = db.get(Case, case_id)
     if not case_obj:
         case_obj = rehydrate_case_from_gcs(str(case_id), db)
-    if not case_obj:
+    if not case_obj or case_obj.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Case not found")
 
     slides = db.scalars(select(Slide).where(Slide.case_id == case_id)).all()

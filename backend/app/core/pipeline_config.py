@@ -577,6 +577,54 @@ class AuthConfig(StrictModel):
         return frozenset(self.roles[role])
 
 
+# --- safety.yaml -------------------------------------------------------------
+
+class RateLimitsConfig(StrictModel):
+    mutating_per_user_per_min: PositiveInt
+    auth_session_per_ip_per_min: PositiveInt
+    window_seconds: PositiveInt
+    trusted_proxy_hops: PositiveInt
+
+
+class IdempotencyConfig(StrictModel):
+    ttl_hours: PositiveInt
+
+
+class SoftDeleteConfig(StrictModel):
+    retention_days: PositiveInt
+
+
+class SignedUploadConfig(StrictModel):
+    expiration_minutes: PositiveInt
+    max_bytes: PositiveInt
+    allowed_wsi_mimes: list[NonEmptyStr]
+
+
+class GeometryConfig(StrictModel):
+    max_vertices: PositiveInt
+    min_vertices: PositiveInt
+    min_area_mm2: PositiveFloat
+    max_area_mm2: PositiveFloat
+    max_overlap_area_um2: NonNegativeFloat
+
+    @model_validator(mode="after")
+    def _ranges(self) -> "GeometryConfig":
+        if not 3 <= self.min_vertices <= self.max_vertices:
+            raise ValueError("geometry needs 3 <= min_vertices <= max_vertices")
+        if self.min_area_mm2 >= self.max_area_mm2:
+            raise ValueError("geometry.min_area_mm2 must be below max_area_mm2")
+        return self
+
+
+class SafetyConfig(StrictModel):
+    schema_version: Literal[1]
+    rate_limits: RateLimitsConfig
+    idempotency: IdempotencyConfig
+    soft_delete: SoftDeleteConfig
+    signed_upload: SignedUploadConfig
+    geometry: GeometryConfig
+
+
 # --- the whole tree -----------------------------------------------------------
 
 class PipelineConfig(StrictModel):
@@ -588,6 +636,7 @@ class PipelineConfig(StrictModel):
     models: ModelRegistry
     pricing: PricingConfig
     qc: QcConfig
+    safety: SafetyConfig
     scoring: ScoringConfig
     specimen_profiles: SpecimenProfilesConfig
     triage: TriageConfig

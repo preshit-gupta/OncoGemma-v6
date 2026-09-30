@@ -18,6 +18,8 @@ from app.core.gcs import (
 )
 from app.core.db import get_db
 from app.auth.deps import CurrentUser, require
+from app.auth.idempotency import IdempotencyContext, IdempotentRoute, idempotent
+from app.core.geometry import validate_polygon_geometry, validate_hotspots_non_overlapping
 from app.core.slide_access import PRECONDITION_ERRORS, open_case_slide, slide_stain_transform
 from app.models.case import Case
 from app.models.slide import Slide
@@ -33,7 +35,7 @@ from pipeline.slide_io import centered_origin_um, read_region_at_mpp
 # Edge of the hotspot review patches, in pixels.
 PATCH_PX = 512
 
-router = APIRouter(prefix="/api/v1/stages/triage", tags=["triage"])
+router = APIRouter(prefix="/api/v1/stages/triage", tags=["triage"], route_class=IdempotentRoute)
 
 def to_uuid(val: Any) -> uuid.UUID:
     if isinstance(val, uuid.UUID):
@@ -56,6 +58,22 @@ def compute_polygon_area_mm2(coords: list[list[float]]) -> float:
     y = pts[:, 1]
     area_um2 = 0.5 * np.abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)))
     return round(float(area_um2 / 1e6), 4)
+
+
+def slide_bounds_um(db: Session, case_id: str) -> tuple[float, float] | None:
+    """Slide extent in µm, or None while the slide has no recorded size or resolution."""
+    slide_row = db.scalars(select(Slide).where(Slide.case_id == to_uuid(case_id))).first()
+    if slide_row is None or not (slide_row.width_px and slide_row.height_px and slide_row.mpp_x):
+        return None
+    mpp_y = slide_row.mpp_y or slide_row.mpp_x
+    return (float(slide_row.width_px * slide_row.mpp_x), float(slide_row.height_px * mpp_y))
+
+
+def validate_edit_geometry(edits: list[dict], slide_bounds: tuple[float, float] | None) -> None:
+    """Server-side checks on every pathologist-drawn polygon (SPEC-03 §5.3.2)."""
+    for op in edits:
+        if op.get("op") in ("add", "modify") and op.get("polygon_um") is not None:
+            validate_polygon_geometry(op["polygon_um"], slide_bounds_um=slide_bounds)
 
 
 def coordinates_differ(poly1: list[list[float]], poly2: list[list[float]], tol_um: float = 1.0) -> bool:
@@ -459,6 +477,15 @@ def save_triage_edits(payload: TriageEditsPayload, db: Session = Depends(get_db)
         e.model_dump() if hasattr(e, "model_dump") else (e.dict() if hasattr(e, "dict") else dict(e))
         for e in payload.edits
     ]
+    validate_edit_geometry(edits_dict, slide_bounds_um(db, payload.case_id))
+
+    try:
+        machine_hotspots = stage_service.machine_triage_hotspots(stage_exec)
+    except stage_service.StageServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    effective_hotspots = apply_edit_ops(machine_hotspots, edits_dict)
+    validate_hotspots_non_overlapping(effective_hotspots)
+
     stage_exec.review_edits = edits_dict
     
     audit = AuditEvent(
@@ -475,7 +502,12 @@ def save_triage_edits(payload: TriageEditsPayload, db: Session = Depends(get_db)
 
 
 @router.post("/confirm")
-def confirm_triage(payload: TriageConfirmPayload, db: Session = Depends(get_db), user: CurrentUser = Depends(require("stage:confirm"))):
+def confirm_triage(
+    payload: TriageConfirmPayload,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require("stage:confirm")),
+    _idempotency: IdempotencyContext = idempotent("stages/triage/confirm"),
+):
     """
     Confirms triage stage, writes effective hotspots into DB, and queues next stage.
     """
