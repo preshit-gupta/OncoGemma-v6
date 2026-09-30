@@ -5,6 +5,9 @@ steps:
       - 'build'
       - '-t'
       - '$_REGION-docker.pkg.dev/$PROJECT_ID/oncogemma-repo/frontend:latest'
+      - '--build-arg=NEXT_PUBLIC_AUTH_ENABLED=1'
+      - '--build-arg=NEXT_PUBLIC_GOOGLE_CLIENT_ID=$_GOOGLE_OAUTH_CLIENT_ID'
+      - '--build-arg=NEXT_PUBLIC_AUTH_DOMAIN_HINT=$_AUTH_DOMAIN_HINT'
       - '-f'
       - 'ops/docker/Dockerfile.frontend'
       - '.'
@@ -34,6 +37,8 @@ steps:
 
 substitutions:
   _REGION: 'us-central1'
+  _GOOGLE_OAUTH_CLIENT_ID: ''  # the same OAuth web client as the API
+  _AUTH_DOMAIN_HINT: ''  # shown on the login page, e.g. example.org
 
 options:
   logging: CLOUD_LOGGING_ONLY
