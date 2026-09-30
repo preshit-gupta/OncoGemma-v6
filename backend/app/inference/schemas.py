@@ -5,7 +5,7 @@ SPEC-01 §3.5 and WP-2.4.
 from __future__ import annotations
 
 import json
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 
@@ -132,6 +132,30 @@ class HistotypeVerdict(StrictModel):
                 "micropapillary", "metaplastic", "other"
             )
         )
+
+
+ReportField = Literal["grade", "total", "tubule", "pleo", "mitoses"]
+NottinghamComponent = Annotated[int, Field(ge=1, le=3)]
+
+
+class EvidenceQuote(StrictModel):
+    field: ReportField
+    quote: str = Field(min_length=1)
+
+
+class ReportGradeExtraction(StrictModel):
+    """Nottingham grade statements in one pathology report (SPEC-02 §4 step 3).
+
+    Every field is required and null when the report does not state it. Each non-null field
+    needs a verbatim ``evidence`` quote; the extractor checks the quotes in code.
+    """
+
+    grade: NottinghamComponent | None
+    total: Annotated[int, Field(ge=3, le=9)] | None
+    tubule: NottinghamComponent | None
+    pleo: NottinghamComponent | None
+    mitoses: NottinghamComponent | None
+    evidence: list[EvidenceQuote]
 
 
 def _strip_fence(raw: str) -> str:

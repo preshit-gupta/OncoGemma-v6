@@ -12,6 +12,9 @@ import httpx
 from google.auth.exceptions import GoogleAuthError
 
 from app.inference.adapters.base import (
+    UNTRUSTED_DOCUMENT_BEGIN,
+    UNTRUSTED_DOCUMENT_END,
+    UNTRUSTED_DOCUMENT_INSTRUCTION,
     AdapterRequest,
     CallRejected,
     CallTimeout,
@@ -58,11 +61,19 @@ class VertexGenAIAdapter:
         if request.prompt is None or request.output_model is None:
             raise CallRejected("a Gemini request needs a prompt and an output model")
         contents = [types.Part.from_text(text=request.prompt)]
+        document_config = {}
+        if request.untrusted_document is not None:
+            # A separate part inside the fixed delimiter, and a system instruction saying it is data.
+            contents.append(types.Part.from_text(
+                text=f"{UNTRUSTED_DOCUMENT_BEGIN}\n{request.untrusted_document}\n{UNTRUSTED_DOCUMENT_END}"
+            ))
+            document_config["system_instruction"] = UNTRUSTED_DOCUMENT_INSTRUCTION
         contents += [types.Part.from_bytes(data=image.data, mime_type=image.mime_type) for image in request.images]
         config = types.GenerateContentConfig(
             response_mime_type="application/json",
             response_json_schema=request.output_model.model_json_schema(),
             http_options=types.HttpOptions(timeout=int(timeout_s * MILLISECONDS_PER_SECOND)),
+            **document_config,
             **request.generation,
         )
         try:

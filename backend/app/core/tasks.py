@@ -19,6 +19,7 @@ class Task(str, Enum):
     PLEO_SLIDE = "pleo_slide"
     HISTOTYPE = "histotype"
     GRADE_AGGREGATE = "grade_aggregate"
+    LABEL_EXTRACT = "label_extract"  # ground-truth grade from a pathology report (SPEC-02 §4)
     HUMAN_EDIT = "human_edit"
 
 
@@ -32,6 +33,7 @@ class EntityType(str, Enum):
     PATCH = "patch"
     FIELD = "field"
     SLIDE = "slide"
+    REPORT = "report"
 
     @property
     def is_batch(self) -> bool:
