@@ -25,7 +25,7 @@ Update this file at the end of every session (SPEC plan §3 rule 8). Keep it und
   - WP-7.2 (branch `wp/7.2-detector-client`): shared `pipeline/mitosis_detect.py` (512 px tiles at 0.25 µm/px, resampling, ownership), v2 raw predict with pinned weights, raw Stage A at min_prob 0.01; MIDOG++ adapter fixed (corner boxes, 'not mitotic figure', TIFF resolution); `eval/mitosis_baseline.py`.
   - Baseline (`reports/baseline/mitosis_midogpp_094.md`): KongNet alone F1 0.862 at τ 0.75, NMS 7.5 µm (old 0.35/20 µm: 0.831). The Gemini referee cuts F1 to 0.676 (rejects 25 true figures), so it is off (`referee.enabled: false`). One image only: generalisation needs more MIDOG++ val images.
 
-- **WP-4.1 (SPEC-03 §3–4), branch `wp/4.1-sso-rbac`, PR open.** `app/auth/`: Google ID-token verification (issuer, verified email, `hd` in `AUTH_ALLOWED_DOMAINS` or an allow-listed invitee), `users`/`sessions` (`0009_auth`), HS256 session cookie checked against the DB on every request (30 s per-instance cache; logout, role change and disable revoke), double-submit CSRF, `require(perm)` from `configs/auth.yaml` on all 44 guarded routes, Cloud Tasks OIDC on the webhook, `/api/v1/auth/*` and `/api/v1/admin/users*` per `docs/contracts/auth_v1.md`. Audit actors are the verified `users.id` (client `reviewed_by` ignored). Tests `backend/tests/auth` (AC1–AC5, 266 cases; suite 1283 passed, 1 skipped, ~16 min); legacy tests sign in through a conftest override (`X-Test-Role`).
+- **WP-4.3 (SPEC-03 §5, AC6–AC10), branch `wp/4.3-safety-hardening`.** Architectural safety hardening: unmounted destructive routes (`/admin/reset-database`, bulk `DELETE /cases`) outside `ENV=test` (AC6); soft delete `cases.deleted_at` and 7-day purge job `purge_soft_deleted_cases`; immutable append-only triggers on `audit_events`; prompt injection protection rejecting raw `str` variables (AC7); geometry safety & non-overlapping hotspots (AC8); `Idempotency-Key` enforcement & replay on stage confirmation routes (AC9); sliding window rate limiter middleware (10/min IP, 60/min user mutating); CI `security_audit.yml` (gitleaks + react/no-danger ESLint) (AC10). All 9 safety tests and full auth suite pass.
 
 ## Ready for delegates now
 
@@ -33,8 +33,7 @@ Lanes are in `docs/tasks/README.md`. The specimen-type UI is merged (#21). Lane 
 
 ## Claude — next
 
-1. Owner reviews and merges the 4.1 PR. Then 5.4/5.5. Before any deploy: run `pytest backend/tests/pipeline/test_slide_io.py::test_concurrent_reads_are_byte_identical_to_single_threaded_reads` on Linux (AC7 has only run on Windows).
-2. 4.1 left for WP-4.3 (§5): rate limits, soft delete and unmounting reset-database/bulk delete outside `ENV=test`, Idempotency-Key, audit trigger. IAP is optional.
+1. Owner reviews and merges the 4.1 PR, followed by 4.3 PR. Then 5.4/5.5. Before any deploy: run `pytest backend/tests/pipeline/test_slide_io.py::test_concurrent_reads_are_byte_identical_to_single_threaded_reads` on Linux (AC7 has only run on Windows).
 
 ## Open items (program owner)
 
