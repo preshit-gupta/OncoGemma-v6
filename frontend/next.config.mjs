@@ -13,7 +13,7 @@ const nextConfig = {
         headers: [
           {
             key: "Content-Security-Policy",
-            value: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://accounts.google.com/gsi/client; frame-src https://accounts.google.com/gsi/; connect-src 'self' https://accounts.google.com/gsi/; img-src 'self' blob: data: https://storage.googleapis.com; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style",
+            value: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://accounts.google.com/gsi/client; frame-src https://accounts.google.com/gsi/; connect-src 'self' https://accounts.google.com/gsi/ https://storage.googleapis.com; img-src 'self' blob: data: https://storage.googleapis.com; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style",
           },
           {
             key: "X-Frame-Options",
