@@ -19,6 +19,12 @@ class Case(Base):
         nullable=False,
         default=lambda: datetime.now(timezone.utc)
     )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        default=None,
+        index=True
+    )
 
     slides = relationship("Slide", back_populates="case", cascade="all, delete-orphan", passive_deletes=True)
     stage_executions = relationship("StageExecution", back_populates="case", cascade="all, delete-orphan", passive_deletes=True)

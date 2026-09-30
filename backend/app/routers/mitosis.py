@@ -22,6 +22,7 @@ from app.core.gcs import (
 )
 from app.core.db import get_db
 from app.auth.deps import CurrentUser, require
+from app.auth.idempotency import IdempotencyContext, IdempotentRoute, idempotent
 from app.core.pipeline_config import get_pipeline_config
 from app.core.slide_access import PRECONDITION_ERRORS, open_case_slide, slide_stain_transform
 from app.core.tissue_mask_store import load_tissue_mask
@@ -40,7 +41,7 @@ from app.services import stages as stage_service
 from pipeline.hpf import generate_mitosis_density_map, greedy_place_hpfs
 from pipeline.scoring import calculate_hpf_mitosis_counts, compute_nottingham_mitotic_score
 
-router = APIRouter(prefix="/api/v1/stages/mitosis", tags=["mitosis"])
+router = APIRouter(prefix="/api/v1/stages/mitosis", tags=["mitosis"], route_class=IdempotentRoute)
 
 def to_uuid(val: Any) -> uuid.UUID:
     if isinstance(val, uuid.UUID):
@@ -74,6 +75,9 @@ def get_verified_mitosis_stage(
         (StageExecution.case_id == case_uid) | (StageExecution.case_id == str(case_id)),
         StageExecution.stage == "mitosis"
     ).order_by(StageExecution.attempt.desc()).limit(1)
+    if require_awaiting or forbid_confirmed:
+        # Row lock serialises concurrent state-gated writes (SPEC-03 §5.3.3); SQLite ignores it.
+        stmt = stmt.with_for_update()
 
     stage_exec = db.scalars(stmt).first()
     if not stage_exec:
@@ -935,7 +939,12 @@ def re_place_hpfs(payload: BulkActionPayload, db: Session = Depends(get_db), use
 
 
 @router.post("/confirm")
-def confirm_mitosis_stage(payload: MitosisConfirmPayload, db: Session = Depends(get_db), user: CurrentUser = Depends(require("stage:confirm"))):
+def confirm_mitosis_stage(
+    payload: MitosisConfirmPayload,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require("stage:confirm")),
+    _idempotency: IdempotencyContext = idempotent("stages/mitosis/confirm"),
+):
     """
     Clinical Safety Gate & Stage 4 Confirmation.
     Verifies that no candidate at or above the review gate (configs/mitosis.yaml) is unreviewed,

@@ -1,4 +1,4 @@
-from app.routers.cases import router as cases_router
+from app.routers.cases import router as cases_router, test_router as cases_test_router
 from app.routers.tiles import router as tiles_router
 from app.routers.audit import router as audit_router
 from app.routers.triage import router as triage_router
@@ -8,6 +8,7 @@ from app.routers.worker_webhook import router as worker_webhook_router
 
 __all__ = [
     "cases_router",
+    "cases_test_router",
     "tiles_router",
     "audit_router",
     "triage_router",

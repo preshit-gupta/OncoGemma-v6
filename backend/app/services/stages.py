@@ -87,12 +87,17 @@ def _case_key(case_id) -> uuid.UUID | str:
         return str(case_id)
 
 
-def latest_execution(session: Session, case_id, stage: str) -> StageExecution | None:
-    return session.scalars(
+def latest_execution(session: Session, case_id, stage: str, *, for_update: bool = False) -> StageExecution | None:
+    """The latest attempt of ``stage``. ``for_update`` row-locks it so concurrent confirms
+    serialise on the status check (SPEC-03 §5.3.3); SQLite ignores the lock."""
+    stmt = (
         select(StageExecution)
         .where(StageExecution.case_id == case_id, StageExecution.stage == stage)
         .order_by(StageExecution.attempt.desc())
-    ).first()
+    )
+    if for_update:
+        stmt = stmt.with_for_update()
+    return session.scalars(stmt).first()
 
 
 def queue_stage(
@@ -212,7 +217,7 @@ def _confirm_slide(
 ) -> ConfirmResult:
     """Approve the slide after preprocess and QC; a failed QC needs a written justification."""
     case, slide = _case_and_slide(session, case_id)
-    current = latest_execution(session, case_id, stage)
+    current = latest_execution(session, case_id, stage, for_update=True)
     if current is None:
         raise StageNotFound(f"Stage '{stage}' execution not found for case {case_id}.")
     if current.status == "confirmed":
@@ -256,26 +261,33 @@ def _confirm_slide(
     return ConfirmResult(str(case_id), stage, "triage", next_execution, {})
 
 
-def effective_triage_hotspots(execution: StageExecution) -> list[dict]:
-    """The machine hotspots of a triage execution with the reviewer's edits applied."""
-    from app.routers.triage import apply_edit_ops  # the edit grammar lives with the edit endpoint
-
+def machine_triage_hotspots(execution: StageExecution) -> list[dict]:
+    """The machine hotspots of a triage execution, as the triage stage wrote them."""
     output_ref = execution.output_ref or ""
     try:
         if output_ref.startswith("gs://"):
             bucket, blob = parse_gcs_uri(output_ref)
         else:
             bucket, blob = settings.GCS_ARTIFACTS_BUCKET, f"cases/{execution.case_id}/triage/output.json"
-        machine = json.loads(download_blob_as_bytes(bucket, blob).decode("utf-8")).get("hotspots", [])
+        return json.loads(download_blob_as_bytes(bucket, blob).decode("utf-8")).get("hotspots", [])
     except (NotFound, FileNotFoundError, ValueError) as exc:
         raise StageOutputUnavailable(
             f"Failed to load triage machine output from storage: {exc}. Confirmation aborted."
         ) from exc
-    return apply_edit_ops(machine, execution.review_edits or [])
+
+
+def effective_triage_hotspots(execution: StageExecution) -> list[dict]:
+    """The machine hotspots of a triage execution with the reviewer's edits applied."""
+    from app.routers.triage import apply_edit_ops  # the edit grammar lives with the edit endpoint
+
+    return apply_edit_ops(machine_triage_hotspots(execution), execution.review_edits or [])
 
 
 def _confirm_triage(session: Session, case_id: uuid.UUID, actor: str, no_invasive_tumor: bool) -> ConfirmResult:
-    execution = latest_execution(session, case_id, "triage")
+    from app.core.geometry import validate_hotspots_non_overlapping
+    from app.routers.triage import slide_bounds_um, validate_edit_geometry
+
+    execution = latest_execution(session, case_id, "triage", for_update=True)
     if execution is None:
         raise StageNotFound(f"Triage stage execution not found for case {case_id}")
     if execution.status != "awaiting_review":
@@ -286,7 +298,10 @@ def _confirm_triage(session: Session, case_id: uuid.UUID, actor: str, no_invasiv
     if case is None:
         raise StageNotFound("Case not found")
 
+    # Server-side geometry checks on the reviewer's polygons and the effective set (SPEC-03 §5.3.2).
+    validate_edit_geometry(execution.review_edits or [], slide_bounds_um(session, case_id))
     hotspots = effective_triage_hotspots(execution)
+    validate_hotspots_non_overlapping(hotspots)
     active = [h for h in hotspots if not h.get("excluded", False)]
     if no_invasive_tumor and active:
         raise ReviewGateError(
@@ -342,7 +357,7 @@ def _confirm_mitosis(session: Session, case_id: uuid.UUID, actor: str) -> Confir
     case = session.get(Case, case_id)
     if case is None:
         raise StageNotFound(f"Case {case_id} not found")
-    execution = latest_execution(session, case_id, "mitosis")
+    execution = latest_execution(session, case_id, "mitosis", for_update=True)
     if execution is None:
         raise StageNotFound("Stage 4 (mitosis) not found for this case")
     if execution.status != "awaiting_review":

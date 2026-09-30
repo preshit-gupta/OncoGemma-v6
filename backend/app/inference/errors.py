@@ -84,3 +84,8 @@ class UnpinnedModelError(GatewayError):
 # Errors a configs/fallbacks.yaml entry may name. InputContractError, ModelCallError and
 # UnpinnedModelError are code or configuration defects, so they always fail the stage.
 FALLBACK_ELIGIBLE = {cls.__name__: cls for cls in (ModelUnavailableError, ModelTimeoutError, SchemaInvalidError)}
+
+
+class PromptVariableError(ValueError):
+    """A prompt variable was missing, unused, or had disallowed type (SPEC-03 §5.2)."""
+
