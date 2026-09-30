@@ -112,24 +112,28 @@ steps:
   #   gcloud run jobs execute oncogemma-eval-worker --region=us-central1
   # It exits after WORKER_IDLE_EXIT_S seconds without work. Memory is 8 GiB for now: Cloud Run's
   # filesystem is memory, and a stage is claimed only with 2x the slide's size free.
+  # The job runs as the worker job's service account (oncogemma-cloudrun-sa: DB secret, Cloud SQL,
+  # GCS, Vertex), looked up here so both workers always share it. The build stops if it is missing.
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    entrypoint: 'gcloud'
+    entrypoint: 'bash'
     args:
-      - 'run'
-      - 'jobs'
-      - 'deploy'
-      - 'oncogemma-eval-worker'
-      - '--image=$_REGION-docker.pkg.dev/$PROJECT_ID/oncogemma-repo/worker:latest'
-      - '--region=$_REGION'
-      - '--tasks=1'
-      - '--max-retries=0'
-      - '--task-timeout=24h'
-      - '--cpu=4'
-      - '--memory=8Gi'
-      # 'jobs deploy' takes --set-cloudsql-instances ('jobs update' takes --add-cloudsql-instances).
-      - '--set-cloudsql-instances=$PROJECT_ID:$_REGION:oncogemma-dev-psql'
-      - '--update-env-vars=CLOUD_SQL_CONNECTION_NAME=$PROJECT_ID:$_REGION:oncogemma-dev-psql,RUN_DAEMON=true,WORKER_RUN_MODES=eval,WORKER_IDLE_EXIT_S=900'
-      - '--set-secrets=DB_PASSWORD=og-db-password:latest'
+      - '-euo'
+      - 'pipefail'
+      - '-c'
+      - |
+        SA=$$(gcloud run jobs describe oncogemma-worker-job --region=$_REGION --format='value(spec.template.spec.template.spec.serviceAccountName)')
+        if [ -z "$$SA" ]; then echo "oncogemma-worker-job has no service account; cannot deploy the eval worker" >&2; exit 1; fi
+        echo "eval worker service account: $$SA"
+        FLAGS=(
+          --image=$_REGION-docker.pkg.dev/$PROJECT_ID/oncogemma-repo/worker:latest
+          --region=$_REGION
+          --service-account="$$SA"
+          --tasks=1 --max-retries=0 --task-timeout=24h --cpu=4 --memory=8Gi
+          --set-cloudsql-instances=$PROJECT_ID:$_REGION:oncogemma-dev-psql
+          --update-env-vars=CLOUD_SQL_CONNECTION_NAME=$PROJECT_ID:$_REGION:oncogemma-dev-psql,RUN_DAEMON=true,WORKER_RUN_MODES=eval,WORKER_IDLE_EXIT_S=900
+          --set-secrets=DB_PASSWORD=og-db-password:latest
+        )
+        gcloud run jobs deploy oncogemma-eval-worker "$${FLAGS[@]}"
     id: 'deploy-eval-worker'
 
 substitutions:
