@@ -1,35 +1,226 @@
 {
   "$defs": {
-    "ClassMetrics": {
+    "Bootstrap": {
       "additionalProperties": false,
-      "description": "Macro-F1 over grades 1\u20133 with a ``none`` prediction for every case without one (SPEC-00 \u00a72.5).",
       "properties": {
-        "coverage": {
-          "title": "Coverage",
-          "type": "number"
-        },
-        "macro_f1": {
-          "$ref": "#/$defs/Interval"
-        },
-        "n": {
-          "title": "N",
+        "B": {
+          "title": "B",
           "type": "integer"
         },
-        "per_class": {
-          "additionalProperties": {
-            "type": "number"
-          },
-          "title": "Per Class",
-          "type": "object"
+        "seed": {
+          "title": "Seed",
+          "type": "integer"
         }
       },
       "required": [
-        "n",
-        "coverage",
-        "macro_f1",
-        "per_class"
+        "B",
+        "seed"
       ],
-      "title": "ClassMetrics",
+      "title": "Bootstrap",
+      "type": "object"
+    },
+    "Calibration": {
+      "additionalProperties": false,
+      "properties": {
+        "p_a": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Reliability"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "p_b": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Reliability"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "p_tumor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Reliability"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "Calibration",
+      "type": "object"
+    },
+    "Confusion": {
+      "additionalProperties": false,
+      "properties": {
+        "labels": {
+          "items": {
+            "enum": [
+              1,
+              2,
+              3,
+              "none"
+            ]
+          },
+          "title": "Labels",
+          "type": "array"
+        },
+        "matrix": {
+          "items": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "title": "Matrix",
+          "type": "array"
+        }
+      },
+      "required": [
+        "labels",
+        "matrix"
+      ],
+      "title": "Confusion",
+      "type": "object"
+    },
+    "ConfusionSet": {
+      "additionalProperties": false,
+      "properties": {
+        "grade": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Confusion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "mitotic": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Confusion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "pleo": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Confusion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "tubule": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Confusion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "ConfusionSet",
+      "type": "object"
+    },
+    "Cost": {
+      "additionalProperties": false,
+      "properties": {
+        "by_model": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ModelCost"
+          },
+          "title": "By Model",
+          "type": "object"
+        },
+        "usd_per_slide": {
+          "title": "Usd Per Slide",
+          "type": "number"
+        },
+        "usd_total": {
+          "title": "Usd Total",
+          "type": "number"
+        }
+      },
+      "required": [
+        "usd_total",
+        "usd_per_slide",
+        "by_model"
+      ],
+      "title": "Cost",
+      "type": "object"
+    },
+    "Counts": {
+      "additionalProperties": false,
+      "properties": {
+        "failures": {
+          "items": {
+            "$ref": "#/$defs/FailureGroup"
+          },
+          "title": "Failures",
+          "type": "array"
+        },
+        "int_fall": {
+          "title": "Int Fall",
+          "type": "integer"
+        },
+        "items": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Items",
+          "type": "object"
+        },
+        "no_invasive_tumor": {
+          "title": "No Invasive Tumor",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "items",
+        "no_invasive_tumor",
+        "failures",
+        "int_fall"
+      ],
+      "title": "Counts",
+      "type": "object"
+    },
+    "Curves": {
+      "additionalProperties": false,
+      "properties": {
+        "mitosis_pr": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PRCurveDoc"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "Curves",
       "type": "object"
     },
     "FailureGroup": {
@@ -79,117 +270,210 @@
       "title": "FailureGroup",
       "type": "object"
     },
-    "GradeMetrics": {
+    "Headline": {
       "additionalProperties": false,
       "properties": {
-        "coverage": {
-          "title": "Coverage",
-          "type": "number"
+        "ns_g": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Metric"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
-        "f1_high": {
-          "$ref": "#/$defs/Interval"
+        "ns_m": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Metric"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "Headline",
+      "type": "object"
+    },
+    "Metric": {
+      "additionalProperties": false,
+      "description": "A metric with its bootstrap interval over patients (contract ``Metric``; SPEC-00 \u00a72.4).\n\n``final`` when the 95% CI half-width is at most 0.05, ``provisional`` otherwise, ``invalid``\nwhen there is no value or the run broke the measurement-validity gate (SPEC-00 \u00a72.5).",
+      "properties": {
+        "ci_high": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Ci High"
         },
-        "macro_f1": {
-          "$ref": "#/$defs/Interval"
-        },
-        "macro_f1_lm": {
-          "$ref": "#/$defs/Interval"
+        "ci_low": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Ci Low"
         },
         "n": {
           "title": "N",
           "type": "integer"
         },
-        "n_high": {
-          "title": "N High",
-          "type": "integer"
+        "status": {
+          "enum": [
+            "final",
+            "provisional",
+            "invalid"
+          ],
+          "title": "Status",
+          "type": "string"
         },
-        "n_lm": {
-          "title": "N Lm",
-          "type": "integer"
-        },
-        "per_class": {
-          "additionalProperties": {
-            "type": "number"
-          },
-          "title": "Per Class",
-          "type": "object"
-        },
-        "qwk": {
-          "$ref": "#/$defs/Interval"
-        },
-        "sum_mae": {
-          "$ref": "#/$defs/Interval"
+        "value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Value"
         }
       },
       "required": [
+        "value",
+        "ci_low",
+        "ci_high",
         "n",
-        "coverage",
-        "macro_f1",
-        "per_class",
-        "qwk",
-        "f1_high",
-        "macro_f1_lm",
-        "sum_mae",
-        "n_high",
-        "n_lm"
+        "status"
       ],
-      "title": "GradeMetrics",
+      "title": "Metric",
       "type": "object"
     },
-    "Interval": {
+    "ModelCost": {
       "additionalProperties": false,
-      "description": "A bootstrap percentile interval over patients (SPEC-00 \u00a72.4). ``None`` when undefined (no cases).",
       "properties": {
-        "B": {
-          "title": "B",
+        "calls": {
+          "title": "Calls",
           "type": "integer"
         },
-        "high": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "High"
+        "p50_ms": {
+          "title": "P50 Ms",
+          "type": "number"
         },
-        "low": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Low"
+        "p95_ms": {
+          "title": "P95 Ms",
+          "type": "number"
         },
-        "point": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Point"
-        },
-        "seed": {
-          "title": "Seed",
-          "type": "integer"
+        "usd": {
+          "title": "Usd",
+          "type": "number"
         }
       },
       "required": [
-        "point",
-        "low",
-        "high",
-        "B",
-        "seed"
+        "calls",
+        "usd",
+        "p50_ms",
+        "p95_ms"
       ],
-      "title": "Interval",
+      "title": "ModelCost",
+      "type": "object"
+    },
+    "PRCurveDoc": {
+      "additionalProperties": false,
+      "properties": {
+        "f1": {
+          "items": {
+            "type": "number"
+          },
+          "title": "F1",
+          "type": "array"
+        },
+        "precision": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Precision",
+          "type": "array"
+        },
+        "recall": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Recall",
+          "type": "array"
+        },
+        "thresholds": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Thresholds",
+          "type": "array"
+        }
+      },
+      "required": [
+        "thresholds",
+        "precision",
+        "recall",
+        "f1"
+      ],
+      "title": "PRCurveDoc",
+      "type": "object"
+    },
+    "Reliability": {
+      "additionalProperties": false,
+      "properties": {
+        "bins": {
+          "items": {
+            "$ref": "#/$defs/ReliabilityBin"
+          },
+          "title": "Bins",
+          "type": "array"
+        },
+        "ece": {
+          "title": "Ece",
+          "type": "number"
+        }
+      },
+      "required": [
+        "bins",
+        "ece"
+      ],
+      "title": "Reliability",
+      "type": "object"
+    },
+    "ReliabilityBin": {
+      "additionalProperties": false,
+      "properties": {
+        "frac_pos": {
+          "title": "Frac Pos",
+          "type": "number"
+        },
+        "n": {
+          "title": "N",
+          "type": "integer"
+        },
+        "p_mean": {
+          "title": "P Mean",
+          "type": "number"
+        }
+      },
+      "required": [
+        "p_mean",
+        "frac_pos",
+        "n"
+      ],
+      "title": "ReliabilityBin",
       "type": "object"
     },
     "RunInfo": {
@@ -290,103 +574,336 @@
       ],
       "title": "RunInfo",
       "type": "object"
+    },
+    "S3Metrics": {
+      "additionalProperties": false,
+      "properties": {
+        "coverage": {
+          "title": "Coverage",
+          "type": "number"
+        },
+        "f1": {
+          "$ref": "#/$defs/Metric"
+        },
+        "p_at_k": {
+          "$ref": "#/$defs/Metric"
+        }
+      },
+      "required": [
+        "f1",
+        "p_at_k",
+        "coverage"
+      ],
+      "title": "S3Metrics",
+      "type": "object"
+    },
+    "S4Metrics": {
+      "additionalProperties": false,
+      "properties": {
+        "ap": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Ap"
+        },
+        "count_bias_per_2mm2": {
+          "$ref": "#/$defs/Metric"
+        },
+        "count_mae_per_2mm2": {
+          "$ref": "#/$defs/Metric"
+        },
+        "f1": {
+          "$ref": "#/$defs/Metric"
+        },
+        "per_mag": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Metric"
+          },
+          "title": "Per Mag",
+          "type": "object"
+        },
+        "per_scanner": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Metric"
+          },
+          "title": "Per Scanner",
+          "type": "object"
+        },
+        "precision": {
+          "$ref": "#/$defs/Metric"
+        },
+        "recall": {
+          "$ref": "#/$defs/Metric"
+        }
+      },
+      "required": [
+        "f1",
+        "precision",
+        "recall",
+        "ap",
+        "count_mae_per_2mm2",
+        "count_bias_per_2mm2",
+        "per_scanner",
+        "per_mag"
+      ],
+      "title": "S4Metrics",
+      "type": "object"
+    },
+    "S5Metrics": {
+      "additionalProperties": false,
+      "properties": {
+        "f1_high": {
+          "$ref": "#/$defs/Metric"
+        },
+        "f1_m": {
+          "$ref": "#/$defs/Metric"
+        },
+        "f1_p": {
+          "$ref": "#/$defs/Metric"
+        },
+        "f1_t": {
+          "$ref": "#/$defs/Metric"
+        },
+        "histotype_f1": {
+          "$ref": "#/$defs/Metric"
+        },
+        "ilc_f1": {
+          "$ref": "#/$defs/Metric"
+        },
+        "macro_f1_lm": {
+          "$ref": "#/$defs/Metric"
+        },
+        "qwk": {
+          "$ref": "#/$defs/Metric"
+        },
+        "sum_mae": {
+          "$ref": "#/$defs/Metric"
+        }
+      },
+      "required": [
+        "f1_t",
+        "f1_p",
+        "f1_m",
+        "f1_high",
+        "macro_f1_lm",
+        "sum_mae",
+        "qwk",
+        "histotype_f1",
+        "ilc_f1"
+      ],
+      "title": "S5Metrics",
+      "type": "object"
+    },
+    "SliceRow": {
+      "additionalProperties": false,
+      "properties": {
+        "ci_high": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Ci High"
+        },
+        "ci_low": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Ci Low"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "metric": {
+          "title": "Metric",
+          "type": "string"
+        },
+        "n": {
+          "title": "N",
+          "type": "integer"
+        },
+        "slice": {
+          "title": "Slice",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "slice",
+        "key",
+        "metric",
+        "value",
+        "ci_low",
+        "ci_high",
+        "n"
+      ],
+      "title": "SliceRow",
+      "type": "object"
+    },
+    "StageMetrics": {
+      "additionalProperties": false,
+      "properties": {
+        "s3": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/S3Metrics"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "s4": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/S4Metrics"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "s5": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/S5Metrics"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "StageMetrics",
+      "type": "object"
     }
   },
   "additionalProperties": false,
+  "description": "``reports/<run_id>/metrics.json``: the contract's ``MetricsV1`` (docs/contracts/research_v1.md).\n\nOptional members are omitted when the run cannot support them; ``unavailable`` says why.\nSerialise with ``dump_metrics`` so that omitted members are left out rather than written as null.",
   "properties": {
-    "bootstrap_unit": {
-      "const": "patient",
-      "default": "patient",
-      "title": "Bootstrap Unit",
-      "type": "string"
+    "bootstrap": {
+      "$ref": "#/$defs/Bootstrap"
     },
-    "components": {
-      "additionalProperties": {
-        "$ref": "#/$defs/ClassMetrics"
-      },
-      "propertyNames": {
-        "enum": [
-          "tubule",
-          "pleo",
-          "mitoses"
-        ]
-      },
-      "title": "Components",
-      "type": "object"
+    "calibration": {
+      "$ref": "#/$defs/Calibration"
     },
-    "cost_usd": {
-      "title": "Cost Usd",
-      "type": "number"
+    "confusion": {
+      "$ref": "#/$defs/ConfusionSet"
     },
-    "failures": {
-      "items": {
-        "$ref": "#/$defs/FailureGroup"
-      },
-      "title": "Failures",
-      "type": "array"
+    "cost": {
+      "$ref": "#/$defs/Cost"
     },
-    "grade": {
+    "counts": {
       "anyOf": [
         {
-          "$ref": "#/$defs/GradeMetrics"
+          "$ref": "#/$defs/Counts"
         },
         {
           "type": "null"
         }
-      ]
+      ],
+      "default": null
     },
-    "items": {
-      "additionalProperties": {
-        "type": "integer"
-      },
-      "title": "Items",
-      "type": "object"
+    "coverage": {
+      "title": "Coverage",
+      "type": "number"
+    },
+    "curves": {
+      "$ref": "#/$defs/Curves"
+    },
+    "generated_at": {
+      "title": "Generated At",
+      "type": "string"
+    },
+    "headline": {
+      "$ref": "#/$defs/Headline"
     },
     "metrics_schema_version": {
       "const": 1,
-      "default": 1,
       "title": "Metrics Schema Version",
       "type": "integer"
     },
-    "no_invasive_tumor": {
-      "title": "No Invasive Tumor",
-      "type": "integer"
-    },
     "run": {
-      "$ref": "#/$defs/RunInfo"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RunInfo"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
-    "runtime_s": {
-      "additionalProperties": {
-        "anyOf": [
-          {
-            "type": "number"
-          },
-          {
-            "type": "null"
-          }
-        ]
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "slices": {
+      "items": {
+        "$ref": "#/$defs/SliceRow"
       },
-      "title": "Runtime S",
-      "type": "object"
+      "title": "Slices",
+      "type": "array"
+    },
+    "stages": {
+      "$ref": "#/$defs/StageMetrics"
     },
     "unavailable": {
-      "additionalProperties": {
-        "type": "string"
-      },
-      "title": "Unavailable",
-      "type": "object"
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Unavailable"
     }
   },
   "required": [
-    "run",
-    "items",
-    "no_invasive_tumor",
-    "failures",
-    "grade",
-    "components",
-    "unavailable",
-    "cost_usd",
-    "runtime_s"
+    "metrics_schema_version",
+    "run_id",
+    "generated_at",
+    "bootstrap",
+    "coverage",
+    "headline",
+    "stages",
+    "confusion",
+    "slices",
+    "calibration",
+    "curves",
+    "cost"
   ],
   "title": "MetricsDocument",
   "type": "object"

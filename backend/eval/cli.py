@@ -8,7 +8,7 @@
     python -m eval.cli cancel  --run <run_id>
     python -m eval.cli retry   --run <run_id> --statuses failed
     python -m eval.cli metrics --run <run_id> [--bootstrap 2000 --seed 7] [--upload gs://bucket/reports]
-    python -m eval.cli compare --run-a <id> --run-b <id> --metric grade_macro_f1
+    python -m eval.cli compare --run-a <id> --run-b <id> --metric ns_g
     python -m eval.cli one-shot --slide gs://.../x.svs --specimen resection [--mpp 0.25] --out result.json
 
 The CLI talks to the app's database (``DATABASE_URL`` or the Cloud SQL settings) and queue; the
@@ -75,7 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     compare = commands.add_parser("compare", help="paired bootstrap of a metric between two runs")
     compare.add_argument("--run-a", required=True)
     compare.add_argument("--run-b", required=True)
-    compare.add_argument("--metric", default="grade_macro_f1")
+    compare.add_argument("--metric", default="ns_g", help="ns_g, qwk, f1_high, macro_f1_lm, sum_mae, f1_t, f1_p or f1_m")
     compare.add_argument("--bootstrap", type=int, default=2000)
     compare.add_argument("--seed", type=int, default=7)
 

@@ -23,19 +23,139 @@ class Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class Interval(Strict):
-    """A bootstrap percentile interval over patients (SPEC-00 §2.4). ``None`` when undefined (no cases)."""
+class Metric(Strict):
+    """A metric with its bootstrap interval over patients (contract ``Metric``; SPEC-00 §2.4).
 
-    point: float | None
-    low: float | None
-    high: float | None
-    B: int
-    seed: int
+    ``final`` when the 95% CI half-width is at most 0.05, ``provisional`` otherwise, ``invalid``
+    when there is no value or the run broke the measurement-validity gate (SPEC-00 §2.5).
+    """
 
-    @field_validator("point", "low", "high", mode="before")
+    value: float | None
+    ci_low: float | None
+    ci_high: float | None
+    n: int
+    status: Literal["final", "provisional", "invalid"]
+
+    @field_validator("value", "ci_low", "ci_high", mode="before")
     @classmethod
     def _nan_is_none(cls, value):
         return None if isinstance(value, float) and math.isnan(value) else value
+
+
+class Bootstrap(Strict):
+    B: int
+    seed: int
+
+
+class Headline(Strict):
+    ns_m: Metric | None = None
+    ns_g: Metric | None = None
+
+
+class S3Metrics(Strict):
+    f1: Metric
+    p_at_k: Metric
+    coverage: float
+
+
+class S4Metrics(Strict):
+    f1: Metric
+    precision: Metric
+    recall: Metric
+    ap: float | None
+    count_mae_per_2mm2: Metric
+    count_bias_per_2mm2: Metric
+    per_scanner: dict[str, Metric]
+    per_mag: dict[str, Metric]
+
+
+class S5Metrics(Strict):
+    f1_t: Metric
+    f1_p: Metric
+    f1_m: Metric
+    f1_high: Metric
+    macro_f1_lm: Metric
+    sum_mae: Metric
+    qwk: Metric
+    histotype_f1: Metric
+    ilc_f1: Metric
+
+
+class StageMetrics(Strict):
+    s3: S3Metrics | None = None
+    s4: S4Metrics | None = None
+    s5: S5Metrics | None = None
+
+
+class Confusion(Strict):
+    labels: list[Literal[1, 2, 3, "none"]]
+    matrix: list[list[int]]  # rows = true, columns = predicted
+
+
+class ConfusionSet(Strict):
+    grade: Confusion | None = None
+    tubule: Confusion | None = None
+    pleo: Confusion | None = None
+    mitotic: Confusion | None = None
+
+
+class SliceRow(Strict):
+    slice: str
+    key: str
+    metric: str
+    value: float | None
+    ci_low: float | None
+    ci_high: float | None
+    n: int
+
+    @field_validator("value", "ci_low", "ci_high", mode="before")
+    @classmethod
+    def _nan_is_none(cls, value):
+        return None if isinstance(value, float) and math.isnan(value) else value
+
+
+class ReliabilityBin(Strict):
+    p_mean: float
+    frac_pos: float
+    n: int
+
+
+class Reliability(Strict):
+    bins: list[ReliabilityBin]
+    ece: float
+
+
+class Calibration(Strict):
+    p_a: Reliability | None = None
+    p_b: Reliability | None = None
+    p_tumor: Reliability | None = None
+
+
+class PRCurveDoc(Strict):
+    thresholds: list[float]
+    precision: list[float]
+    recall: list[float]
+    f1: list[float]
+
+
+class Curves(Strict):
+    mitosis_pr: PRCurveDoc | None = None
+
+
+class ModelCost(Strict):
+    calls: int
+    usd: float
+    p50_ms: float
+    p95_ms: float
+
+
+class Cost(Strict):
+    usd_total: float
+    usd_per_slide: float
+    by_model: dict[str, ModelCost]
+
+
+# --- additions to the contract (optional fields, docs/contracts/research_v1.md) ---------
 
 
 class RunInfo(Strict):
@@ -62,39 +182,42 @@ class FailureGroup(Strict):
     n: int
 
 
-class ClassMetrics(Strict):
-    """Macro-F1 over grades 1–3 with a ``none`` prediction for every case without one (SPEC-00 §2.5)."""
-
-    n: int
-    coverage: float
-    macro_f1: Interval
-    per_class: dict[str, float]
-
-
-class GradeMetrics(ClassMetrics):
-    qwk: Interval
-    f1_high: Interval
-    macro_f1_lm: Interval
-    sum_mae: Interval
-    n_high: int
-    n_lm: int
-
-
-class MetricsDocument(Strict):
-    metrics_schema_version: Literal[1] = METRICS_SCHEMA_VERSION
-    run: RunInfo
-    items: dict[str, int]
+class Counts(Strict):
+    items: dict[str, int]  # by item status
     # Succeeded items whose triage found no invasive tumour. They stay in every denominator as a
     # 'none' grade (SPEC-00 rule 2); this count says how much of the missing coverage they explain.
     no_invasive_tumor: int
     failures: list[FailureGroup]
-    bootstrap_unit: Literal["patient"] = "patient"
-    grade: GradeMetrics | None
-    components: dict[Literal["tubule", "pleo", "mitoses"], ClassMetrics]
-    # Metrics the run's ground truth cannot support, with the reason (never silently dropped).
-    unavailable: dict[str, str]
-    cost_usd: float
-    runtime_s: dict[str, float | None]
+    int_fall: int  # fallback decision records in the run (SPEC-00 §2.3; must be 0)
+
+
+class MetricsDocument(Strict):
+    """``reports/<run_id>/metrics.json``: the contract's ``MetricsV1`` (docs/contracts/research_v1.md).
+
+    Optional members are omitted when the run cannot support them; ``unavailable`` says why.
+    Serialise with ``dump_metrics`` so that omitted members are left out rather than written as null.
+    """
+
+    metrics_schema_version: Literal[1]
+    run_id: str
+    generated_at: str
+    bootstrap: Bootstrap
+    coverage: float
+    headline: Headline
+    stages: StageMetrics
+    confusion: ConfusionSet
+    slices: list[SliceRow]
+    calibration: Calibration
+    curves: Curves
+    cost: Cost
+    run: RunInfo | None = None
+    counts: Counts | None = None
+    unavailable: dict[str, str] | None = None
+
+
+def dump_metrics(doc: MetricsDocument) -> str:
+    """JSON with optional members left out (``exclude_defaults``); required nulls are kept."""
+    return doc.model_dump_json(indent=2, exclude_defaults=True)
 
 
 class StageResult(Strict):

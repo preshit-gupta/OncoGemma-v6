@@ -48,6 +48,15 @@ interface MetricsV1 {                       // = reports/<run_id>/metrics.json
   curves: { mitosis_pr?: { thresholds: number[]; precision: number[]; recall: number[]; f1: number[] } };
   cost: { usd_total: number; usd_per_slide: number;
           by_model: Record<string, { calls: number; usd: number; p50_ms: number; p95_ms: number }> };
+  // Optional additions (WP-5.5c). Schema: backend/eval/schemas/metrics.schema.json.
+  run?: { id: string; name: string; dataset: string; split: string; arm: string | null; stages: string[];
+          mode: "auto" | "manual"; status: string; is_locked_test: boolean; config_hash: string;
+          registry_sha256: string; manifest_uri: string; manifest_sha256: string; splits_lock_sha256: string | null };
+  counts?: { items: Record<string, number>;          // by item status
+             no_invasive_tumor: number;              // succeeded slides with no invasive tumour; graded "none" in every denominator
+             failures: { status: "failed" | "excluded_qc"; stage: string | null; error_class: string | null; n: number }[];
+             int_fall: number };                     // fallback decisions in the run (SPEC-00 §2.3, must be 0)
+  unavailable?: Record<string, string>;               // metric or member -> why the run cannot support it
 }
 
 interface ItemRow {
