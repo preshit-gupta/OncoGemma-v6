@@ -1,1 +1,1 @@
-"""App background and domain services."""
+"""Domain services shared by the API routers, the workers and the validation harness."""

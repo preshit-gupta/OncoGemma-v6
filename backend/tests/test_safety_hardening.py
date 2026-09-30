@@ -321,7 +321,7 @@ def test_idempotency_key_enforcement_and_replay(safety_test_env):
         ]
     }
 
-    with patch("app.routers.triage.download_blob_as_bytes", return_value=json.dumps(mock_hs_data).encode("utf-8")), \
+    with patch("app.services.stages.download_blob_as_bytes", return_value=json.dumps(mock_hs_data).encode("utf-8")), \
          patch("app.core.cloud_tasks.dispatch_stage_task"):
 
         # 1. Missing Idempotency-Key header -> 400 Bad Request

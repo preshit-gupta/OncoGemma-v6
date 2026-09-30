@@ -32,6 +32,10 @@ referee:
   context_um: 512.0 # context field ...
   context_px: 512 # ... resampled to ~1.0 um/px
 
+# Confirming Stage 4 is refused while a candidate at or above this confidence is unreviewed (v5 value).
+review:
+  gate_min_conf: 0.50
+
 hpf:
   radius_um: 262.0 # 250-270 um field radius (area ≈ 0.2157 mm²)
   count: 10 # 10 non-overlapping fields (cumulative area ≈ 2.157 mm²)

@@ -10,6 +10,7 @@ from app.models.decision_record import DecisionRecord
 from app.models.stain_profile import StainProfile
 from app.models.user import AuthSession, User
 from app.models.idempotency import IdempotencyKeyRecord
+from app.models.validation import ValidationItem, ValidationRun
 
 __all__ = [
     "Case",
@@ -25,4 +26,6 @@ __all__ = [
     "User",
     "AuthSession",
     "IdempotencyKeyRecord",
+    "ValidationRun",
+    "ValidationItem",
 ]

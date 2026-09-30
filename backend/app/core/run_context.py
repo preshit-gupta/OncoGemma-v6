@@ -33,7 +33,7 @@ class DecisionContext:
     stage_execution_id: UUID
     stage: Stage
     run_mode: RunMode
-    run_id: UUID | None           # validation_runs.id when run_mode == EVAL (SPEC-02)
+    run_id: UUID | None           # validation_runs.id when a harness run queued the execution (SPEC-02)
     config_hash: str
 
     def __post_init__(self) -> None:
@@ -48,7 +48,7 @@ class DecisionContext:
 
     @classmethod
     def for_stage_execution(cls, stage_execution, config_hash: str) -> "DecisionContext":
-        """Context for a ``StageExecution`` row. Its ``run_mode`` column decides the mode."""
+        """Context for a ``StageExecution`` row. Its ``run_mode`` and ``run_id`` columns decide the mode and run."""
         try:
             run_mode = RunMode(stage_execution.run_mode)
         except ValueError as exc:
@@ -60,6 +60,6 @@ class DecisionContext:
             stage_execution_id=UUID(str(stage_execution.id)),
             stage=stage_execution.stage,
             run_mode=run_mode,
-            run_id=None,
+            run_id=None if stage_execution.run_id is None else UUID(str(stage_execution.run_id)),
             config_hash=config_hash,
         )

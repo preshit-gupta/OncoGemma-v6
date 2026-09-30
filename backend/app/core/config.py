@@ -70,6 +70,14 @@ class Settings(BaseSettings):
     CLOUD_TASKS_SERVICE_ACCOUNT: str = os.getenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
     # Polling worker started by the API lifespan (app.main). The test suite turns it off.
     RUN_IN_PROCESS_WORKER: bool = True
+    # Validation runs and batches (SPEC-02 §5.3, §6): workers advance active runs every
+    # HARNESS_TICK_S seconds; a run is driven by one worker at a time, under a lease of
+    # HARNESS_LEASE_S seconds that the holder renews on every tick.
+    HARNESS_TICK_S: float = float(os.getenv("HARNESS_TICK_S", "10"))
+    HARNESS_LEASE_S: float = float(os.getenv("HARNESS_LEASE_S", "120"))
+    # SPLITS.lock and the directory its paths are relative to, for batches from a manifest.
+    SPLITS_LOCK_PATH: str = os.getenv("SPLITS_LOCK_PATH", os.path.join(os.path.dirname(__file__), "../../eval/splits/SPLITS.lock"))
+    SPLITS_ROOT: str = os.getenv("SPLITS_ROOT", os.path.join(os.path.dirname(__file__), "../.."))
     
     # Sign-in (SPEC-03 §3). Google verifies ID tokens for this OAuth web client ID.
     # The session signing key is read only from the SESSION_SIGNING_KEY environment variable

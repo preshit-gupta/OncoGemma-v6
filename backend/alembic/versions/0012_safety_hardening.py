@@ -1,7 +1,7 @@
 """Safety hardening: soft delete, idempotency keys, and audit trigger (SPEC-03 §5).
 
-Revision ID: 0010_safety_hardening
-Revises: 0009_auth
+Revision ID: 0012_safety_hardening
+Revises: 0011_run_controller_lease
 Create Date: 2026-09-30 14:00:00
 
 """
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
 
 # revision identifiers, used by Alembic.
-revision: str = '0010_safety_hardening'
-down_revision: Union[str, None] = '0009_auth'
+revision: str = '0012_safety_hardening'
+down_revision: Union[str, None] = '0011_run_controller_lease'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

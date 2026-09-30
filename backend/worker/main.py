@@ -8,9 +8,11 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.db import SessionLocal, engine
 from app.core.pipeline_config import init_pipeline_config
 from app.models.stage_execution import StageExecution
+from eval.harness.driver import drive_active_runs, worker_identity
 from worker.execution import STAGE_HANDLERS, StageFailedError, execute_stage, mark_running
 
 HANDLERS = STAGE_HANDLERS
@@ -110,11 +112,18 @@ def run_worker_loop():
     print(f"[Worker] Starting OncoGemma stage worker poll loop. Engine: {engine.dialect.name}. Handlers: {list(HANDLERS.keys())}")
     reset_stuck_running_stages(timeout_seconds=1800)
     last_reset_check = time.time()
+    last_harness_tick = 0.0
+    owner = worker_identity()
     while True:
         try:
             if time.time() - last_reset_check > 60.0:
                 reset_stuck_running_stages(timeout_seconds=1800)
                 last_reset_check = time.time()
+
+            # Validation runs and batches: this worker drives the runs it holds a lease on (SPEC-02 §6).
+            if time.time() - last_harness_tick > settings.HARNESS_TICK_S:
+                last_harness_tick = time.time()
+                drive_active_runs(SessionLocal, owner, lease_s=settings.HARNESS_LEASE_S)
 
             executed = poll_and_execute_single_task()
             if not executed:

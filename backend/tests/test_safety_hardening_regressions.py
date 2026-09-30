@@ -190,7 +190,7 @@ def test_triage_edits_fail_loudly_when_machine_output_is_unreadable(safety_test_
     db.add(StageExecution(id=uuid.uuid4(), case_id=case_id, stage="triage", attempt=1,
                           status="awaiting_review", output_ref=""))
     db.commit()
-    with patch("app.routers.triage.download_blob_as_bytes", side_effect=FileNotFoundError("gone")):
+    with patch("app.services.stages.download_blob_as_bytes", side_effect=FileNotFoundError("gone")):
         resp = client.post("/api/v1/stages/triage/edits", json={
             "case_id": str(case_id),
             "edits": [{"op": "add", "polygon_um": SQUARE_200UM}],
@@ -206,7 +206,7 @@ def test_triage_edits_reject_overlap_with_machine_hotspot(safety_test_env):
     db.commit()
     machine = json.dumps({"hotspots": [{"id": "hs_01", "polygon_um": SQUARE_200UM}]}).encode()
     shifted = [[x + 100.0, y + 100.0] for x, y in SQUARE_200UM]
-    with patch("app.routers.triage.download_blob_as_bytes", return_value=machine):
+    with patch("app.services.stages.download_blob_as_bytes", return_value=machine):
         resp = client.post("/api/v1/stages/triage/edits", json={
             "case_id": str(case_id),
             "edits": [{"op": "add", "polygon_um": shifted}],
