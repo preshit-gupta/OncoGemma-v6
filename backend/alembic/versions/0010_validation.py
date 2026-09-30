@@ -2,6 +2,8 @@
 
 SPEC-02 numbers this migration 0005; that number went to the histotype change, so it is 0010.
 ``stages`` is a JSON list rather than TEXT[] so SQLite (tests) and PostgreSQL share one model.
+``splits_lock_sha256`` is nullable: an ad-hoc batch (SPEC-02 §6.1) has no split and no lock.
+``concurrency`` is stored so that ``resume`` and the batch API reuse the run's setting.
 
 SQLite cannot add a foreign key to an existing table without rebuilding it (batch mode). With
 foreign keys enforced, rebuilding ``stage_executions`` would cascade-delete its decision records
@@ -44,7 +46,7 @@ def upgrade() -> None:
     sa.Column('concurrency', sa.Integer(), nullable=False),
     sa.Column('config_hash', sa.CHAR(length=64), nullable=False),
     sa.Column('registry_sha256', sa.CHAR(length=64), nullable=False),
-    sa.Column('splits_lock_sha256', sa.CHAR(length=64), nullable=False),
+    sa.Column('splits_lock_sha256', sa.CHAR(length=64), nullable=True),
     sa.Column('arm', sa.Text(), nullable=True),
     sa.Column('is_locked_test', sa.Boolean(), server_default=sa.false(), nullable=False),
     sa.Column('status', sa.Text(), nullable=False),

@@ -55,7 +55,8 @@ class ValidationRun(Base):
     concurrency: Mapped[int] = mapped_column(Integer, nullable=False)
     config_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False)
     registry_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
-    splits_lock_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    # SHA-256 of SPLITS.lock for a dataset split; NULL for an ad-hoc batch, which has no split.
+    splits_lock_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
     arm: Mapped[str | None] = mapped_column(Text, nullable=True)  # ablation arm id (SPEC-06/07)
     is_locked_test: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     status: Mapped[str] = mapped_column(Text, nullable=False, default="created")
