@@ -75,6 +75,16 @@ class Settings(BaseSettings):
     # HARNESS_LEASE_S seconds that the holder renews on every tick.
     HARNESS_TICK_S: float = float(os.getenv("HARNESS_TICK_S", "10"))
     HARNESS_LEASE_S: float = float(os.getenv("HARNESS_LEASE_S", "120"))
+    # Run modes whose stages this process's worker executes, comma-separated. A worker that
+    # takes 'eval' also drives validation runs. Production: the API worker takes 'clinical' and the
+    # oncogemma-eval-worker job takes 'eval', so evaluation load stays off the clinical API.
+    WORKER_RUN_MODES: str = os.getenv("WORKER_RUN_MODES", "clinical,eval")
+    # A daemon worker exits after this many seconds with nothing to do (0: never). The eval worker
+    # job sets it, so an execution ends when its batches are done.
+    WORKER_IDLE_EXIT_S: float = float(os.getenv("WORKER_IDLE_EXIT_S", "0"))
+    # SPEC-02 §6.2: a worker claims a stage only when the scratch filesystem has at least this many
+    # times the slide's size free. On Cloud Run the filesystem is memory (8 GiB today).
+    SCRATCH_HEADROOM_FACTOR: float = float(os.getenv("SCRATCH_HEADROOM_FACTOR", "2"))
     # SPLITS.lock and the directory its paths are relative to, for batches from a manifest.
     SPLITS_LOCK_PATH: str = os.getenv("SPLITS_LOCK_PATH", os.path.join(os.path.dirname(__file__), "../../eval/splits/SPLITS.lock"))
     SPLITS_ROOT: str = os.getenv("SPLITS_ROOT", os.path.join(os.path.dirname(__file__), "../.."))
