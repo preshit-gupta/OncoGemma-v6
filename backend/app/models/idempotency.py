@@ -11,11 +11,12 @@ JSONType = JSON().with_variant(JSONB, "postgresql")
 class IdempotencyKeyRecord(Base):
     __tablename__ = "idempotency_keys"
 
+    # Keys are scoped per user: the same client-chosen key from two users never collides.
+    user_id: Mapped[str] = mapped_column(String, primary_key=True)
     key: Mapped[str] = mapped_column(String(255), primary_key=True)
-    user_id: Mapped[str] = mapped_column(String, nullable=False)
     endpoint: Mapped[str] = mapped_column(String, nullable=False)
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    status: Mapped[str] = mapped_column(String(32), nullable=False)  # in_flight, completed, failed
+    status: Mapped[str] = mapped_column(String(32), nullable=False)  # in_flight, completed
     status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     response_body: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -30,5 +31,5 @@ class IdempotencyKeyRecord(Base):
     )
 
     __table_args__ = (
-        CheckConstraint("status IN ('in_flight', 'completed', 'failed')", name="ck_idempotency_status"),
+        CheckConstraint("status IN ('in_flight', 'completed')", name="ck_idempotency_status"),
     )

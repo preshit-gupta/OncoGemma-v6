@@ -576,6 +576,7 @@ class RateLimitsConfig(StrictModel):
     mutating_per_user_per_min: PositiveInt
     auth_session_per_ip_per_min: PositiveInt
     window_seconds: PositiveInt
+    trusted_proxy_hops: PositiveInt
 
 
 class IdempotencyConfig(StrictModel):
@@ -595,8 +596,17 @@ class SignedUploadConfig(StrictModel):
 class GeometryConfig(StrictModel):
     max_vertices: PositiveInt
     min_vertices: PositiveInt
-    coordinate_tolerance_um: PositiveFloat
-    overlap_iou_threshold: NonNegativeFloat
+    min_area_mm2: PositiveFloat
+    max_area_mm2: PositiveFloat
+    max_overlap_area_um2: NonNegativeFloat
+
+    @model_validator(mode="after")
+    def _ranges(self) -> "GeometryConfig":
+        if not 3 <= self.min_vertices <= self.max_vertices:
+            raise ValueError("geometry needs 3 <= min_vertices <= max_vertices")
+        if self.min_area_mm2 >= self.max_area_mm2:
+            raise ValueError("geometry.min_area_mm2 must be below max_area_mm2")
+        return self
 
 
 class SafetyConfig(StrictModel):

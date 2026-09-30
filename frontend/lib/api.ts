@@ -123,15 +123,18 @@ export async function uploadSlideDirectToGCS(
   const sessionKey = `og_upload_session_${caseId}`;
   let upload_url: string = "";
   let gcs_uri: string = "";
+  // Signed headers: the PUT must send exactly these or GCS rejects the signature.
+  let upload_headers: Record<string, string> = {};
 
   // Check localStorage for active resumable upload session (Issue #413)
   try {
     const saved = localStorage.getItem(sessionKey);
     if (saved) {
       const parsed = JSON.parse(saved);
-      if (parsed.fileName === file.name && parsed.fileSize === file.size && parsed.upload_url) {
+      if (parsed.fileName === file.name && parsed.fileSize === file.size && parsed.upload_url && parsed.upload_headers) {
         upload_url = parsed.upload_url;
         gcs_uri = parsed.gcs_uri;
+        upload_headers = parsed.upload_headers;
       }
     }
   } catch (_) {}
@@ -158,11 +161,13 @@ export async function uploadSlideDirectToGCS(
     const data = await urlRes.json();
     upload_url = data.upload_url;
     gcs_uri = data.gcs_uri;
+    upload_headers = data.upload_headers;
 
     try {
       localStorage.setItem(sessionKey, JSON.stringify({
         upload_url,
         gcs_uri,
+        upload_headers,
         fileName: file.name,
         fileSize: file.size,
         startedAt: Date.now(),
@@ -195,7 +200,9 @@ export async function uploadSlideDirectToGCS(
     xhr.addEventListener("abort", () => reject(new Error("Direct GCS upload aborted")));
 
     xhr.open("PUT", upload_url);
-    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    for (const [name, value] of Object.entries(upload_headers)) {
+      xhr.setRequestHeader(name, value);
+    }
     xhr.send(file);
   });
 

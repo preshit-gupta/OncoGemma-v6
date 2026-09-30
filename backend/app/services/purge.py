@@ -1,19 +1,26 @@
+"""Retention jobs (SPEC-03 §5.3): hard-delete expired soft-deleted cases and expired idempotency keys.
+
+Run daily as a scheduled job: ``python -m app.services.purge``.
+"""
 from datetime import datetime, timedelta, timezone
 import logging
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.core.pipeline_config import get_pipeline_config
 from app.models.case import Case
 from app.models.audit import AuditEvent
+from app.models.idempotency import IdempotencyKeyRecord
 from app.routers.cases import delete_single_case_data
 
 logger = logging.getLogger("oncogemma.purge")
 
+PURGE_ACTOR = "system:purge_job"
+
 
 def purge_soft_deleted_cases(
     db: Session,
-    actor: str = "system:purge_job",
+    actor: str = PURGE_ACTOR,
     retention_days: int | None = None
 ) -> int:
     """
@@ -45,3 +52,28 @@ def purge_soft_deleted_cases(
         count += 1
 
     return count
+
+
+def purge_expired_idempotency_keys(db: Session) -> int:
+    """Deletes idempotency keys past their ``expires_at`` (SPEC-03 §5.3.3)."""
+    result = db.execute(
+        delete(IdempotencyKeyRecord).where(IdempotencyKeyRecord.expires_at <= datetime.now(timezone.utc))
+    )
+    db.commit()
+    return result.rowcount
+
+
+def main() -> None:
+    from app.core.db import SessionLocal
+    from app.core.pipeline_config import init_pipeline_config
+
+    logging.basicConfig(level=logging.INFO)
+    init_pipeline_config()
+    with SessionLocal() as db:
+        cases = purge_soft_deleted_cases(db)
+        keys = purge_expired_idempotency_keys(db)
+    logger.info("[Purge] removed %d soft-deleted case(s) and %d expired idempotency key(s)", cases, keys)
+
+
+if __name__ == "__main__":
+    main()

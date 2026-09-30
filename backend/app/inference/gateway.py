@@ -15,6 +15,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Callable, Literal, Mapping, NoReturn
 
 import numpy as np
@@ -44,7 +45,6 @@ from app.inference.adapters.base import (
     Unavailable,
 )
 from app.inference.blobs import BlobStore
-from enum import Enum
 from app.inference.errors import (
     GatewayError,
     InputContractError,
@@ -169,7 +169,12 @@ def render_prompt(template: str, variables: Mapping[str, PromptValue]) -> str:
             )
         if not isinstance(value, (int, float, bool, Enum)):
             raise PromptVariableError(f"prompt variable {name} has type {type(value).__name__}")
-    return _PROMPT_VARIABLE.sub(lambda m: str(variables[m.group(1)].value if isinstance(variables[m.group(1)], Enum) else variables[m.group(1)]), template)
+    return _PROMPT_VARIABLE.sub(lambda m: str(_prompt_value(variables[m.group(1)])), template)
+
+
+def _prompt_value(value: PromptValue) -> int | float | bool | str:
+    """The rendered (and hashed) form of a prompt variable: an Enum member is its value."""
+    return value.value if isinstance(value, Enum) else value
 
 
 def _record_output(output: BaseModel) -> dict[str, Any]:
@@ -354,7 +359,7 @@ class ModelGateway:
                 "shape": list(inputs.features.shape),
                 "dtype": str(inputs.features.dtype),
             },
-            "prompt_vars": dict(inputs.prompt_vars),
+            "prompt_vars": {name: _prompt_value(v) for name, v in inputs.prompt_vars.items()},
         }
         hashed = {
             "images": [{"spec": img.spec.as_json(), "sha256": sha256_hex(img.data)} for img in inputs.images],
@@ -362,7 +367,7 @@ class ModelGateway:
                 **input_spec["features"],
                 "sha256": sha256_hex(np.ascontiguousarray(inputs.features).tobytes()),
             },
-            "prompt_vars": dict(inputs.prompt_vars),
+            "prompt_vars": input_spec["prompt_vars"],
             "params": params,
         }
         call = _Call(

@@ -32,8 +32,8 @@ def upgrade() -> None:
     # 2. Idempotency keys (SPEC-03 §5.3.3)
     op.create_table(
         'idempotency_keys',
+        sa.Column('user_id', sa.String(), primary_key=True, nullable=False),
         sa.Column('key', sa.String(255), primary_key=True, nullable=False),
-        sa.Column('user_id', sa.String(), nullable=False),
         sa.Column('endpoint', sa.String(), nullable=False),
         sa.Column('request_hash', sa.String(64), nullable=False),
         sa.Column('status', sa.String(32), nullable=False),
@@ -41,7 +41,7 @@ def upgrade() -> None:
         sa.Column('response_body', JSONType, nullable=True),
         sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
         sa.Column('expires_at', sa.DateTime(timezone=True), nullable=False),
-        sa.CheckConstraint("status IN ('in_flight', 'completed', 'failed')", name='ck_idempotency_status'),
+        sa.CheckConstraint("status IN ('in_flight', 'completed')", name='ck_idempotency_status'),
     )
     op.create_index('ix_idempotency_keys_expires_at', 'idempotency_keys', ['expires_at'], unique=False)
 
@@ -75,6 +75,9 @@ def upgrade() -> None:
             BEFORE UPDATE OR DELETE ON audit_events
             FOR EACH ROW EXECUTE FUNCTION trg_audit_events_immutable();
         """)
+        # The API runs migrations as its own DB role, so CURRENT_USER is the application role.
+        op.execute("REVOKE UPDATE, DELETE ON audit_events FROM CURRENT_USER;")
+        op.execute("REVOKE UPDATE, DELETE ON audit_events FROM PUBLIC;")
 
 
 def downgrade() -> None:
@@ -82,6 +85,7 @@ def downgrade() -> None:
         op.execute("DROP TRIGGER IF EXISTS trg_audit_events_no_delete;")
         op.execute("DROP TRIGGER IF EXISTS trg_audit_events_no_update;")
     else:
+        op.execute("GRANT UPDATE, DELETE ON audit_events TO CURRENT_USER;")
         op.execute("DROP TRIGGER IF EXISTS trg_audit_events_immutable ON audit_events;")
         op.execute("DROP FUNCTION IF EXISTS trg_audit_events_immutable();")
 

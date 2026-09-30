@@ -6,6 +6,12 @@ rate_limits:
   mutating_per_user_per_min: 60
   auth_session_per_ip_per_min: 10
   window_seconds: 60
+  # Entries appended to X-Forwarded-For by proxies we run (counted from the right).
+  # Browser -> frontend Cloud Run (appends client IP) -> Next.js rewrite (forwards the header
+  # unchanged; Next 14.2 proxy-request.js sets no xfwd) -> API Cloud Run (appends the frontend's
+  # egress IP): the client is the 2nd entry from the right.
+  # Anything to the left of it is client-supplied and never trusted.
+  trusted_proxy_hops: 2
 
 idempotency:
   ttl_hours: 24
@@ -20,10 +26,13 @@ signed_upload:
     - "image/tiff"
     - "image/x-tiff"
     - "image/vnd.bif"
-    - "application/octet-stream"
+    - "application/octet-stream"  # .svs/.ndpi/.mrxs have no registered type; the browser client sends this
 
 geometry:
   max_vertices: 64
   min_vertices: 3
-  coordinate_tolerance_um: 1.0
-  overlap_iou_threshold: 0.0
+  # Sanity range for a pathologist-drawn hotspot ROI (SPEC-03 §5.3.2), pending ratification.
+  min_area_mm2: 0.01
+  max_area_mm2: 25.0
+  # Intersection area (µm²) above which two active hotspots count as overlapping. 0 = any overlap.
+  max_overlap_area_um2: 0.0

@@ -3,18 +3,18 @@ from io import BytesIO
 from datetime import datetime, timezone
 from PIL import Image
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Response
-from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from app.core.db import get_db
 from app.auth.deps import CurrentUser, require
-from app.auth.idempotency import require_idempotency_key, canonical_request_hash, IdempotencyContext
+from app.auth.idempotency import IdempotencyContext, IdempotentRoute, idempotent
 from app.core.config import settings
 from app.core.pipeline_config import get_pipeline_config
 from app.core.gcs import (
     upload_blob_from_file,
     generate_signed_upload_url,
+    signed_upload_headers,
     get_gcs_tile_template_url,
     parse_gcs_uri,
     blob_exists,
@@ -50,7 +50,7 @@ from app.schemas.case import (
 # Longer side of the case-list thumbnail, in pixels.
 THUMBNAIL_PX = 256
 
-router = APIRouter(prefix="/api/v1/cases", tags=["cases"])
+router = APIRouter(prefix="/api/v1/cases", tags=["cases"], route_class=IdempotentRoute)
 test_router = APIRouter(prefix="/api/v1/cases", tags=["cases"])
 
 @router.post("", response_model=CaseResponse, status_code=status.HTTP_201_CREATED)
@@ -374,7 +374,7 @@ def approve_case_stage(
     req: ApproveStageRequest | None = None,
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(require("stage:confirm")),
-    idempotency_key: str = Depends(require_idempotency_key)
+    _idempotency: IdempotencyContext = idempotent("cases/stages/approve"),
 ):
     """
     Approve pipeline stage output by Pathologist and trigger the next stage execution (e.g. v4.2 Hotspot Triage).
@@ -382,16 +382,6 @@ def approve_case_stage(
     case_obj = db.get(Case, case_id)
     if not case_obj or case_obj.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Case not found")
-
-    req_data = req.model_dump(mode="json") if req else {}
-    req_hash = canonical_request_hash(req_data)
-    user_id = user.id if hasattr(user, "id") else getattr(user, "username", getattr(req, "reviewed_by", "system") if req else "system")
-    idem_ctx = None
-    if isinstance(idempotency_key, str) and idempotency_key.strip():
-        idem_ctx = IdempotencyContext(idempotency_key, str(user_id), f"/api/v1/cases/{case_id}/stages/{stage_name}/approve", req_hash, db)
-        is_cached, cached_body, cached_status = idem_ctx.check()
-        if is_cached:
-            return JSONResponse(content=cached_body, status_code=cached_status or status.HTTP_202_ACCEPTED, headers={"Idempotent-Replay": "true"})
 
     slide_obj = db.scalars(select(Slide).where(Slide.case_id == case_id)).first()
     if not slide_obj:
@@ -402,6 +392,7 @@ def approve_case_stage(
         select(StageExecution)
         .where(StageExecution.case_id == case_id, StageExecution.stage == stage_name)
         .order_by(StageExecution.attempt.desc())
+        .with_for_update()
     )
     current_stage = db.scalars(stmt).first()
     if not current_stage:
@@ -448,13 +439,13 @@ def approve_case_stage(
                         )
                     )
                 qc_stage.status = "confirmed"
-                qc_stage.reviewed_by = str(user_id)
+                qc_stage.reviewed_by = user.id
                 qc_stage.reviewed_at = now_utc
                 qc_stage.review_edits = {"override_justification": justification.strip()}
 
                 override_audit = AuditEvent(
                     case_id=str(case_id),
-                    actor=str(user_id),
+                    actor=user.id,
                     event_type="score_override",
                     stage="qc",
                     payload={
@@ -466,7 +457,7 @@ def approve_case_stage(
                 db.add(override_audit)
             elif qc_stage.status in ("awaiting_review", "done"):
                 qc_stage.status = "confirmed"
-                qc_stage.reviewed_by = str(user_id)
+                qc_stage.reviewed_by = user.id
                 qc_stage.reviewed_at = now_utc
     else:
         if qc_stage and qc_stage.status == "failed":
@@ -481,7 +472,7 @@ def approve_case_stage(
             )
 
     current_stage.status = "confirmed"
-    current_stage.reviewed_by = str(user_id)
+    current_stage.reviewed_by = user.id
     current_stage.reviewed_at = now_utc
 
     # Ensure Hotspot DB records exist so Stage 4 Mitosis detection can proceed (#580, #700)
@@ -576,16 +567,12 @@ def approve_case_stage(
             payload={"slide_id": str(slide_obj.id), "gcs_uri_original": slide_obj.gcs_uri_original}
         )
 
-    resp_payload = {
+    return {
         "status": "approved",
         "approved_stage": stage_name,
         "next_stage": next_stage_name,
         "next_stage_execution_id": str(new_stage.id) if new_stage else None
     }
-    if idem_ctx:
-        idem_ctx.complete(resp_payload, status.HTTP_202_ACCEPTED)
-
-    return resp_payload
 
 @router.post("/{case_id}/slide/upload-url", response_model=SlideUploadUrlResponse)
 def get_slide_upload_url(
@@ -604,6 +591,11 @@ def get_slide_upload_url(
             status_code=400,
             detail=f"File size {req.size_bytes} exceeds maximum allowed size of {upload_cfg.max_bytes} bytes"
         )
+    if req.content_type not in upload_cfg.allowed_wsi_mimes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported content type '{req.content_type}'. Allowed: {upload_cfg.allowed_wsi_mimes}"
+        )
 
     file_uuid = uuid.uuid4()
     ext = req.filename.rsplit(".", 1)[-1].lower() if "." in req.filename else "svs"
@@ -615,16 +607,12 @@ def get_slide_upload_url(
     
     blob_name = f"cases/{case_id}/{file_uuid}.{ext}"
     gcs_uri = f"gs://{settings.GCS_RAW_BUCKET}/{blob_name}"
-    upload_url = generate_signed_upload_url(
-        settings.GCS_RAW_BUCKET,
-        blob_name,
-        expiration_minutes=upload_cfg.expiration_minutes,
-        content_type=req.content_type
-    )
+    upload_url = generate_signed_upload_url(settings.GCS_RAW_BUCKET, blob_name, content_type=req.content_type)
 
     return SlideUploadUrlResponse(
         upload_url=upload_url,
-        gcs_uri=gcs_uri
+        gcs_uri=gcs_uri,
+        upload_headers=signed_upload_headers(req.content_type),
     )
 
 @router.post("/{case_id}/slide/finalize", status_code=status.HTTP_202_ACCEPTED)
@@ -716,10 +704,9 @@ def get_case_thumbnail(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(require("case:read"))
 ):
-    case_obj = db.get(Case, case_id)
-    if not case_obj or case_obj.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="Case not found")
-
+    """
+    Returns a high-speed whole-slide macro thumbnail (e.g. 256x256) of the case biopsy directly from GCS.
+    """
     stmt = select(Slide).where(Slide.case_id == case_id).limit(1)
     slide_obj = db.scalars(stmt).first()
     if not slide_obj:

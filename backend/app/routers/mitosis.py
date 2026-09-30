@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, Literal
 from PIL import Image
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Response
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select, delete
 from sqlalchemy.orm import Session
@@ -23,7 +22,7 @@ from app.core.gcs import (
 )
 from app.core.db import get_db
 from app.auth.deps import CurrentUser, require
-from app.auth.idempotency import require_idempotency_key, canonical_request_hash, IdempotencyContext
+from app.auth.idempotency import IdempotencyContext, IdempotentRoute, idempotent
 from app.core.pipeline_config import get_pipeline_config
 from app.core.slide_access import PRECONDITION_ERRORS, open_case_slide, slide_stain_transform
 from app.core.tissue_mask_store import load_tissue_mask
@@ -41,7 +40,7 @@ from app.core.rehydrate import rehydrate_case_from_gcs
 from pipeline.hpf import generate_mitosis_density_map, greedy_place_hpfs
 from pipeline.scoring import calculate_hpf_mitosis_counts, compute_nottingham_mitotic_score
 
-router = APIRouter(prefix="/api/v1/stages/mitosis", tags=["mitosis"])
+router = APIRouter(prefix="/api/v1/stages/mitosis", tags=["mitosis"], route_class=IdempotentRoute)
 
 def to_uuid(val: Any) -> uuid.UUID:
     if isinstance(val, uuid.UUID):
@@ -75,6 +74,9 @@ def get_verified_mitosis_stage(
         (StageExecution.case_id == case_uid) | (StageExecution.case_id == str(case_id)),
         StageExecution.stage == "mitosis"
     ).order_by(StageExecution.attempt.desc()).limit(1)
+    if require_awaiting or forbid_confirmed:
+        # Row lock serialises concurrent state-gated writes (SPEC-03 §5.3.3); SQLite ignores it.
+        stmt = stmt.with_for_update()
 
     stage_exec = db.scalars(stmt).first()
     if not stage_exec:
@@ -938,25 +940,15 @@ def re_place_hpfs(payload: BulkActionPayload, db: Session = Depends(get_db), use
 @router.post("/confirm")
 def confirm_mitosis_stage(
     payload: MitosisConfirmPayload,
-    idempotency_key: str = Depends(require_idempotency_key),
     db: Session = Depends(get_db),
-    user: CurrentUser = Depends(require("stage:confirm"))
+    user: CurrentUser = Depends(require("stage:confirm")),
+    _idempotency: IdempotencyContext = idempotent("stages/mitosis/confirm"),
 ):
     """
     Clinical Safety Gate & Stage 4 Confirmation.
     Verifies that all candidate mitotic figures above threshold (conf >= 0.50) have been reviewed.
     Finalizes 10 HPFs and Nottingham Mitotic Score, marks Stage 4 as confirmed, snapshots metrics, and queues Stage 5.
     """
-    req_data = payload.model_dump(mode="json")
-    req_hash = canonical_request_hash(req_data)
-    user_id = user.id if hasattr(user, "id") else getattr(user, "username", getattr(payload, "reviewed_by", "system"))
-    idem_ctx = None
-    if isinstance(idempotency_key, str) and idempotency_key.strip():
-        idem_ctx = IdempotencyContext(idempotency_key, str(user_id), "/api/v1/stages/mitosis/confirm", req_hash, db)
-        is_cached, cached_body, cached_status = idem_ctx.check()
-        if is_cached:
-            return JSONResponse(content=cached_body, status_code=cached_status or status.HTTP_200_OK, headers={"Idempotent-Replay": "true"})
-
     case_id = payload.case_id
     case_obj, stage_exec = get_verified_mitosis_stage(case_id, db, require_awaiting=True)
     case_uid = case_obj.id
@@ -1088,13 +1080,9 @@ def confirm_mitosis_stage(
     except Exception as e:
         print(f"[CloudTasks Warning] Failed to dispatch next stage grading: {e}")
 
-    resp_payload = {
+    return {
         "status": "success",
         "case_id": case_id,
         "stage": "mitosis",
         "next_stage": "grading"
     }
-    if idem_ctx:
-        idem_ctx.complete(resp_payload, status.HTTP_200_OK)
-
-    return resp_payload

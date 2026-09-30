@@ -13,10 +13,12 @@ if sys.platform == "win32":
         pass
 
 from app.auth.deps import public
+from app.auth.idempotency import IdempotentReplay, replay_response
 from app.auth.rate_limit import RateLimitMiddleware
 from app.auth.service import check_auth_settings
 from app.core.config import settings
 from app.core.migrations import upgrade_to_head
+from app.core.soft_delete import reject_soft_deleted_case
 from app.core.pipeline_config import init_pipeline_config
 from app.core.gcs import ensure_buckets_exist
 from app.core.db import engine
@@ -109,6 +111,8 @@ def create_app(env: str | None = None) -> FastAPI:
         lifespan=lifespan
     )
 
+    # Added first so CORS stays the outermost layer and 429 responses carry CORS headers.
+    application.add_middleware(RateLimitMiddleware)
     cors_origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
     application.add_middleware(
         CORSMiddleware,
@@ -117,14 +121,16 @@ def create_app(env: str | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    application.add_middleware(RateLimitMiddleware)
+    application.add_exception_handler(IdempotentReplay, replay_response)
 
-    application.include_router(cases_router)
-    application.include_router(tiles_router)
+    # Soft-deleted cases answer 404 on every case-scoped route; audit history stays readable.
+    case_scoped = [Depends(reject_soft_deleted_case)]
+    application.include_router(cases_router, dependencies=case_scoped)
+    application.include_router(tiles_router, dependencies=case_scoped)
     application.include_router(audit_router)
-    application.include_router(triage_router)
-    application.include_router(mitosis_router)
-    application.include_router(grading_router)
+    application.include_router(triage_router, dependencies=case_scoped)
+    application.include_router(mitosis_router, dependencies=case_scoped)
+    application.include_router(grading_router, dependencies=case_scoped)
     application.include_router(worker_webhook_router)
     application.include_router(auth_router)
     application.include_router(users_router)
