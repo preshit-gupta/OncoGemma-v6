@@ -1,13 +1,15 @@
 """
-Unit tests for BCNBAdapter, configuration contract, grade mapping, and pyramidal TIFF conversion.
+Unit tests for BCNBAdapter, configuration contract, grade mapping, real fetch streaming, and pyramidal TIFF conversion.
 SPEC-02 §3.2 and WP-5.2.
 """
+import hashlib
 from pathlib import Path
 import pandas as pd
 import pytest
 
 from eval.datasets.base import DatasetConfigMissing, FetchedFile
 from eval.datasets.bcnb import BCNBAdapter, convert_to_pyramidal_tiff
+from eval.datasets.storage import LocalStorage
 
 
 def test_bcnb_config_missing_raises():
@@ -69,7 +71,85 @@ def test_bcnb_grade_mapping_and_exclusions():
     assert "Missing grade value" in excluded_df.iloc[1]["excluded_reason"]
 
 
-def test_bcnb_manifest_generation():
+def test_bcnb_fetch_real_streaming_and_hashes(tmp_path: Path):
+    valid_cfg = {
+        "mpp": 0.25,
+        "native_mag": 40.0,
+        "image_glob": "WSIs/*.jpg",
+        "clinical_file": str(tmp_path / "clinical.csv"),
+        "grade_field": "grade",
+        "grade_map": {"I": 1, "II": 2, "III": 3},
+        "tumor_polygons": {"path": "poly.json", "format": "json"},
+        "split_source": "official",
+        "license_ref": "owner",
+    }
+    adapter = BCNBAdapter(config=valid_cfg)
+    dest = LocalStorage(tmp_path / "dest")
+
+    # Create real slide file
+    slide_file = tmp_path / "BCNB_001.tif"
+    payload = b"BCNB_SLIDE_MOCK_PAYLOAD_FOR_HASH_TEST" * 50
+    slide_file.write_bytes(payload)
+
+    expected_sha256 = hashlib.sha256(payload).hexdigest().lower()
+    expected_md5 = hashlib.md5(payload).hexdigest().lower()
+
+    row = pd.Series({
+        "slide_id": "BCNB_001",
+        "file_path": str(slide_file.resolve()),
+    })
+
+    fetched = adapter.fetch(row, dest)
+    assert fetched.slide_id == "BCNB_001"
+    assert fetched.sha256 == expected_sha256
+    assert fetched.sha256 != "0" * 64
+    assert fetched.md5 == expected_md5
+    assert fetched.size_bytes == len(payload)
+    assert dest.exists("bcnb/slides/BCNB_001.tif")
+
+
+def test_bcnb_fetch_missing_file_raises(tmp_path: Path):
+    valid_cfg = {
+        "mpp": 0.25,
+        "native_mag": 40.0,
+        "image_glob": "WSIs/*.jpg",
+        "clinical_file": str(tmp_path / "clinical.csv"),
+        "grade_field": "grade",
+        "grade_map": {"I": 1, "II": 2, "III": 3},
+        "tumor_polygons": {"path": "poly.json", "format": "json"},
+        "split_source": "official",
+        "license_ref": "owner",
+    }
+    adapter = BCNBAdapter(config=valid_cfg)
+    dest = LocalStorage(tmp_path / "dest")
+
+    row = pd.Series({
+        "slide_id": "BCNB_MISSING",
+        "file_path": str(tmp_path / "nonexistent.tif"),
+    })
+
+    with pytest.raises(FileNotFoundError, match="not found"):
+        adapter.fetch(row, dest)
+
+
+def test_bcnb_labels_missing_file_raises(tmp_path: Path):
+    valid_cfg = {
+        "mpp": 0.25,
+        "native_mag": 40.0,
+        "image_glob": "WSIs/*.jpg",
+        "clinical_file": str(tmp_path / "nonexistent_clinical.csv"),
+        "grade_field": "grade",
+        "grade_map": {"I": 1, "II": 2, "III": 3},
+        "tumor_polygons": {"path": "poly.json", "format": "json"},
+        "split_source": "official",
+        "license_ref": "owner",
+    }
+    adapter = BCNBAdapter(config=valid_cfg)
+    with pytest.raises(FileNotFoundError, match="not found"):
+        adapter.labels()
+
+
+def test_bcnb_manifest_generation(tmp_path: Path):
     valid_cfg = {
         "mpp": 0.25,
         "native_mag": 40.0,
@@ -94,11 +174,12 @@ def test_bcnb_manifest_generation():
         }
     ])
 
+    real_hash = hashlib.sha256(b"bcnb-slide-test-content").hexdigest().lower()
     fetched = {
         "BCNB_001": FetchedFile(
             slide_id="BCNB_001",
             uri="file:///path/to/bcnb/slides/BCNB_001.tif",
-            sha256="f" * 64,
+            sha256=real_hash,
             md5=None,
             size_bytes=10000,
         )
@@ -110,14 +191,13 @@ def test_bcnb_manifest_generation():
     assert manifest_df.iloc[0]["specimen_type"] == "core_biopsy"
     assert manifest_df.iloc[0]["mpp_override"] == 0.25
     assert manifest_df.iloc[0]["gt_grade"] == 2
+    assert manifest_df.iloc[0]["sha256"] == real_hash
 
 
 def test_bcnb_pyvips_pyramidal_tiff_conversion(tmp_path: Path):
     pytest.importorskip("pyvips")
 
-    # If pyvips is available, test conversion
     jpg_path = tmp_path / "test.jpg"
-    # Create small dummy image
     import pyvips  # type: ignore
     im = pyvips.Image.black(1024, 1024)
     im.write_to_file(str(jpg_path))

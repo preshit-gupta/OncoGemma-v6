@@ -4,6 +4,7 @@ SPEC-02 §3.2 and WP-5.2.
 """
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any
 import pandas as pd
@@ -123,7 +124,6 @@ class BCNBAdapter(DatasetAdapter):
         """Discover BCNB WSIs matching image_glob."""
         self.validate_config()
         image_glob = self.config["image_glob"]
-        base_path = Path(image_glob).parent if "*" in image_glob else Path(".")
         files = list(Path().glob(image_glob))
 
         rows = []
@@ -140,23 +140,46 @@ class BCNBAdapter(DatasetAdapter):
         return pd.DataFrame(rows)
 
     def fetch(self, row: pd.Series, dest: Storage) -> FetchedFile:
-        """Record / copy BCNB slide."""
+        """
+        Stream slide payload to destination storage with real SHA-256 and MD5 hash computation.
+        Raises FileNotFoundError if the source file cannot be found.
+        """
         slide_id = str(row["slide_id"])
+        file_path_str = str(row.get("file_path", ""))
+        source_path = Path(file_path_str) if file_path_str else None
+
+        if source_path is None or not source_path.exists():
+            raise FileNotFoundError(f"BCNB source slide file not found: '{file_path_str}'")
+
         relpath = f"bcnb/slides/{slide_id}.tif"
-        uri = dest.uri(relpath)
-        sha256 = str(row.get("sha256", "0" * 64))
+        sha256_hasher = hashlib.sha256()
+        md5_hasher = hashlib.md5()
+        total_bytes = 0
+        chunk_size = 8 * 1024 * 1024  # 8 MiB streaming
+
+        with open(source_path, "rb") as src, dest.open_write(relpath) as writer:
+            while chunk := src.read(chunk_size):
+                writer.write(chunk)
+                sha256_hasher.update(chunk)
+                md5_hasher.update(chunk)
+                total_bytes += len(chunk)
+
         return FetchedFile(
             slide_id=slide_id,
-            uri=uri,
-            sha256=sha256,
-            md5=None,
-            size_bytes=int(row.get("size_bytes", 0)),
+            uri=dest.uri(relpath),
+            sha256=sha256_hasher.hexdigest().lower(),
+            md5=md5_hasher.hexdigest().lower(),
+            size_bytes=total_bytes,
         )
 
     def labels(self) -> pd.DataFrame:
         """Read clinical file and return mapped ground truth labels."""
         self.validate_config()
         clinical_file = self.config["clinical_file"]
+        path = Path(clinical_file)
+        if not path.exists():
+            raise FileNotFoundError(f"BCNB clinical file not found: {clinical_file}")
+
         if clinical_file.endswith(".csv"):
             df = pd.read_csv(clinical_file)
         else:
@@ -171,6 +194,12 @@ class BCNBAdapter(DatasetAdapter):
         self.validate_config()
         if discovered.empty or not fetched:
             return empty_manifest()
+
+        specimen_type = str(self.config.get("specimen_type", "core_biopsy"))
+        mpp_source = str(self.config.get("mpp_source", "dataset_doc"))
+        scanner = self.config.get("default_scanner")
+        gt_label_source = str(self.config.get("gt_label_source", "clinical_records"))
+        gt_label_confidence = str(self.config.get("gt_label_confidence", "high"))
 
         rows = []
         for _, row in discovered.iterrows():
@@ -188,11 +217,11 @@ class BCNBAdapter(DatasetAdapter):
                 "slide_id": slide_id,
                 "uri": fetched_file.uri,
                 "sha256": fetched_file.sha256,
-                "specimen_type": "core_biopsy",
+                "specimen_type": specimen_type,
                 "mpp_override": mpp,
-                "mpp_source": "dataset_doc",
+                "mpp_source": mpp_source,
                 "native_mag": native_mag,
-                "scanner": "iScan Coreo",
+                "scanner": scanner,
                 "tss": None,
                 "split": None,
                 "gt_grade": row.get("gt_grade"),
@@ -201,8 +230,8 @@ class BCNBAdapter(DatasetAdapter):
                 "gt_pleo": None,
                 "gt_mitoses": None,
                 "gt_histotype": None,
-                "gt_label_source": "clinical_records",
-                "gt_label_confidence": "high",
+                "gt_label_source": gt_label_source,
+                "gt_label_confidence": gt_label_confidence,
                 "regions_uri": None,
             }
             rows.append(manifest_row)

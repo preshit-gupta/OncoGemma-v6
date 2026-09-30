@@ -64,6 +64,10 @@ class MIDOGppAdapter(DatasetAdapter):
         if not categories:
             raise MIDOGppError("eval/datasets/config.yaml midogpp.categories is missing")
         self.category_map: dict[str, str] = {name.lower(): target for name, target in categories.items()}
+        self.specimen_type: str = str(self.config.get("specimen_type", "resection"))
+        self.mpp_source: str = str(self.config.get("mpp_source", "file"))
+        self.gt_label_source: str = str(self.config.get("gt_label_source", "consensus"))
+        self.gt_label_confidence: str = str(self.config.get("gt_label_confidence", "high"))
 
     def target_class(self, category_name: str) -> str:
         target = self.category_map.get(category_name.lower())
@@ -162,20 +166,50 @@ class MIDOGppAdapter(DatasetAdapter):
             w.write(payload)
         return dest.uri(relpath)
 
-    def fetch(self, row: pd.Series, dest: Storage) -> FetchedFile:
-        """Record a downloaded image with its real hashes; nothing is downloaded here."""
+    def fetch(self, row: pd.Series, dest: Storage | None = None) -> FetchedFile:
+        """
+        Record or stream a MIDOG++ image payload with real SHA-256 and MD5 hash computation.
+        If dest is provided, streams the image into destination storage.
+        """
         path = Path(row["path"])
-        data = path.read_bytes()
+        if not path.is_file():
+            raise FileNotFoundError(f"MIDOG++ image {path} is not downloaded")
+
+        slide_id = str(row["image_id"])
+        relpath = f"midogpp/images/{path.name}"
+        sha256_hasher = hashlib.sha256()
+        md5_hasher = hashlib.md5()
+        total_bytes = 0
+        chunk_size = 64 * 1024  # 64 KiB streaming
+
+        if dest is not None:
+            with open(path, "rb") as src, dest.open_write(relpath) as writer:
+                while chunk := src.read(chunk_size):
+                    writer.write(chunk)
+                    sha256_hasher.update(chunk)
+                    md5_hasher.update(chunk)
+                    total_bytes += len(chunk)
+            uri = dest.uri(relpath)
+        else:
+            with open(path, "rb") as src:
+                while chunk := src.read(chunk_size):
+                    sha256_hasher.update(chunk)
+                    md5_hasher.update(chunk)
+                    total_bytes += len(chunk)
+            uri = path.resolve().as_uri()
+
         return FetchedFile(
-            slide_id=str(row["image_id"]),
-            uri=path.resolve().as_uri(),
-            sha256=hashlib.sha256(data).hexdigest(),
-            md5=hashlib.md5(data).hexdigest(),
-            size_bytes=len(data),
+            slide_id=slide_id,
+            uri=uri,
+            sha256=sha256_hasher.hexdigest().lower(),
+            md5=md5_hasher.hexdigest().lower(),
+            size_bytes=total_bytes,
         )
 
     def labels(self) -> pd.DataFrame:
-        return pd.DataFrame(columns=["patient_id", "slide_id", "gt_mitoses"])
+        """Ground-truth category definitions."""
+        rows = [{"category_name": cat, "target_class": cls} for cat, cls in sorted(self.category_map.items())]
+        return pd.DataFrame(rows)
 
     def to_manifest(
         self,
@@ -202,9 +236,9 @@ class MIDOGppAdapter(DatasetAdapter):
                 "slide_id": slide_id,
                 "uri": fetched_file.uri,
                 "sha256": fetched_file.sha256,
-                "specimen_type": "resection",
+                "specimen_type": self.specimen_type,
                 "mpp_override": float(row["mpp"]),
-                "mpp_source": "file",
+                "mpp_source": self.mpp_source,
                 "native_mag": None,
                 "scanner": None if pd.isna(row.get("scanner")) else str(row["scanner"]),
                 "tss": None,
@@ -215,8 +249,8 @@ class MIDOGppAdapter(DatasetAdapter):
                 "gt_pleo": None,
                 "gt_mitoses": None,
                 "gt_histotype": None,
-                "gt_label_source": "consensus",
-                "gt_label_confidence": "high",
+                "gt_label_source": self.gt_label_source,
+                "gt_label_confidence": self.gt_label_confidence,
                 "regions_uri": regions.get(slide_id),
             })
 
