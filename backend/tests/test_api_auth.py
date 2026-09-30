@@ -45,23 +45,23 @@ def test_healthz_endpoint():
 
 def test_mock_auth_headers():
     # Valid default header
-    response = client.get("/api/v1/cases", headers={"X-User-Role": "pathologist"})
+    response = client.get("/api/v1/cases", headers={"X-Test-Role": "pathologist"})
     assert response.status_code == 200
 
     # Invalid role header -> 403 Forbidden
-    response_invalid = client.get("/api/v1/cases", headers={"X-User-Role": "unauthorized_role"})
+    response_invalid = client.get("/api/v1/cases", headers={"X-Test-Role": "unauthorized_role"})
     assert response_invalid.status_code == 403
 
 def test_create_and_get_case():
     # Create case
-    res = client.post("/api/v1/cases", headers={"X-User-Role": "pathologist", "X-User-Id": "path_001"})
+    res = client.post("/api/v1/cases", headers={"X-Test-Role": "pathologist", "X-Test-User-Id": "path_001"})
     assert res.status_code == 201
     case_data = res.json()
     case_id = case_data["id"]
     assert case_data["created_by"] == "path_001"
 
     # Get case details
-    res_detail = client.get(f"/api/v1/cases/{case_id}", headers={"X-User-Role": "pathologist"})
+    res_detail = client.get(f"/api/v1/cases/{case_id}", headers={"X-Test-Role": "pathologist"})
     assert res_detail.status_code == 200
     detail = res_detail.json()
     assert detail["id"] == case_id
@@ -69,23 +69,23 @@ def test_create_and_get_case():
 
 def test_rbac_case_permissions():
     # 1. Viewer cannot create a case -> 403
-    res_v_create = client.post("/api/v1/cases", headers={"X-User-Role": "viewer", "X-User-Id": "viewer_1"})
+    res_v_create = client.post("/api/v1/cases", headers={"X-Test-Role": "viewer", "X-Test-User-Id": "viewer_1"})
     assert res_v_create.status_code == 403
 
     # 2. Admin can create a case -> 201
-    res_a_create = client.post("/api/v1/cases", headers={"X-User-Role": "admin", "X-User-Id": "admin_1"})
+    res_a_create = client.post("/api/v1/cases", headers={"X-Test-Role": "admin", "X-Test-User-Id": "admin_1"})
     assert res_a_create.status_code == 201
     case_id = res_a_create.json()["id"]
 
     # 3. Viewer cannot delete a case -> 403
-    res_v_del = client.delete(f"/api/v1/cases/{case_id}", headers={"X-User-Role": "viewer"})
+    res_v_del = client.delete(f"/api/v1/cases/{case_id}", headers={"X-Test-Role": "viewer"})
     assert res_v_del.status_code == 403
 
     # 4. Pathologist cannot clear all cases -> 403
-    res_p_clear = client.delete("/api/v1/cases", headers={"X-User-Role": "pathologist"})
+    res_p_clear = client.delete("/api/v1/cases", headers={"X-Test-Role": "pathologist"})
     assert res_p_clear.status_code == 403
 
     # 5. Admin can clear all cases -> 200
-    res_a_clear = client.delete("/api/v1/cases", headers={"X-User-Role": "admin"})
+    res_a_clear = client.delete("/api/v1/cases", headers={"X-Test-Role": "admin"})
     assert res_a_clear.status_code == 200
     assert res_a_clear.json()["status"] == "cleared"

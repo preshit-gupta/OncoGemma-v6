@@ -8,10 +8,15 @@ Finding #405: Guarantees that the test suite runs 100% offline and isolated by d
   worker, which would share the in-memory SQLite connection with requests from another thread.
 - Fails any test that asks for real Google credentials (forbid_real_google_credentials).
   Model calls in tests go through gateway fakes (tests/fakes), never a live client.
+- Signs every request in as a test user (test_identity): a dependency override of
+  ``current_user`` whose role and id come from the test-only headers X-Test-Role and
+  X-Test-User-Id (default: a pathologist). Permission checks (``require``) still run.
+  Tests of the real sign-in and session path opt out with ``@pytest.mark.real_auth``.
 """
 
 import os
 import pytest
+from fastapi import HTTPException, Request
 
 # Configure environment variables before any application modules are imported
 os.environ["USE_REAL_GCS"] = "false"
@@ -19,6 +24,9 @@ os.environ["ENV"] = "test"
 os.environ["ENVIRONMENT"] = "test"
 os.environ["RUN_IN_PROCESS_WORKER"] = "false"
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
+os.environ["SESSION_SIGNING_KEY"] = "test-session-signing-key-0123456789abcdef"
+os.environ["GOOGLE_OAUTH_CLIENT_ID"] = "test-client.apps.googleusercontent.com"
+os.environ["AUTH_ALLOWED_DOMAINS"] = "example.org"
 
 # Update the singleton settings instance
 from app.core.config import settings
@@ -28,6 +36,17 @@ settings.ENV = "test"
 settings.ENVIRONMENT = "test"
 settings.RUN_IN_PROCESS_WORKER = False
 settings.DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///:memory:")
+settings.GOOGLE_OAUTH_CLIENT_ID = os.environ["GOOGLE_OAUTH_CLIENT_ID"]
+settings.AUTH_ALLOWED_DOMAINS = os.environ["AUTH_ALLOWED_DOMAINS"]
+
+TEST_ROLE_HEADER = "X-Test-Role"
+TEST_USER_HEADER = "X-Test-User-Id"
+DEFAULT_TEST_ROLE = "pathologist"
+DEFAULT_TEST_USER_ID = "test_pathologist"
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "real_auth: use the real session dependency instead of the test identity")
 
 
 @pytest.fixture(scope="session")
@@ -99,3 +118,29 @@ def isolate_test_environment(monkeypatch):
     import app.core.gcs as gcs
     monkeypatch.setattr(gcs, "_gcs_client", None)
 
+
+
+def _test_identity(request: Request):
+    from app.auth.deps import CurrentUser
+    from app.auth.roles import ROLES
+
+    role = request.headers.get(TEST_ROLE_HEADER, DEFAULT_TEST_ROLE)
+    if role not in ROLES:
+        raise HTTPException(status_code=403, detail="forbidden")
+    user_id = request.headers.get(TEST_USER_HEADER, DEFAULT_TEST_USER_ID)
+    return CurrentUser(id=user_id, email=f"{user_id}@example.org", role=role)
+
+
+@pytest.fixture(autouse=True)
+def test_identity(request):
+    """Sign requests in as the test user unless the test is marked ``real_auth``."""
+    from app.auth.deps import current_user
+    from app.auth.sessions import session_cache
+    from app.main import app
+
+    session_cache.clear()
+    if request.node.get_closest_marker("real_auth") is None:
+        app.dependency_overrides[current_user] = _test_identity
+    yield
+    app.dependency_overrides.pop(current_user, None)
+    session_cache.clear()

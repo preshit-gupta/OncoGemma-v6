@@ -307,7 +307,7 @@ def test_approve_case_stage_requires_awaiting_review(client, db_session):
     # 1. 409 Conflict when not awaiting_review
     res = client.post(
         f"/api/v1/cases/{case_id}/stages/preprocess/approve",
-        headers={"X-User-Role": "pathologist", "X-User-Id": "dr_watson"}
+        headers={"X-Test-Role": "pathologist", "X-Test-User-Id": "dr_watson"}
     )
     assert res.status_code == 409
     assert "expected 'awaiting_review'" in res.json()["detail"]
@@ -319,7 +319,7 @@ def test_approve_case_stage_requires_awaiting_review(client, db_session):
     with patch("app.core.cloud_tasks.dispatch_stage_task"):
         res = client.post(
             f"/api/v1/cases/{case_id}/stages/preprocess/approve",
-            headers={"X-User-Role": "pathologist", "X-User-Id": "dr_watson"}
+            headers={"X-Test-Role": "pathologist", "X-Test-User-Id": "dr_watson"}
         )
     assert res.status_code == 202
     assert res.json()["status"] == "approved"
@@ -352,7 +352,7 @@ def test_retry_case_stage_validations_and_gating(client, db_session):
     # 1. Invalid stage name -> 400
     res_bad_stage = client.post(
         f"/api/v1/cases/{case_id}/stages/nonexistent_stage/retry",
-        headers={"X-User-Role": "pathologist"}
+        headers={"X-Test-Role": "pathologist"}
     )
     assert res_bad_stage.status_code == 400
     assert "Invalid stage_name" in res_bad_stage.json()["detail"]
@@ -360,7 +360,7 @@ def test_retry_case_stage_validations_and_gating(client, db_session):
     # 2. Stage status is 'queued' -> 409 Conflict
     res_not_failed = client.post(
         f"/api/v1/cases/{case_id}/stages/triage/retry",
-        headers={"X-User-Role": "pathologist"}
+        headers={"X-Test-Role": "pathologist"}
     )
     assert res_not_failed.status_code == 409
     assert "Only stages in ('failed', 'rejected') can be retried" in res_not_failed.json()["detail"]
@@ -372,7 +372,7 @@ def test_retry_case_stage_validations_and_gating(client, db_session):
     with patch("app.core.cloud_tasks.dispatch_stage_task"):
         res_ok = client.post(
             f"/api/v1/cases/{case_id}/stages/triage/retry",
-            headers={"X-User-Role": "pathologist"}
+            headers={"X-Test-Role": "pathologist"}
         )
     assert res_ok.status_code == 202
     assert res_ok.json()["attempt"] == 2
@@ -422,7 +422,7 @@ def test_slide_rescan_attempt_monotonicity(client, db_session):
         res = client.post(
             f"/api/v1/cases/{case_id}/slide/finalize",
             json=req.model_dump(),
-            headers={"X-User-Role": "pathologist"}
+            headers={"X-Test-Role": "pathologist"}
         )
     assert res.status_code == 202
     assert res.json()["attempt"] == 2
@@ -456,7 +456,7 @@ def test_get_case_detail_orders_stages_by_attempt_desc(client, db_session):
     db_session.add_all([c, sl, se_1, se_3, se_2])
     db_session.commit()
 
-    res = client.get(f"/api/v1/cases/{case_id}", headers={"X-User-Role": "pathologist"})
+    res = client.get(f"/api/v1/cases/{case_id}", headers={"X-Test-Role": "pathologist"})
     assert res.status_code == 200
     stages = res.json()["stages"]
     attempts = [s["attempt"] for s in stages]
@@ -549,7 +549,7 @@ def test_approve_preprocess_done_with_qc_awaiting_review(client, db_session):
     with patch("app.core.cloud_tasks.dispatch_stage_task"):
         res = client.post(
             f"/api/v1/cases/{case_id}/stages/preprocess/approve",
-            headers={"X-User-Role": "pathologist"}
+            headers={"X-Test-Role": "pathologist"}
         )
     assert res.status_code == 202
     assert res.json()["status"] == "approved"
@@ -590,7 +590,7 @@ def test_approve_preprocess_qc_failed_requires_override_justification(client, db
     # 1. Attempt approval without justification -> 409
     res_blocked = client.post(
         f"/api/v1/cases/{case_id}/stages/preprocess/approve",
-        headers={"X-User-Role": "pathologist"}
+        headers={"X-Test-Role": "pathologist"}
     )
     assert res_blocked.status_code == 409
     assert "clinical override justification" in res_blocked.json()["detail"].lower()
@@ -598,7 +598,7 @@ def test_approve_preprocess_qc_failed_requires_override_justification(client, db
     # 2. Attempt approval with short justification (<10 chars) -> 409
     res_short = client.post(
         f"/api/v1/cases/{case_id}/stages/preprocess/approve",
-        headers={"X-User-Role": "pathologist"},
+        headers={"X-Test-Role": "pathologist"},
         json={"override_justification": "Too short"}
     )
     assert res_short.status_code == 409
@@ -607,7 +607,7 @@ def test_approve_preprocess_qc_failed_requires_override_justification(client, db
     with patch("app.core.cloud_tasks.dispatch_stage_task"):
         res_ok = client.post(
             f"/api/v1/cases/{case_id}/stages/preprocess/approve",
-            headers={"X-User-Role": "pathologist"},
+            headers={"X-Test-Role": "pathologist"},
             json={"override_justification": "Artifact in margin; diagnostic core has adequate cellular clarity."}
         )
     assert res_ok.status_code == 202
@@ -643,7 +643,7 @@ def test_retry_preprocess_when_done_or_failed(client, db_session):
     with patch("app.core.cloud_tasks.dispatch_stage_task"):
         res = client.post(
             f"/api/v1/cases/{case_id}/stages/preprocess/retry",
-            headers={"X-User-Role": "pathologist"}
+            headers={"X-Test-Role": "pathologist"}
         )
     assert res.status_code == 202
     assert res.json()["attempt"] == 2

@@ -71,10 +71,14 @@ class Settings(BaseSettings):
     # Polling worker started by the API lifespan (app.main). The test suite turns it off.
     RUN_IN_PROCESS_WORKER: bool = True
     
-    # Auth
-    MOCK_AUTH_ENABLED: bool = True
-    DEFAULT_MOCK_ROLE: str = "pathologist"
-    DEFAULT_MOCK_USER_ID: str = "user_pathologist_001"
+    # Sign-in (SPEC-03 §3). Google verifies ID tokens for this OAuth web client ID.
+    # The session signing key is read only from the SESSION_SIGNING_KEY environment variable
+    # (Secret Manager og-session-signing-key on Cloud Run), never from a setting (app.auth.sessions).
+    GOOGLE_OAUTH_CLIENT_ID: str = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "")
+    # Comma-separated Google Workspace domains whose accounts may sign in (the ID token's hd claim).
+    AUTH_ALLOWED_DOMAINS: str = os.getenv("AUTH_ALLOWED_DOMAINS", "")
+    # Signing in with this email makes it an admin while no active admin exists (SPEC-03 §3.3, §8).
+    BOOTSTRAP_ADMIN_EMAIL: str = os.getenv("BOOTSTRAP_ADMIN_EMAIL", "")
     
     # Config directory
     CONFIGS_DIR: str = os.path.join(os.path.dirname(__file__), "../../../configs")

@@ -553,7 +553,7 @@ def run_grading(stage_exec: StageExecution, db: Session, runtime: StageRuntime) 
         # Record Audit Event
         audit_evt = AuditEvent(
             case_id=str(stage_exec.case_id),
-            actor=settings.DEFAULT_MOCK_USER_ID,
+            actor="worker_grading",
             event_type="stage_5_grading_generated",
             stage="grading",
             payload={

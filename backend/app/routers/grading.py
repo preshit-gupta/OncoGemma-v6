@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.auth import get_current_user, CurrentUser
+from app.auth.deps import CurrentUser, require
 from app.core.gcs import download_blob_as_bytes
 from app.core.db import get_db
 from app.core.pipeline_config import get_pipeline_config
@@ -66,7 +66,6 @@ class ConfirmHistologicTypePayload(BaseModel):
     case_id: str
     histologic_type: str
     justification: Optional[str] = None
-    reviewed_by: Optional[str] = "user_pathologist_001"
 
 
 class SinglePatchReview(BaseModel):
@@ -80,7 +79,6 @@ class SinglePatchReview(BaseModel):
 
 class PatchReviewPayload(BaseModel):
     case_id: str
-    reviewed_by: str = Field(default="user_pathologist_001")
     action: Literal["update", "approve_all", "reset_all"] = "update"
     reviews: List[SinglePatchReview] = Field(default_factory=list)
 
@@ -94,7 +92,6 @@ class SingleHpfReview(BaseModel):
 
 class HpfReviewPayload(BaseModel):
     case_id: str
-    reviewed_by: str = Field(default="user_pathologist_001")
     action: Literal["update", "approve_all", "reset_all"] = "update"
     reviews: List[SingleHpfReview] = Field(default_factory=list)
 
@@ -109,7 +106,6 @@ class RecomputeGradePayload(BaseModel):
 
 class ConfirmGradingPayload(BaseModel):
     case_id: str
-    reviewed_by: str = Field(default="user_pathologist_001")
     # None keeps the type already confirmed; there is no default type.
     histologic_type: Optional[str] = None
     type_confirmed: bool = Field(default=False, description="Mandatory confirmation gate")
@@ -448,7 +444,7 @@ def _build_grading_stage_data_dict(
 # ---------------------------------------------------------------------------
 
 @router.get("/{case_id}")
-def get_grading_stage_data(case_id: str, db: Session = Depends(get_db)):
+def get_grading_stage_data(case_id: str, db: Session = Depends(get_db), user: CurrentUser = Depends(require("case:read"))):
     """
     Retrieve full Stage 5 Grading data: 24 evidence patches with review state,
     10 HPF sites with review state, sub-scores, active overrides, and live calculated grade.
@@ -472,7 +468,7 @@ def get_grading_stage_data(case_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/patches/review")
-def review_grading_patches(payload: PatchReviewPayload, db: Session = Depends(get_db)):
+def review_grading_patches(payload: PatchReviewPayload, db: Session = Depends(get_db), user: CurrentUser = Depends(require("stage:review"))):
     """
     Explicit Patch-Level Review endpoint:
     Allows approving individual patches, modifying per-patch tubule % / pleo score,
@@ -520,7 +516,7 @@ def review_grading_patches(payload: PatchReviewPayload, db: Session = Depends(ge
             patch_overrides[p_id] = {
                 **existing,
                 "status": "approved",
-                "reviewed_by": payload.reviewed_by,
+                "reviewed_by": user.id,
                 "reviewed_at": now_iso
             }
         edits.append({
@@ -528,7 +524,7 @@ def review_grading_patches(payload: PatchReviewPayload, db: Session = Depends(ge
             "path": "/patches",
             "value": "approve_all",
             "timestamp": now_iso,
-            "actor": payload.reviewed_by
+            "actor": user.id
         })
     elif payload.action == "reset_all":
         patch_overrides = {}
@@ -537,7 +533,7 @@ def review_grading_patches(payload: PatchReviewPayload, db: Session = Depends(ge
             "path": "/patches",
             "value": {},
             "timestamp": now_iso,
-            "actor": payload.reviewed_by
+            "actor": user.id
         })
     elif payload.action == "update":
         for r in payload.reviews:
@@ -548,7 +544,7 @@ def review_grading_patches(payload: PatchReviewPayload, db: Session = Depends(ge
                 "tumor_present": r.tumor_present,
                 "pleomorphism_score": r.pleomorphism_score,
                 "notes": r.notes,
-                "reviewed_by": payload.reviewed_by,
+                "reviewed_by": user.id,
                 "reviewed_at": now_iso
             }
             edits.append({
@@ -556,7 +552,7 @@ def review_grading_patches(payload: PatchReviewPayload, db: Session = Depends(ge
                 "path": f"/patches/{p_id}",
                 "value": patch_overrides[p_id],
                 "timestamp": now_iso,
-                "actor": payload.reviewed_by
+                "actor": user.id
             })
 
     current_overrides["patches"] = patch_overrides
@@ -567,7 +563,7 @@ def review_grading_patches(payload: PatchReviewPayload, db: Session = Depends(ge
     # Record Audit Event
     audit_evt = AuditEvent(
         case_id=str(payload.case_id),
-        actor=payload.reviewed_by,
+        actor=user.id,
         event_type="review_edit",
         stage="grading",
         payload={
@@ -584,7 +580,7 @@ def review_grading_patches(payload: PatchReviewPayload, db: Session = Depends(ge
 
 
 @router.post("/hpfs/review")
-def review_grading_hpfs(payload: HpfReviewPayload, db: Session = Depends(get_db)):
+def review_grading_hpfs(payload: HpfReviewPayload, db: Session = Depends(get_db), user: CurrentUser = Depends(require("stage:review"))):
     """
     Explicit HPF-Level Review endpoint:
     Allows approving individual HPF fields or 1-click bulk approving all 10 HPFs.
@@ -644,7 +640,7 @@ def review_grading_hpfs(payload: HpfReviewPayload, db: Session = Depends(get_db)
             hpf_overrides[h_seq] = {
                 **existing,
                 "status": "approved",
-                "reviewed_by": payload.reviewed_by,
+                "reviewed_by": user.id,
                 "reviewed_at": now_iso
             }
         edits.append({
@@ -652,7 +648,7 @@ def review_grading_hpfs(payload: HpfReviewPayload, db: Session = Depends(get_db)
             "path": "/hpfs",
             "value": "approve_all",
             "timestamp": now_iso,
-            "actor": payload.reviewed_by
+            "actor": user.id
         })
     elif payload.action == "reset_all":
         hpf_overrides = {}
@@ -661,7 +657,7 @@ def review_grading_hpfs(payload: HpfReviewPayload, db: Session = Depends(get_db)
             "path": "/hpfs",
             "value": {},
             "timestamp": now_iso,
-            "actor": payload.reviewed_by
+            "actor": user.id
         })
     elif payload.action == "update":
         for r in payload.reviews:
@@ -676,7 +672,7 @@ def review_grading_hpfs(payload: HpfReviewPayload, db: Session = Depends(get_db)
                 **existing,
                 "status": r.status,
                 "notes": r.notes,
-                "reviewed_by": payload.reviewed_by,
+                "reviewed_by": user.id,
                 "reviewed_at": now_iso
             }
             edits.append({
@@ -684,7 +680,7 @@ def review_grading_hpfs(payload: HpfReviewPayload, db: Session = Depends(get_db)
                 "path": f"/hpfs/{h_seq}",
                 "value": hpf_overrides[h_seq],
                 "timestamp": now_iso,
-                "actor": payload.reviewed_by
+                "actor": user.id
             })
 
     current_overrides["hpfs"] = hpf_overrides
@@ -695,7 +691,7 @@ def review_grading_hpfs(payload: HpfReviewPayload, db: Session = Depends(get_db)
     # Record Audit Event
     audit_evt = AuditEvent(
         case_id=str(payload.case_id),
-        actor=payload.reviewed_by,
+        actor=user.id,
         event_type="review_edit",
         stage="grading",
         payload={
@@ -712,7 +708,7 @@ def review_grading_hpfs(payload: HpfReviewPayload, db: Session = Depends(get_db)
 
 
 @router.get("/{case_id}/patches/{patch_id}/image")
-def get_patch_image(case_id: str, patch_id: str, db: Session = Depends(get_db)):
+def get_patch_image(case_id: str, patch_id: str, db: Session = Depends(get_db), user: CurrentUser = Depends(require("case:read"))):
     """
     Stream the 512x512 normalized evidence patch PNG directly from GCS.
     Worker is the authoritative producer of evidence patches (#147).
@@ -732,7 +728,7 @@ def get_patch_image(case_id: str, patch_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/recompute")
-def recompute_grade_preview(payload: RecomputeGradePayload, db: Session = Depends(get_db)):
+def recompute_grade_preview(payload: RecomputeGradePayload, db: Session = Depends(get_db), user: CurrentUser = Depends(require("stage:review"))):
     """
     Live debounced in-memory preview of Nottingham Sum and Grade (<10ms execution).
     """
@@ -772,19 +768,13 @@ def recompute_grade_preview(payload: RecomputeGradePayload, db: Session = Depend
 @router.post("/{case_id}/type/confirm")
 def confirm_histologic_type(
     payload: ConfirmHistologicTypePayload,
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require("stage:confirm")),
     db: Session = Depends(get_db)
 ):
     """
     Dedicated server-side histologic subtype confirmation action.
     Validates against approved CAP subtype ontology and stamps the pathologist actor.
     """
-    if current_user.role not in ("pathologist", "admin"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Forbidden: Only pathologists or administrators can confirm histologic subtype."
-        )
-
     if payload.histologic_type not in VALID_HISTOLOGIC_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -818,7 +808,7 @@ def confirm_histologic_type(
             detail="Cannot modify histologic subtype for a signed or amended case report."
         )
 
-    actor = current_user.id or payload.reviewed_by or "user_pathologist_001"
+    actor = current_user.id
     grading_record.histologic_type = payload.histologic_type
     grading_record.type_confirmed_by = actor
 
@@ -847,7 +837,7 @@ def confirm_histologic_type(
 @router.post("/confirm")
 def confirm_grading_stage(
     payload: ConfirmGradingPayload,
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require("stage:confirm")),
     db: Session = Depends(get_db)
 ):
     """
@@ -863,13 +853,7 @@ def confirm_grading_stage(
     8. Pure code mathematical invariants validation.
     Persists final state to DB and marks case done.
     """
-    if current_user.role not in ("pathologist", "admin"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Forbidden: Only pathologists or administrators can confirm Nottingham grading."
-        )
-
-    actor = payload.reviewed_by or current_user.id or "user_pathologist_001"
+    actor = current_user.id
     case_id = payload.case_id
     case_uid = to_uuid(case_id)
 

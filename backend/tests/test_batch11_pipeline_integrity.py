@@ -41,7 +41,7 @@ def test_slide_upload_invalid_extension():
     """Verify slide upload rejects non-WSI files with 400 (Issue #202)."""
     case_id = uuid.uuid4()
     with client:
-        resp_case = client.post("/api/v1/cases", headers={"X-User-Role": "pathologist"})
+        resp_case = client.post("/api/v1/cases", headers={"X-Test-Role": "pathologist"})
         assert resp_case.status_code == 201
         created_id = resp_case.json()["id"]
 
@@ -50,7 +50,7 @@ def test_slide_upload_invalid_extension():
         resp_upload = client.post(
             f"/api/v1/cases/{created_id}/slide/upload",
             files=files,
-            headers={"X-User-Role": "pathologist"}
+            headers={"X-Test-Role": "pathologist"}
         )
         assert resp_upload.status_code == 400
         assert "Unsupported file extension" in resp_upload.json()["detail"]
@@ -60,7 +60,7 @@ def test_slide_finalize_cross_case_phi_isolation():
     """Verify slide finalize enforces strict URI prefix and blob existence (Issue #18)."""
     with patch("app.core.cloud_tasks.dispatch_stage_task"):
         with client:
-            resp_case = client.post("/api/v1/cases", headers={"X-User-Role": "pathologist"})
+            resp_case = client.post("/api/v1/cases", headers={"X-Test-Role": "pathologist"})
             created_id = resp_case.json()["id"]
 
             # 1. Reject URI from other case
@@ -69,7 +69,7 @@ def test_slide_finalize_cross_case_phi_isolation():
             resp_bad = client.post(
                 f"/api/v1/cases/{created_id}/slide/finalize",
                 json={"gcs_uri": bad_uri},
-                headers={"X-User-Role": "pathologist"}
+                headers={"X-Test-Role": "pathologist"}
             )
             assert resp_bad.status_code == 400
             assert "Invalid gcs_uri" in resp_bad.json()["detail"]
@@ -79,7 +79,7 @@ def test_slide_finalize_cross_case_phi_isolation():
             resp_missing = client.post(
                 f"/api/v1/cases/{created_id}/slide/finalize",
                 json={"gcs_uri": fake_uri},
-                headers={"X-User-Role": "pathologist"}
+                headers={"X-Test-Role": "pathologist"}
             )
             assert resp_missing.status_code == 404
             assert "Raw slide object does not exist" in resp_missing.json()["detail"]
@@ -92,7 +92,7 @@ def test_slide_finalize_cross_case_phi_isolation():
             resp_ok = client.post(
                 f"/api/v1/cases/{created_id}/slide/finalize",
                 json={"gcs_uri": valid_uri, "client_sha256": "fake_sha256"},
-                headers={"X-User-Role": "pathologist"}
+                headers={"X-Test-Role": "pathologist"}
             )
             assert resp_ok.status_code == 202
             assert resp_ok.json()["status"] == "queued"
@@ -102,7 +102,7 @@ def test_tile_bounds_check_immediate_404():
     """Verify tile requests outside valid level or coordinates return immediate 404 (Issue #200, #636)."""
     with patch("app.core.cloud_tasks.dispatch_stage_task"):
         with client:
-            resp_case = client.post("/api/v1/cases", headers={"X-User-Role": "pathologist"})
+            resp_case = client.post("/api/v1/cases", headers={"X-Test-Role": "pathologist"})
             case_id = resp_case.json()["id"]
 
             # Finalize a slide
@@ -111,13 +111,13 @@ def test_tile_bounds_check_immediate_404():
             client.post(
                 f"/api/v1/cases/{case_id}/slide/finalize",
                 json={"gcs_uri": f"gs://{settings.GCS_RAW_BUCKET}/{blob_name}"},
-                headers={"X-User-Role": "pathologist"}
+                headers={"X-Test-Role": "pathologist"}
             )
 
             # 1. Level out of bounds (e.g. z = 2000)
             resp_z = client.get(
                 f"/api/v1/cases/{case_id}/tiles/orig/2000/0_0.png",
-                headers={"X-User-Role": "pathologist"}
+                headers={"X-Test-Role": "pathologist"}
             )
             assert resp_z.status_code == 404
             assert "out of bounds" in resp_z.json()["detail"]
@@ -125,7 +125,7 @@ def test_tile_bounds_check_immediate_404():
             # 2. Coordinates out of bounds (e.g. c = 500, r = 500 at z = 2)
             resp_cr = client.get(
                 f"/api/v1/cases/{case_id}/tiles/orig/2/500_500.png",
-                headers={"X-User-Role": "pathologist"}
+                headers={"X-Test-Role": "pathologist"}
             )
             assert resp_cr.status_code == 404
             assert "out of bounds" in resp_cr.json()["detail"]
@@ -217,7 +217,7 @@ def test_qc_pass_auto_chains_triage():
 def test_approve_confirmed_stage_rejected():
     """Verify approving an already confirmed stage returns 409 Conflict (Issue #673)."""
     with client:
-        resp_case = client.post("/api/v1/cases", headers={"X-User-Role": "pathologist"})
+        resp_case = client.post("/api/v1/cases", headers={"X-Test-Role": "pathologist"})
         case_id = resp_case.json()["id"]
 
         from app.core.db import SessionLocal
@@ -246,7 +246,7 @@ def test_approve_confirmed_stage_rejected():
         # Approve preprocess when already confirmed
         resp_app = client.post(
             f"/api/v1/cases/{case_id}/stages/preprocess/approve",
-            headers={"X-User-Role": "pathologist"}
+            headers={"X-Test-Role": "pathologist"}
         )
         assert resp_app.status_code == 409
         assert "already been confirmed" in resp_app.json()["detail"]
@@ -255,7 +255,7 @@ def test_approve_confirmed_stage_rejected():
 def test_qc_fail_override_justification():
     """Verify approving preprocess when QC failed requires >= 10 char override justification (Issue #68)."""
     with client:
-        resp_case = client.post("/api/v1/cases", headers={"X-User-Role": "pathologist"})
+        resp_case = client.post("/api/v1/cases", headers={"X-Test-Role": "pathologist"})
         case_id = resp_case.json()["id"]
 
         from app.core.db import SessionLocal
@@ -291,7 +291,7 @@ def test_qc_fail_override_justification():
         resp_no_just = client.post(
             f"/api/v1/cases/{case_id}/stages/preprocess/approve",
             json={},
-            headers={"X-User-Role": "pathologist"}
+            headers={"X-Test-Role": "pathologist"}
         )
         assert resp_no_just.status_code == 409
         assert "clinical override justification" in resp_no_just.json()["detail"]
@@ -300,7 +300,7 @@ def test_qc_fail_override_justification():
         resp_short = client.post(
             f"/api/v1/cases/{case_id}/stages/preprocess/approve",
             json={"override_justification": "ignore"},
-            headers={"X-User-Role": "pathologist"}
+            headers={"X-Test-Role": "pathologist"}
         )
         assert resp_short.status_code == 409
 
@@ -308,7 +308,7 @@ def test_qc_fail_override_justification():
         resp_valid = client.post(
             f"/api/v1/cases/{case_id}/stages/preprocess/approve",
             json={"override_justification": "Diagnostic tumor focus is clear and adequate for Nottingham evaluation."},
-            headers={"X-User-Role": "pathologist"}
+            headers={"X-Test-Role": "pathologist"}
         )
         assert resp_valid.status_code == 202
         assert resp_valid.json()["status"] == "approved"
@@ -318,7 +318,7 @@ def test_qc_fail_override_justification():
 def test_stage_attempt_ordering_latest_first():
     """Verify GET /cases/{id} orders stages with latest attempt first (Issue #205)."""
     with client:
-        resp_case = client.post("/api/v1/cases", headers={"X-User-Role": "pathologist"})
+        resp_case = client.post("/api/v1/cases", headers={"X-Test-Role": "pathologist"})
         case_id = resp_case.json()["id"]
 
         from app.core.db import SessionLocal
@@ -334,7 +334,7 @@ def test_stage_attempt_ordering_latest_first():
         finally:
             db.close()
 
-        resp_detail = client.get(f"/api/v1/cases/{case_id}", headers={"X-User-Role": "pathologist"})
+        resp_detail = client.get(f"/api/v1/cases/{case_id}", headers={"X-Test-Role": "pathologist"})
         assert resp_detail.status_code == 200
         stages = resp_detail.json()["stages"]
         ingest_stages = [s for s in stages if s["stage"] == "ingest"]

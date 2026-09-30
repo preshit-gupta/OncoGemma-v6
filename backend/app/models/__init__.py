@@ -8,6 +8,7 @@ from app.models.hpf_site import HpfSite
 from app.models.grading import Grading
 from app.models.decision_record import DecisionRecord
 from app.models.stain_profile import StainProfile
+from app.models.user import AuthSession, User
 
 __all__ = [
     "Case",
@@ -20,4 +21,6 @@ __all__ = [
     "Grading",
     "DecisionRecord",
     "StainProfile",
+    "User",
+    "AuthSession",
 ]

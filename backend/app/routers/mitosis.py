@@ -21,6 +21,7 @@ from app.core.gcs import (
     delete_blob
 )
 from app.core.db import get_db
+from app.auth.deps import CurrentUser, require
 from app.core.pipeline_config import get_pipeline_config
 from app.core.slide_access import PRECONDITION_ERRORS, open_case_slide, slide_stain_transform
 from app.core.tissue_mask_store import load_tissue_mask
@@ -126,22 +127,19 @@ class AddCandidatePayload(BaseModel):
     case_id: str
     centroid_um: List[float] # [x, y]
     label: Literal["mitosis", "not_mitosis", "unreviewed"] = "mitosis"
-    reviewed_by: str = "pathologist_01"
 
 
 class BulkActionPayload(BaseModel):
     case_id: str
     action: str = "reject_remaining_unreviewed"
-    reviewed_by: str = "pathologist_01"
 
 
 class MitosisConfirmPayload(BaseModel):
     case_id: str
-    reviewed_by: str = "pathologist_01"
 
 
 @router.get("/{case_id}")
-def get_mitosis_stage_data(case_id: str, db: Session = Depends(get_db)):
+def get_mitosis_stage_data(case_id: str, db: Session = Depends(get_db), user: CurrentUser = Depends(require("case:read"))):
     """
     Fetches full Stage 4 payload: candidate mitotic detections, 10 virtual HPFs,
     summary scoring metrics, model versions, and review status.
@@ -267,7 +265,8 @@ def get_candidate_crop(
     case_id: str,
     candidate_id: str,
     stain: str = Query("norm", pattern="^(norm|orig)$"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require("case:read"))
 ):
     """
     Streams the 128x128 microscopic crop PNG directly from GCS.
@@ -365,7 +364,8 @@ def get_hpf_thumbnail(
     seq: int,
     mag: str = Query("40x", pattern="^(10x|20x|40x)$"),
     stain: str = Query("norm", pattern="^(norm|orig)$"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require("case:read"))
 ):
     """
     Streams a calibrated high-power microscopic patch centered at the HPF site.
@@ -510,7 +510,7 @@ def sync_and_persist_hpf_counts(case_id: str, db: Session) -> Tuple[List[Dict[st
 
 
 @router.post("/recompute")
-def recompute_scoring(payload: RecomputePayload, db: Session = Depends(get_db)):
+def recompute_scoring(payload: RecomputePayload, db: Session = Depends(get_db), user: CurrentUser = Depends(require("stage:review"))):
     """
     Live Debounced Recomputation Engine (<50ms).
     Accepts candidate label state updates and/or modified HPF coordinates,
@@ -547,7 +547,7 @@ def recompute_scoring(payload: RecomputePayload, db: Session = Depends(get_db)):
                     })
                     audit = AuditEvent(
                         case_id=case_id,
-                        actor="pathologist",
+                        actor=user.id,
                         event_type="review_edit",
                         stage="mitosis",
                         payload={
@@ -566,7 +566,7 @@ def recompute_scoring(payload: RecomputePayload, db: Session = Depends(get_db)):
         if tid and tid not in logged_candidate_ids:
             audit = AuditEvent(
                 case_id=case_id,
-                actor="pathologist",
+                actor=user.id,
                 event_type="review_edit",
                 stage="mitosis",
                 payload={
@@ -630,7 +630,7 @@ def recompute_scoring(payload: RecomputePayload, db: Session = Depends(get_db)):
 
 
 @router.post("/add_candidate")
-def add_pathologist_mitosis(payload: AddCandidatePayload, db: Session = Depends(get_db)):
+def add_pathologist_mitosis(payload: AddCandidatePayload, db: Session = Depends(get_db), user: CurrentUser = Depends(require("stage:review"))):
     """
     Adds a missed mitotic figure pinned directly by the pathologist at 40x coordinates.
     Cuts a 128x128 crop, uploads to GCS (defensively), creates Detection DB record, and returns candidate data.
@@ -655,7 +655,7 @@ def add_pathologist_mitosis(payload: AddCandidatePayload, db: Session = Depends(
             ed.label_source = "pathologist"
             audit = AuditEvent(
                 case_id=case_id,
-                actor=payload.reviewed_by,
+                actor=user.id,
                 event_type="review_edit",
                 stage="mitosis",
                 payload={
@@ -746,7 +746,7 @@ def add_pathologist_mitosis(payload: AddCandidatePayload, db: Session = Depends(
 
     audit = AuditEvent(
         case_id=case_id,
-        actor=payload.reviewed_by,
+        actor=user.id,
         event_type="mitosis_added",
         stage="mitosis",
         payload={
@@ -776,7 +776,7 @@ def add_pathologist_mitosis(payload: AddCandidatePayload, db: Session = Depends(
 
 
 @router.post("/bulk_action")
-def bulk_reject_unreviewed(payload: BulkActionPayload, db: Session = Depends(get_db)):
+def bulk_reject_unreviewed(payload: BulkActionPayload, db: Session = Depends(get_db), user: CurrentUser = Depends(require("stage:review"))):
     """
     Bulk action: Accepts all remaining unreviewed candidates as non-mitotic (rejected).
     Logs the action in the audit trail and updates the live Nottingham Mitotic Score.
@@ -809,7 +809,7 @@ def bulk_reject_unreviewed(payload: BulkActionPayload, db: Session = Depends(get
 
     audit = AuditEvent(
         case_id=case_id,
-        actor=payload.reviewed_by,
+        actor=user.id,
         event_type="bulk_review_edit",
         stage="mitosis",
         payload={
@@ -828,7 +828,7 @@ def bulk_reject_unreviewed(payload: BulkActionPayload, db: Session = Depends(get
 
 
 @router.post("/re_place_hpfs")
-def re_place_hpfs(payload: BulkActionPayload, db: Session = Depends(get_db)):
+def re_place_hpfs(payload: BulkActionPayload, db: Session = Depends(get_db), user: CurrentUser = Depends(require("stage:review"))):
     """
     Re-runs the greedy 10-HPF placement algorithm based on currently confirmed mitosis coordinates.
     """
@@ -934,7 +934,7 @@ def re_place_hpfs(payload: BulkActionPayload, db: Session = Depends(get_db)):
 
 
 @router.post("/confirm")
-def confirm_mitosis_stage(payload: MitosisConfirmPayload, db: Session = Depends(get_db)):
+def confirm_mitosis_stage(payload: MitosisConfirmPayload, db: Session = Depends(get_db), user: CurrentUser = Depends(require("stage:confirm"))):
     """
     Clinical Safety Gate & Stage 4 Confirmation.
     Verifies that all candidate mitotic figures above threshold (conf >= 0.50) have been reviewed.
@@ -961,7 +961,7 @@ def confirm_mitosis_stage(payload: MitosisConfirmPayload, db: Session = Depends(
 
     stage_exec.status = "confirmed"
     stage_exec.reviewed_at = datetime.now(timezone.utc)
-    stage_exec.reviewed_by = payload.reviewed_by
+    stage_exec.reviewed_by = user.id
 
     # Queue Stage 5 (grading)
     next_exec = db.scalars(
@@ -1048,7 +1048,7 @@ def confirm_mitosis_stage(payload: MitosisConfirmPayload, db: Session = Depends(
 
     audit = AuditEvent(
         case_id=case_id,
-        actor=payload.reviewed_by,
+        actor=user.id,
         event_type="stage_confirmed",
         stage="mitosis",
         payload={

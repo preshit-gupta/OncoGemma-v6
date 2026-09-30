@@ -11,6 +11,7 @@ from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
 from app.models.hotspot import Hotspot
 from pipeline.hotspots import extract_hotspots
+from app.auth.deps import CurrentUser
 from app.routers.triage import (
     apply_edit_ops,
     compute_polygon_area_mm2,
@@ -155,6 +156,9 @@ def test_collision_proof_roi_ids_and_zero_tumor_add():
     assert added_hs["prob_max"] is None
 
 
+REVIEWER = CurrentUser(id="test_pathologist", email="test_pathologist@example.org", role="pathologist")
+
+
 def test_confirm_triage_zero_tumor_guardrail(db_session):
     """
     Issue #92:
@@ -181,14 +185,16 @@ def test_confirm_triage_zero_tumor_guardrail(db_session):
         with pytest.raises(HTTPException) as exc_info:
             confirm_triage(
                 TriageConfirmPayload(case_id=case_id, no_invasive_tumor=False),
-                db=db_session
+                db=db_session,
+                user=REVIEWER,
             )
         assert exc_info.value.status_code == 422
 
         # 2. Confirming with no_invasive_tumor=True succeeds and finishes triage without queuing report
         res = confirm_triage(
             TriageConfirmPayload(case_id=case_id, no_invasive_tumor=True),
-            db=db_session
+            db=db_session,
+            user=REVIEWER,
         )
         assert res["status"] == "confirmed"
         assert res["next_stage_queued"] is None

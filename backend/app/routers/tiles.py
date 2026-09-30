@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from app.core.db import get_db
-from app.core.auth import get_current_user, CurrentUser
+from app.auth.deps import CurrentUser, require
 from app.core.config import settings
 from app.core.gcs import (
     get_gcs_client,
@@ -208,7 +208,7 @@ def get_tile(
     z: int,
     filename: str,
     db: Session = Depends(get_db),
-    user: CurrentUser = Depends(get_current_user)
+    user: CurrentUser = Depends(require("case:read"))
 ):
     slide = db.scalars(select(Slide).where(Slide.case_id == case_id)).first()
     if not slide:
@@ -222,7 +222,8 @@ def get_tile_direct(
     layer: str,
     z: int,
     filename: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require("case:read"))
 ):
     slide = db.get(Slide, slide_id)
     if not slide:

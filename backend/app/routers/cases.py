@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from app.core.db import get_db
-from app.core.auth import get_current_user, CurrentUser
+from app.auth.deps import CurrentUser, require
 from app.core.config import settings
 from app.core.gcs import (
     upload_blob_from_file,
@@ -53,10 +53,8 @@ router = APIRouter(prefix="/api/v1/cases", tags=["cases"])
 def create_case(
     payload: CaseCreate | None = None,
     db: Session = Depends(get_db),
-    user: CurrentUser = Depends(get_current_user)
+    user: CurrentUser = Depends(require("case:create"))
 ):
-    if user.role not in ("admin", "pathologist"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Pathologist or Admin role required to create cases.")
     specimen_type = payload.specimen_type if payload and payload.specimen_type else "unknown"
     case_obj = Case(created_by=user.id, specimen_type=specimen_type)
     db.add(case_obj)
@@ -77,7 +75,7 @@ def create_case(
 @router.get("", response_model=list[CaseResponse])
 def list_cases(
     db: Session = Depends(get_db),
-    user: CurrentUser = Depends(get_current_user)
+    user: CurrentUser = Depends(require("case:read"))
 ):
     stmt = select(Case).order_by(Case.created_at.desc())
     cases = db.scalars(stmt).all()
@@ -147,11 +145,9 @@ def delete_single_case_data(case_id: uuid.UUID, db: Session):
 @router.delete("", status_code=status.HTTP_200_OK)
 def clear_all_cases(
     db: Session = Depends(get_db),
-    user: CurrentUser = Depends(get_current_user)
+    user: CurrentUser = Depends(require("case:delete"))
 ):
-    """Clear all diagnostic cases, associated relational child data, and storage artifacts (Admin only)."""
-    if user.role != "admin":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required to clear all cases.")
+    """Clear all diagnostic cases, associated relational child data, and storage artifacts (requires case:delete)."""
     cases = db.scalars(select(Case)).all()
     count = len(cases)
     for c in cases:
@@ -164,11 +160,9 @@ def clear_all_cases(
 def delete_case(
     case_id: uuid.UUID,
     db: Session = Depends(get_db),
-    user: CurrentUser = Depends(get_current_user)
+    user: CurrentUser = Depends(require("case:delete"))
 ):
-    """Delete a single diagnostic case and all associated child data (Pathologist or Admin only)."""
-    if user.role not in ("admin", "pathologist"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Pathologist or Admin role required to delete a case.")
+    """Delete a single diagnostic case and all associated child data (requires case:delete)."""
     case_obj = db.get(Case, case_id)
     if not case_obj:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -182,7 +176,7 @@ async def upload_slide_file(
     case_id: uuid.UUID,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    user: CurrentUser = Depends(get_current_user)
+    user: CurrentUser = Depends(require("slide:upload"))
 ):
     """Direct file upload endpoint streaming directly to GCS bucket with zero local persistence."""
     case_obj = db.get(Case, case_id)
@@ -280,7 +274,7 @@ def retry_case_stage(
     case_id: uuid.UUID,
     stage_name: str,
     db: Session = Depends(get_db),
-    user: CurrentUser = Depends(get_current_user)
+    user: CurrentUser = Depends(require("stage:retry"))
 ):
     """Re-queue execution attempt for a specific pipeline stage."""
     if stage_name not in KNOWN_STAGES:
@@ -370,7 +364,7 @@ def approve_case_stage(
     stage_name: str,
     req: ApproveStageRequest | None = None,
     db: Session = Depends(get_db),
-    user: CurrentUser = Depends(get_current_user)
+    user: CurrentUser = Depends(require("stage:confirm"))
 ):
     """
     Approve pipeline stage output by Pathologist and trigger the next stage execution (e.g. v4.2 Hotspot Triage).
@@ -574,7 +568,7 @@ def get_slide_upload_url(
     case_id: uuid.UUID,
     req: SlideUploadUrlRequest,
     db: Session = Depends(get_db),
-    user: CurrentUser = Depends(get_current_user)
+    user: CurrentUser = Depends(require("slide:upload"))
 ):
     case_obj = db.get(Case, case_id)
     if not case_obj:
@@ -602,7 +596,7 @@ def finalize_slide_upload(
     case_id: uuid.UUID,
     req: SlideFinalizeRequest,
     db: Session = Depends(get_db),
-    user: CurrentUser = Depends(get_current_user)
+    user: CurrentUser = Depends(require("slide:upload"))
 ):
     case_obj = db.get(Case, case_id)
     if not case_obj:
@@ -683,7 +677,8 @@ def finalize_slide_upload(
 @router.get("/{case_id}/thumbnail")
 def get_case_thumbnail(
     case_id: uuid.UUID,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require("case:read"))
 ):
     """
     Returns a high-speed whole-slide macro thumbnail (e.g. 256x256) of the case biopsy directly from GCS.
@@ -717,7 +712,7 @@ def get_case_thumbnail(
 def get_case_detail(
     case_id: uuid.UUID,
     db: Session = Depends(get_db),
-    user: CurrentUser = Depends(get_current_user)
+    user: CurrentUser = Depends(require("case:read"))
 ):
     case_obj = db.get(Case, case_id)
     if not case_obj:
@@ -788,15 +783,12 @@ def update_case_specimen_type(
     case_id: uuid.UUID,
     req: SpecimenTypeUpdateRequest,
     db: Session = Depends(get_db),
-    user: CurrentUser = Depends(get_current_user)
+    user: CurrentUser = Depends(require("case:create"))
 ):
     """
     State whether the case's specimen is a resection or a core biopsy (SPEC-04 §3.2).
     Preprocess refuses an 'unknown' specimen; retry it (stages/preprocess/retry) after setting this.
     """
-    if user.role not in ("admin", "pathologist"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Pathologist or Admin role required.")
-
     case_obj = db.get(Case, case_id)
     if not case_obj:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
@@ -820,15 +812,12 @@ def update_slide_mpp(
     slide_id: uuid.UUID,
     req: SlideMppUpdateRequest,
     db: Session = Depends(get_db),
-    user: CurrentUser = Depends(get_current_user)
+    user: CurrentUser = Depends(require("slide:set_mpp"))
 ):
     """
     Allow pathologist or admin to manually provide valid MPP for a slide marked 'needs_mpp'.
     Unblocks downstream processing by setting slide status to 'ready' and chaining preprocess stage.
     """
-    if user.role not in ("admin", "pathologist"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Pathologist or Admin role required.")
-
     if req.mpp_x <= 0 or (req.mpp_y is not None and req.mpp_y <= 0):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="MPP values must be positive numbers.")
 

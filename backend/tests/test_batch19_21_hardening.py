@@ -101,16 +101,15 @@ def test_cors_whitelist_allowed_origin(client):
     assert response.headers.get("access-control-allow-credentials") == "true"
 
 
-def test_cors_regex_allowed_cloud_run_origin(client):
-    """Verify CORS middleware allows Cloud Run subdomains matching regex pattern."""
-    cr_origin = "https://oncogemma-frontend-522209116839.us-central1.run.app"
+def test_cors_does_not_trust_every_cloud_run_origin(client):
+    """Any *.run.app service could otherwise send credentialed requests; only CORS_ORIGINS is trusted (SPEC-03 §3.3)."""
+    other_service = "https://someone-elses-service-522209116839.us-central1.run.app"
     response = client.get(
         "/health",
-        headers={"Origin": cr_origin}
+        headers={"Origin": other_service}
     )
     assert response.status_code == 200
-    assert response.headers.get("access-control-allow-origin") == cr_origin
-    assert response.headers.get("access-control-allow-credentials") == "true"
+    assert response.headers.get("access-control-allow-origin") is None
 
 
 def test_cors_rejected_unauthorized_origin(client):

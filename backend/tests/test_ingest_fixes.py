@@ -235,7 +235,7 @@ def test_issue_38_manual_mpp_update_endpoint(db_session):
     res_bad = client.patch(
         f"/api/v1/cases/{case_id}/slides/{slide_id}/mpp",
         json={"mpp_x": 0.50},
-        headers={"X-User-Role": "viewer"}
+        headers={"X-Test-Role": "viewer"}
     )
     assert res_bad.status_code == 403
 
@@ -243,7 +243,7 @@ def test_issue_38_manual_mpp_update_endpoint(db_session):
     res_neg = client.patch(
         f"/api/v1/cases/{case_id}/slides/{slide_id}/mpp",
         json={"mpp_x": -0.25},
-        headers={"X-User-Role": "pathologist"}
+        headers={"X-Test-Role": "pathologist"}
     )
     assert res_neg.status_code == 400
 
@@ -252,7 +252,7 @@ def test_issue_38_manual_mpp_update_endpoint(db_session):
         res = client.patch(
             f"/api/v1/cases/{case_id}/slides/{slide_id}/mpp",
             json={"mpp_x": 0.50, "mpp_y": 0.50},
-            headers={"X-User-Role": "pathologist"}
+            headers={"X-Test-Role": "pathologist"}
         )
     assert res.status_code == 200
     data = res.json()
@@ -393,14 +393,14 @@ def test_mitosis_router_endpoints_reject_missing_mpp(db_session):
     cand_id = str(uuid.uuid4())
     res_crop = client.get(
         f"/api/v1/stages/mitosis/{case_id}/candidates/{cand_id}/crop",
-        headers={"X-User-Role": "pathologist"}
+        headers={"X-Test-Role": "pathologist"}
     )
     assert res_crop.status_code == 400
     assert "missing valid MPP" in res_crop.json()["detail"]
 
     res_hpf = client.get(
         f"/api/v1/stages/mitosis/{case_id}/hpfs/1/thumbnail",
-        headers={"X-User-Role": "pathologist"}
+        headers={"X-Test-Role": "pathologist"}
     )
     assert res_hpf.status_code == 400
     assert "missing valid MPP" in res_hpf.json()["detail"]
