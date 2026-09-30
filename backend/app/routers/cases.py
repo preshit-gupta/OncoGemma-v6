@@ -8,10 +8,13 @@ from sqlalchemy import select
 
 from app.core.db import get_db
 from app.auth.deps import CurrentUser, require
+from app.auth.idempotency import IdempotencyContext, IdempotentRoute, idempotent
 from app.core.config import settings
+from app.core.pipeline_config import get_pipeline_config
 from app.core.gcs import (
     upload_blob_from_file,
     generate_signed_upload_url,
+    signed_upload_headers,
     get_gcs_tile_template_url,
     parse_gcs_uri,
     blob_exists,
@@ -32,6 +35,7 @@ from app.models.hpf_site import HpfSite
 from app.models.grading import Grading
 from app.models.audit import AuditEvent
 from app.core.rehydrate import rehydrate_case_from_gcs
+from app.services import stages as stage_service
 from app.schemas.case import (
     CaseCreate,
     CaseResponse,
@@ -47,7 +51,8 @@ from app.schemas.case import (
 # Longer side of the case-list thumbnail, in pixels.
 THUMBNAIL_PX = 256
 
-router = APIRouter(prefix="/api/v1/cases", tags=["cases"])
+router = APIRouter(prefix="/api/v1/cases", tags=["cases"], route_class=IdempotentRoute)
+test_router = APIRouter(prefix="/api/v1/cases", tags=["cases"])
 
 @router.post("", response_model=CaseResponse, status_code=status.HTTP_201_CREATED)
 def create_case(
@@ -77,7 +82,7 @@ def list_cases(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(require("case:read"))
 ):
-    stmt = select(Case).order_by(Case.created_at.desc())
+    stmt = select(Case).where(Case.deleted_at.is_(None)).order_by(Case.created_at.desc())
     cases = db.scalars(stmt).all()
     if not cases:
         try:
@@ -118,10 +123,7 @@ def delete_single_case_data(case_id: uuid.UUID, db: Session):
     # 5. Delete Slide records
     db.query(Slide).filter(Slide.case_id == case_id).delete(synchronize_session=False)
 
-    # 6. Delete AuditEvents
-    db.query(AuditEvent).filter(AuditEvent.case_id == case_str).delete(synchronize_session=False)
-
-    # 7. Delete Case record
+    # 6. Delete Case record (AuditEvents are append-only permanent records and are preserved)
     db.query(Case).filter(Case.id == case_id).delete(synchronize_session=False)
     db.commit()
 
@@ -142,12 +144,12 @@ def delete_single_case_data(case_id: uuid.UUID, db: Session):
         print(f"[Delete Case GCS Exception] {gcs_err}")
 
 
-@router.delete("", status_code=status.HTTP_200_OK)
+@test_router.delete("", status_code=status.HTTP_200_OK)
 def clear_all_cases(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(require("case:delete"))
 ):
-    """Clear all diagnostic cases, associated relational child data, and storage artifacts (requires case:delete)."""
+    """Clear all diagnostic cases, associated relational child data, and storage artifacts (test-only, requires case:delete)."""
     cases = db.scalars(select(Case)).all()
     count = len(cases)
     for c in cases:
@@ -162,12 +164,20 @@ def delete_case(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(require("case:delete"))
 ):
-    """Delete a single diagnostic case and all associated child data (requires case:delete)."""
+    """Soft-delete a single diagnostic case and emit an audit event (SPEC-03 §5.3.1)."""
     case_obj = db.get(Case, case_id)
-    if not case_obj:
+    if not case_obj or case_obj.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Case not found")
-    
-    delete_single_case_data(case_id, db)
+
+    case_obj.deleted_at = datetime.now(timezone.utc)
+    audit = AuditEvent(
+        case_id=str(case_id),
+        actor=user.id,
+        event_type="case_deleted",
+        payload={"soft": True, "deleted_at": case_obj.deleted_at.isoformat()}
+    )
+    db.add(audit)
+    db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -267,8 +277,6 @@ async def upload_slide_file(
         "attempt": next_attempt
     }
 
-KNOWN_STAGES = ("ingest", "preprocess", "qc", "triage", "mitosis", "grading")
-
 @router.post("/{case_id}/stages/{stage_name}/retry", status_code=status.HTTP_202_ACCEPTED)
 def retry_case_stage(
     case_id: uuid.UUID,
@@ -277,85 +285,14 @@ def retry_case_stage(
     user: CurrentUser = Depends(require("stage:retry"))
 ):
     """Re-queue execution attempt for a specific pipeline stage."""
-    if stage_name not in KNOWN_STAGES:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid stage_name '{stage_name}'. Known stages: {', '.join(KNOWN_STAGES)}"
-        )
-
-    case_obj = db.get(Case, case_id)
-    if not case_obj:
-        raise HTTPException(status_code=404, detail="Case not found")
-
-    slide_obj = db.scalars(select(Slide).where(Slide.case_id == case_id)).first()
-    if not slide_obj:
-        raise HTTPException(status_code=404, detail="Slide not found")
-
-    stmt = (
-        select(StageExecution)
-        .where(StageExecution.case_id == case_id, StageExecution.stage == stage_name)
-        .order_by(StageExecution.attempt.desc())
-    )
-    existing_stage = db.scalars(stmt).first()
-    if not existing_stage:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Stage '{stage_name}' has no previous execution attempt to retry."
-        )
-
-    if existing_stage.status == "queued":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Stage '{stage_name}' cannot be retried because its status is '{existing_stage.status}'. Only stages in ('failed', 'rejected') can be retried."
-        )
-
-    if existing_stage.status not in ("failed", "rejected", "running", "done", "awaiting_review", "confirmed"):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Stage '{stage_name}' cannot be retried because its status is '{existing_stage.status}'. Only stages in ('failed', 'rejected') can be retried."
-        )
-
-    if existing_stage.status == "running":
-        existing_stage.status = "failed"
-        existing_stage.error = "Interrupted and retried by user while running."
-        existing_stage.completed_at = datetime.now(timezone.utc)
-
-    if stage_name == "preprocess":
-        case_obj.status = "open"
-
-    next_attempt = existing_stage.attempt + 1
-
-    new_stage = StageExecution(
-        case_id=case_id,
-        stage=stage_name,
-        attempt=next_attempt,
-        status="queued",
-        input_ref={"gcs_uri_original": slide_obj.gcs_uri_original, "slide_id": str(slide_obj.id)}
-    )
-    db.add(new_stage)
-    
-    audit = AuditEvent(
-        case_id=str(case_id),
-        actor=user.id,
-        event_type="stage_retried",
-        stage=stage_name,
-        payload={"attempt": next_attempt}
-    )
-    db.add(audit)
-    db.commit()
-    db.refresh(new_stage)
-
-    dispatch_stage_task(
-        case_id=str(case_id),
-        stage=stage_name,
-        stage_exec_id=str(new_stage.id),
-        payload={"slide_id": str(slide_obj.id)}
-    )
-
+    try:
+        new_stage = stage_service.retry_stage(db, case_id, stage_name, user.id)
+    except stage_service.StageServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     return {
         "status": "queued",
         "stage_execution_id": str(new_stage.id),
-        "attempt": next_attempt
+        "attempt": new_stage.attempt
     }
 
 @router.post("/{case_id}/stages/{stage_name}/approve", status_code=status.HTTP_202_ACCEPTED)
@@ -364,203 +301,22 @@ def approve_case_stage(
     stage_name: str,
     req: ApproveStageRequest | None = None,
     db: Session = Depends(get_db),
-    user: CurrentUser = Depends(require("stage:confirm"))
+    user: CurrentUser = Depends(require("stage:confirm")),
+    _idempotency: IdempotencyContext = idempotent("cases/stages/approve"),
 ):
-    """
-    Approve pipeline stage output by Pathologist and trigger the next stage execution (e.g. v4.2 Hotspot Triage).
-    """
-    case_obj = db.get(Case, case_id)
-    if not case_obj:
-        raise HTTPException(status_code=404, detail="Case not found")
-
-    slide_obj = db.scalars(select(Slide).where(Slide.case_id == case_id)).first()
-    if not slide_obj:
-        raise HTTPException(status_code=404, detail="Slide not found")
-
-    # Mark current stage execution as confirmed
-    stmt = (
-        select(StageExecution)
-        .where(StageExecution.case_id == case_id, StageExecution.stage == stage_name)
-        .order_by(StageExecution.attempt.desc())
-    )
-    current_stage = db.scalars(stmt).first()
-    if not current_stage:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Stage '{stage_name}' execution not found for case {case_id}."
+    """Confirm a stage and queue the next one, through the same service as the stage confirm endpoints."""
+    try:
+        result = stage_service.confirm_stage(
+            db, case_id, stage_name, user.id,
+            override_justification=req.override_justification if req else None,
         )
-
-    if current_stage.status == "confirmed":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Stage '{stage_name}' has already been confirmed."
-        )
-
-    now_utc = datetime.now(timezone.utc)
-
-    qc_stage = db.scalars(
-        select(StageExecution)
-        .where(StageExecution.case_id == case_id, StageExecution.stage == "qc")
-        .order_by(StageExecution.attempt.desc())
-    ).first()
-
-    if stage_name in ("preprocess", "qc"):
-        if current_stage.status not in ("awaiting_review", "done", "failed"):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Stage '{stage_name}' cannot be approved because its status is '{current_stage.status}', expected 'awaiting_review'."
-            )
-
-        if qc_stage:
-            if qc_stage.status in ("queued", "running"):
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Automated QC analysis is currently running. Please wait for QC checks to complete before approving slide."
-                )
-            if qc_stage.status == "failed":
-                justification = req.override_justification if req else None
-                if not justification or len(justification.strip()) < 10:
-                    raise HTTPException(
-                        status_code=status.HTTP_409_CONFLICT,
-                        detail=(
-                            f"Slide failed automated QC checks ({qc_stage.error or 'Artifacts detected'}). "
-                            "A clinical override justification of at least 10 characters is required to approve this slide."
-                        )
-                    )
-                qc_stage.status = "confirmed"
-                qc_stage.reviewed_by = user.id
-                qc_stage.reviewed_at = now_utc
-                qc_stage.review_edits = {"override_justification": justification.strip()}
-
-                override_audit = AuditEvent(
-                    case_id=str(case_id),
-                    actor=user.id,
-                    event_type="score_override",
-                    stage="qc",
-                    payload={
-                        "action": "qc_failure_override",
-                        "justification": justification.strip(),
-                        "previous_error": qc_stage.error
-                    }
-                )
-                db.add(override_audit)
-            elif qc_stage.status in ("awaiting_review", "done"):
-                qc_stage.status = "confirmed"
-                qc_stage.reviewed_by = user.id
-                qc_stage.reviewed_at = now_utc
-    else:
-        if qc_stage and qc_stage.status == "failed":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Slide has a failed automated QC status that has not been clinically overridden."
-            )
-        if current_stage.status not in ("awaiting_review", "done"):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Stage '{stage_name}' cannot be approved because its status is '{current_stage.status}', expected 'awaiting_review'."
-            )
-
-    current_stage.status = "confirmed"
-    current_stage.reviewed_by = user.id
-    current_stage.reviewed_at = now_utc
-
-    # Ensure Hotspot DB records exist so Stage 4 Mitosis detection can proceed (#580, #700)
-    if stage_name == "triage":
-        existing_hs_count = db.query(Hotspot).filter(Hotspot.case_id == case_id).count()
-        if existing_hs_count == 0:
-            try:
-                import json
-                from app.core.gcs import download_blob_as_bytes
-                from app.routers.triage import apply_edit_ops
-                out_bytes = download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_id}/triage/output.json")
-                machine_hotspots = json.loads(out_bytes.decode("utf-8")).get("hotspots", [])
-                edits = current_stage.review_edits or []
-                effective_hotspots = apply_edit_ops(machine_hotspots, edits)
-                for hs in effective_hotspots:
-                    hs_row = Hotspot(
-                        id=hs["id"],
-                        case_id=case_id,
-                        stage_execution_id=current_stage.id,
-                        polygon_um=hs["polygon_um"],
-                        area_mm2=hs.get("area_mm2"),
-                        prob_mean=hs.get("prob_mean"),
-                        prob_max=hs.get("prob_max"),
-                        source=hs.get("source", "model"),
-                        excluded=hs.get("excluded", False),
-                        exclude_reason=hs.get("exclude_reason")
-                    )
-                    db.add(hs_row)
-                db.flush()
-                print(f"[Cases Router] Synced {len(effective_hotspots)} hotspots from triage artifact into DB for case {case_id}")
-            except Exception as e:
-                print(f"[Cases Router Note] Could not sync hotspots from triage output.json: {e}")
-
-    # Determine next stage name
-    next_stage_map = {
-        "preprocess": "triage",
-        "qc": "triage",
-        "triage": "mitosis",
-        "mitosis": "grading",
-        "grading": None
-    }
-    next_stage_name = next_stage_map.get(stage_name)
-    
-    new_stage = None
-    if next_stage_name:
-        stmt_next = (
-            select(StageExecution)
-            .where(StageExecution.case_id == case_id, StageExecution.stage == next_stage_name)
-            .order_by(StageExecution.attempt.desc())
-        )
-        existing_next = db.scalars(stmt_next).first()
-        if not existing_next or existing_next.status == "failed":
-            next_attempt = (existing_next.attempt + 1) if existing_next else 1
-
-            new_stage = StageExecution(
-                case_id=case_id,
-                stage=next_stage_name,
-                attempt=next_attempt,
-                status="queued",
-                input_ref={"slide_id": str(slide_obj.id), "gcs_uri_original": slide_obj.gcs_uri_original}
-            )
-            db.add(new_stage)
-
-    case_obj.status = "done" if not next_stage_name else "open"
-    
-    audit = AuditEvent(
-        case_id=str(case_id),
-        actor=user.id,
-        event_type="stage_approved",
-        stage=stage_name,
-        payload={"approved_by": user.id, "next_stage": next_stage_name}
-    )
-    db.add(audit)
-
-    if new_stage and next_stage_name:
-        audit_started = AuditEvent(
-            case_id=str(case_id),
-            actor=user.id,
-            event_type="stage_started",
-            stage=next_stage_name,
-            payload={"triggered_by_approval_of": stage_name, "attempt": new_stage.attempt}
-        )
-        db.add(audit_started)
-
-    db.commit()
-
-    if new_stage:
-        dispatch_stage_task(
-            case_id=str(case_id),
-            stage=next_stage_name,
-            stage_exec_id=str(new_stage.id),
-            payload={"slide_id": str(slide_obj.id), "gcs_uri_original": slide_obj.gcs_uri_original}
-        )
-
+    except stage_service.StageServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     return {
         "status": "approved",
         "approved_stage": stage_name,
-        "next_stage": next_stage_name,
-        "next_stage_execution_id": str(new_stage.id) if new_stage else None
+        "next_stage": result.next_stage,
+        "next_stage_execution_id": str(result.next_execution.id) if result.next_execution else None
     }
 
 @router.post("/{case_id}/slide/upload-url", response_model=SlideUploadUrlResponse)
@@ -574,6 +330,18 @@ def get_slide_upload_url(
     if not case_obj:
         raise HTTPException(status_code=404, detail="Case not found")
 
+    upload_cfg = get_pipeline_config().safety.signed_upload
+    if req.size_bytes > upload_cfg.max_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File size {req.size_bytes} exceeds maximum allowed size of {upload_cfg.max_bytes} bytes"
+        )
+    if req.content_type not in upload_cfg.allowed_wsi_mimes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported content type '{req.content_type}'. Allowed: {upload_cfg.allowed_wsi_mimes}"
+        )
+
     file_uuid = uuid.uuid4()
     ext = req.filename.rsplit(".", 1)[-1].lower() if "." in req.filename else "svs"
     if f".{ext}" not in ALLOWED_WSI_EXTS:
@@ -584,11 +352,12 @@ def get_slide_upload_url(
     
     blob_name = f"cases/{case_id}/{file_uuid}.{ext}"
     gcs_uri = f"gs://{settings.GCS_RAW_BUCKET}/{blob_name}"
-    upload_url = generate_signed_upload_url(settings.GCS_RAW_BUCKET, blob_name)
+    upload_url = generate_signed_upload_url(settings.GCS_RAW_BUCKET, blob_name, content_type=req.content_type)
 
     return SlideUploadUrlResponse(
         upload_url=upload_url,
-        gcs_uri=gcs_uri
+        gcs_uri=gcs_uri,
+        upload_headers=signed_upload_headers(req.content_type),
     )
 
 @router.post("/{case_id}/slide/finalize", status_code=status.HTTP_202_ACCEPTED)
@@ -717,7 +486,7 @@ def get_case_detail(
     case_obj = db.get(Case, case_id)
     if not case_obj:
         case_obj = rehydrate_case_from_gcs(str(case_id), db)
-    if not case_obj:
+    if not case_obj or case_obj.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Case not found")
 
     slides = db.scalars(select(Slide).where(Slide.case_id == case_id)).all()
@@ -861,21 +630,13 @@ def update_slide_mpp(
 
     if not existing_prep:
         output_ref = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/ingest_output.json"
-        next_prep_stage = StageExecution(
-            case_id=case_id,
-            stage="preprocess",
-            attempt=1,
-            status="queued",
-            input_ref={"slide_id": str(slide.id), "ingest_output_ref": output_ref}
+        next_prep_stage = stage_service.queue_stage(
+            db, case_id, "preprocess",
+            input_ref={"slide_id": str(slide.id), "ingest_output_ref": output_ref},
+            parent=stage_service.latest_execution(db, case_id, "ingest"),
         )
-        db.add(next_prep_stage)
         db.commit()
-        dispatch_stage_task(
-            case_id=str(case_id),
-            stage="preprocess",
-            stage_exec_id=str(next_prep_stage.id),
-            payload={"slide_id": str(slide.id), "ingest_output_ref": output_ref}
-        )
+        stage_service.dispatch(next_prep_stage, next_prep_stage.input_ref)
 
     return {
         "slide_id": str(slide.id),

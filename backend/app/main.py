@@ -13,17 +13,22 @@ if sys.platform == "win32":
         pass
 
 from app.auth.deps import public
+from app.auth.idempotency import IdempotentReplay, replay_response
+from app.auth.rate_limit import RateLimitMiddleware
 from app.auth.service import check_auth_settings
 from app.core.config import settings
 from app.core.migrations import upgrade_to_head
+from app.core.soft_delete import reject_soft_deleted_case
 from app.core.pipeline_config import init_pipeline_config
 from app.core.gcs import ensure_buckets_exist
 from app.core.db import engine
 from app.routers import (
-    cases_router, tiles_router, audit_router, triage_router, mitosis_router, grading_router, worker_webhook_router
+    cases_router, cases_test_router, tiles_router, audit_router, triage_router, mitosis_router, grading_router, worker_webhook_router
 )
 from app.routers.admin import router as admin_router
 from app.routers.auth import router as auth_router
+from app.routers.batches import router as batches_router
+from app.routers.research import router as research_router
 from app.routers.users import router as users_router
 
 import logging
@@ -98,53 +103,73 @@ async def lifespan(app: FastAPI):
             pass
 
 
-app = FastAPI(
-    title="OncoGemma v4.5 API",
-    description="Breast Cancer Diagnostic Copilot API — Nottingham Grading & CAP-Compliant Synoptic Reporting",
-    version="4.5.0",
-    lifespan=lifespan
-)
+def create_app(env: str | None = None) -> FastAPI:
+    runtime_env = env if env is not None else settings.ENV
 
-cors_origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+    application = FastAPI(
+        title="OncoGemma v4.5 API",
+        description="Breast Cancer Diagnostic Copilot API — Nottingham Grading & CAP-Compliant Synoptic Reporting",
+        version="4.5.0",
+        lifespan=lifespan
+    )
 
-app.include_router(cases_router)
-app.include_router(tiles_router)
-app.include_router(audit_router)
-app.include_router(triage_router)
-app.include_router(mitosis_router)
-app.include_router(grading_router)
-app.include_router(worker_webhook_router)
-app.include_router(admin_router)
-app.include_router(auth_router)
-app.include_router(users_router)
+    # Added first so CORS stays the outermost layer and 429 responses carry CORS headers.
+    application.add_middleware(RateLimitMiddleware)
+    cors_origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    application.add_exception_handler(IdempotentReplay, replay_response)
 
-@app.get("/health", dependencies=[Depends(public)])
-@app.get("/api/health", dependencies=[Depends(public)])
-@app.get("/healthz", dependencies=[Depends(public)])
-@app.get("/api/healthz", dependencies=[Depends(public)])
-@app.get("/api/v1/health", dependencies=[Depends(public)])
-@app.get("/api/v1/healthz", dependencies=[Depends(public)])
-async def health_check():
-    from starlette.concurrency import run_in_threadpool
-    def _ping():
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-    try:
-        await run_in_threadpool(_ping)
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Database connection failed: {e}"
-        )
-    return {
-        "status": "healthy",
-        "version": app.version,
-        "env": settings.ENV
-    }
+    # Soft-deleted cases answer 404 on every case-scoped route; audit history stays readable.
+    case_scoped = [Depends(reject_soft_deleted_case)]
+    application.include_router(cases_router, dependencies=case_scoped)
+    application.include_router(tiles_router, dependencies=case_scoped)
+    application.include_router(audit_router)
+    application.include_router(triage_router, dependencies=case_scoped)
+    application.include_router(mitosis_router, dependencies=case_scoped)
+    application.include_router(grading_router, dependencies=case_scoped)
+    application.include_router(worker_webhook_router)
+    application.include_router(auth_router)
+    application.include_router(users_router)
+    application.include_router(batches_router)
+    application.include_router(research_router)
+
+    # Destructive endpoints: mounted only when ENV=test (SPEC-03 §5.3.1, AC6)
+    if runtime_env == "test":
+        application.include_router(admin_router)
+        application.include_router(cases_test_router)
+
+    @application.get("/health", dependencies=[Depends(public)])
+    @application.get("/api/health", dependencies=[Depends(public)])
+    @application.get("/healthz", dependencies=[Depends(public)])
+    @application.get("/api/healthz", dependencies=[Depends(public)])
+    @application.get("/api/v1/health", dependencies=[Depends(public)])
+    @application.get("/api/v1/healthz", dependencies=[Depends(public)])
+    async def health_check():
+        from starlette.concurrency import run_in_threadpool
+        def _ping():
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+        try:
+            await run_in_threadpool(_ping)
+        except Exception as exc:
+            logger.error("Database connection failed during health check: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Database connection failed"
+            )
+        return {
+            "status": "healthy",
+            "version": application.version,
+            "env": settings.ENV
+        }
+
+    return application
+
+
+app = create_app()

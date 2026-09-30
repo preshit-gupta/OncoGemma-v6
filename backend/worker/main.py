@@ -8,12 +8,24 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.db import SessionLocal, engine
 from app.core.pipeline_config import init_pipeline_config
 from app.models.stage_execution import StageExecution
+from eval.harness.driver import drive_active_runs, worker_identity
 from worker.execution import STAGE_HANDLERS, StageFailedError, execute_stage, mark_running
+from worker.scratch import check_scratch
 
 HANDLERS = STAGE_HANDLERS
+
+
+def worker_run_modes() -> list[str]:
+    """Run modes this worker executes (settings.WORKER_RUN_MODES)."""
+    modes = [m.strip() for m in settings.WORKER_RUN_MODES.split(",") if m.strip()]
+    unknown = sorted(set(modes) - {"clinical", "eval", "shadow"})
+    if not modes or unknown:
+        raise ValueError(f"WORKER_RUN_MODES must list clinical, eval or shadow, got {settings.WORKER_RUN_MODES!r}")
+    return modes
 
 def reset_stuck_running_stages(timeout_seconds: int = 1800):
     """
@@ -48,11 +60,13 @@ def poll_and_execute_single_task():
     db: Session = SessionLocal()
     try:
         stages_list = list(HANDLERS.keys())
+        run_modes = worker_run_modes()
         stmt = (
             select(StageExecution)
             .where(
                 StageExecution.status == "queued",
-                StageExecution.stage.in_(stages_list)
+                StageExecution.stage.in_(stages_list),
+                StageExecution.run_mode.in_(run_modes)
             )
             .order_by(StageExecution.started_at.asc().nulls_first(), StageExecution.id.asc())
             .limit(1)
@@ -77,7 +91,8 @@ def poll_and_execute_single_task():
                     select(StageExecution)
                     .where(
                         StageExecution.status == "queued",
-                        StageExecution.stage.in_(stages_list)
+                        StageExecution.stage.in_(stages_list),
+                        StageExecution.run_mode.in_(run_modes)
                     )
                     .order_by(StageExecution.started_at.asc().nulls_first(), StageExecution.id.asc())
                     .limit(1)
@@ -87,6 +102,16 @@ def poll_and_execute_single_task():
                 raise
 
         if not stage_exec:
+            return False
+
+        scratch = check_scratch(db, stage_exec, settings.SCRATCH_HEADROOM_FACTOR)
+        if not scratch.ok:
+            print(
+                f"[Worker] Not claiming '{stage_exec.stage}' for case {stage_exec.case_id}: it needs "
+                f"{scratch.needed_bytes} bytes of scratch ({settings.SCRATCH_HEADROOM_FACTOR}x the slide), "
+                f"{scratch.free_bytes} are free. It stays queued."
+            )
+            db.rollback()
             return False
 
         mark_running(stage_exec)
@@ -110,14 +135,30 @@ def run_worker_loop():
     print(f"[Worker] Starting OncoGemma stage worker poll loop. Engine: {engine.dialect.name}. Handlers: {list(HANDLERS.keys())}")
     reset_stuck_running_stages(timeout_seconds=1800)
     last_reset_check = time.time()
+    last_harness_tick = 0.0
+    last_activity = time.time()
+    owner = worker_identity()
+    drives_runs = "eval" in worker_run_modes()
+    print(f"[Worker] Run modes: {worker_run_modes()}; drives validation runs: {drives_runs}.")
     while True:
         try:
             if time.time() - last_reset_check > 60.0:
                 reset_stuck_running_stages(timeout_seconds=1800)
                 last_reset_check = time.time()
 
+            # Validation runs and batches: an eval worker drives the runs it holds a lease on (SPEC-02 §6).
+            if drives_runs and time.time() - last_harness_tick > settings.HARNESS_TICK_S:
+                last_harness_tick = time.time()
+                if drive_active_runs(SessionLocal, owner, lease_s=settings.HARNESS_LEASE_S):
+                    last_activity = time.time()
+
             executed = poll_and_execute_single_task()
-            if not executed:
+            if executed:
+                last_activity = time.time()
+            elif settings.WORKER_IDLE_EXIT_S and time.time() - last_activity > settings.WORKER_IDLE_EXIT_S:
+                print(f"[Worker] Idle for {settings.WORKER_IDLE_EXIT_S:.0f} s; exiting.")
+                return
+            else:
                 time.sleep(1.0)
         except Exception as e:
             print(f"[Worker Loop Exception] {e}")

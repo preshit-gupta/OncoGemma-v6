@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.auth.deps import CurrentUser, require
+from app.auth.idempotency import IdempotencyContext, IdempotentRoute, idempotent
 from app.core.gcs import download_blob_as_bytes
 from app.core.db import get_db
 from app.core.pipeline_config import get_pipeline_config
@@ -38,7 +39,7 @@ from pipeline.grading import (
     validate_grading_invariants,
 )
 
-router = APIRouter(prefix="/api/v1/stages/grading", tags=["grading"])
+router = APIRouter(prefix="/api/v1/stages/grading", tags=["grading"], route_class=IdempotentRoute)
 
 
 # ---------------------------------------------------------------------------
@@ -769,7 +770,8 @@ def recompute_grade_preview(payload: RecomputeGradePayload, db: Session = Depend
 def confirm_histologic_type(
     payload: ConfirmHistologicTypePayload,
     current_user: CurrentUser = Depends(require("stage:confirm")),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    _idempotency: IdempotencyContext = idempotent("stages/grading/type/confirm"),
 ):
     """
     Dedicated server-side histologic subtype confirmation action.
@@ -794,6 +796,7 @@ def confirm_histologic_type(
         select(StageExecution)
         .where(StageExecution.case_id == case_uid, StageExecution.stage == "grading")
         .order_by(StageExecution.attempt.desc())
+        .with_for_update()
     ).first()
 
     if stage_exec and stage_exec.status == "confirmed":
@@ -838,7 +841,8 @@ def confirm_histologic_type(
 def confirm_grading_stage(
     payload: ConfirmGradingPayload,
     current_user: CurrentUser = Depends(require("stage:confirm")),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    _idempotency: IdempotencyContext = idempotent("stages/grading/confirm"),
 ):
     """
     Clinical Confirmation Gate for Stage 5 (Nottingham Grading).
@@ -869,6 +873,7 @@ def confirm_grading_stage(
         select(StageExecution)
         .where(StageExecution.case_id == case_uid, StageExecution.stage == "grading")
         .order_by(StageExecution.attempt.desc())
+        .with_for_update()
     ).first()
     if not stage_exec:
         raise HTTPException(status_code=404, detail="Grading stage execution record not found for case")

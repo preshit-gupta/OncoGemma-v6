@@ -103,6 +103,11 @@ class LocalMockBucket:
     def blob(self, blob_name: str) -> LocalMockBlob:
         return LocalMockBlob(self.name, blob_name)
 
+    def get_blob(self, blob_name: str) -> LocalMockBlob | None:
+        """Like ``google.cloud.storage.Bucket.get_blob``: the blob with its size, or None."""
+        blob = LocalMockBlob(self.name, blob_name)
+        return blob if blob.exists() else None
+
     def exists(self, timeout=None):
         return True
 
@@ -290,16 +295,29 @@ def get_service_account_email() -> str:
     return "oncogemma-cloudrun-sa@oncogemma.iam.gserviceaccount.com"
 
 
+def _content_length_range() -> str:
+    from app.core.pipeline_config import get_pipeline_config
+    return f"0,{get_pipeline_config().safety.signed_upload.max_bytes}"
+
+
+def signed_upload_headers(content_type: str) -> dict[str, str]:
+    """Headers a client must send with the PUT to a URL from ``generate_signed_upload_url``."""
+    return {"Content-Type": content_type, "x-goog-content-length-range": _content_length_range()}
+
+
 def generate_signed_upload_url(
     bucket_name: str,
     blob_name: str,
-    expiration_minutes: int = 60,
     content_type: str = "application/octet-stream"
 ) -> str:
     """
     Generates a V4 signed upload URL for direct browser-to-GCS upload.
     Uses IAM Credentials API with explicit cloud-platform scope for Cloud Run compatibility.
+    Expiry and the signed size range come from configs/safety.yaml (SPEC-03 §5.3.5).
     """
+    from app.core.pipeline_config import get_pipeline_config
+    expiration_minutes = get_pipeline_config().safety.signed_upload.expiration_minutes
+    size_range_header = {"x-goog-content-length-range": _content_length_range()}
     # Issue #19: Validate file extension for raw slide uploads
     clean_blob = blob_name.replace("\\", "/").lstrip("/")
     ext = os.path.splitext(clean_blob)[1].lower()
@@ -332,6 +350,7 @@ def generate_signed_upload_url(
                 expiration=expiration,
                 method="PUT",
                 content_type=content_type,
+                headers=size_range_header,
             )
     except Exception as e:
         print(f"[Signed URL] Strategy 1 (SA private key) not available: {e}")
@@ -360,6 +379,7 @@ def generate_signed_upload_url(
             expiration=expiration,
             method="PUT",
             content_type=content_type,
+            headers=size_range_header,
         )
     except Exception as e2:
         # Issue #5: Raise HTTP 503 rather than returning unauthenticated URL or uncaught crash

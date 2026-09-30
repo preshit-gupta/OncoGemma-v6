@@ -21,7 +21,9 @@ def registry():
 
 def test_repo_registry_entries():
     reg = registry()
-    assert set(reg.models) == {"path_foundation", "triage_probe", "kongnet_det_midog_1", "gemini_referee", "medgemma"}
+    assert set(reg.models) == {
+        "path_foundation", "triage_probe", "kongnet_det_midog_1", "gemini_referee", "gemini_labeler", "medgemma"
+    }
     assert isinstance(reg.models["path_foundation"], VertexEndpointModel)
     assert isinstance(reg.models["triage_probe"], LocalArtifactModel)
     assert isinstance(reg.models["gemini_referee"], VertexGenAIModel)

@@ -7,7 +7,16 @@ from google.genai import errors
 
 from app.core.pipeline_config import get_pipeline_config
 from app.inference import schemas
-from app.inference.adapters.base import AdapterImage, AdapterRequest, CallRejected, CallTimeout, TransientCallError
+from app.inference.adapters.base import (
+    UNTRUSTED_DOCUMENT_BEGIN,
+    UNTRUSTED_DOCUMENT_END,
+    UNTRUSTED_DOCUMENT_INSTRUCTION,
+    AdapterImage,
+    AdapterRequest,
+    CallRejected,
+    CallTimeout,
+    TransientCallError,
+)
 from app.inference.adapters.vertex_genai import VertexGenAIAdapter
 
 
@@ -114,3 +123,20 @@ def test_prompt_and_output_model_are_required():
 def test_the_served_model_version_is_recorded_when_reported():
     adapter, _, _ = adapter_with(SimpleNamespace(text="{}", model_version="gemini-2.5-flash-001"))
     assert adapter.call(entry(), request(), 5).endpoint == f"{entry().region}/gemini-2.5-flash-001"
+
+
+def test_an_untrusted_document_is_a_delimited_part_under_a_data_only_system_instruction():
+    adapter, models, _ = adapter_with(SimpleNamespace(text="{}"))
+    adapter.call(entry(), request(images=(), prompt="Extract the grade.", untrusted_document="Nottingham grade 2."), 5)
+
+    (sent,) = models.requests
+    prompt, document = sent["contents"]
+    assert prompt.text == "Extract the grade."
+    assert document.text == f"{UNTRUSTED_DOCUMENT_BEGIN}\nNottingham grade 2.\n{UNTRUSTED_DOCUMENT_END}"
+    assert sent["config"].system_instruction == UNTRUSTED_DOCUMENT_INSTRUCTION
+
+
+def test_without_a_document_there_is_no_system_instruction():
+    adapter, models, _ = adapter_with(SimpleNamespace(text="{}"))
+    adapter.call(entry(), request(), 5)
+    assert models.requests[0]["config"].system_instruction is None

@@ -1,0 +1,407 @@
+{
+  "$defs": {
+    "Decision": {
+      "additionalProperties": false,
+      "description": "One DecisionRecord of the slide (the chain behind each candidate, patch and score).",
+      "properties": {
+        "cache_hit": {
+          "title": "Cache Hit",
+          "type": "boolean"
+        },
+        "cost_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Cost Usd"
+        },
+        "entity_id": {
+          "title": "Entity Id",
+          "type": "string"
+        },
+        "entity_type": {
+          "title": "Entity Type",
+          "type": "string"
+        },
+        "error_class": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Error Class"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "latency_ms": {
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "output": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Output"
+        },
+        "producer_id": {
+          "title": "Producer Id",
+          "type": "string"
+        },
+        "producer_kind": {
+          "title": "Producer Kind",
+          "type": "string"
+        },
+        "producer_version": {
+          "title": "Producer Version",
+          "type": "string"
+        },
+        "stage": {
+          "title": "Stage",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "supersedes_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Supersedes Id"
+        },
+        "task": {
+          "title": "Task",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "stage",
+        "task",
+        "entity_type",
+        "entity_id",
+        "producer_kind",
+        "producer_id",
+        "producer_version",
+        "status",
+        "error_class",
+        "output",
+        "latency_ms",
+        "cost_usd",
+        "cache_hit",
+        "supersedes_id"
+      ],
+      "title": "Decision",
+      "type": "object"
+    },
+    "StageResult": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt": {
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "completed_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Completed At"
+        },
+        "config_hash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Config Hash"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Error"
+        },
+        "latency_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Latency S"
+        },
+        "model_versions": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Model Versions"
+        },
+        "output_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Output Ref"
+        },
+        "stage": {
+          "title": "Stage",
+          "type": "string"
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Started At"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "stage",
+        "attempt",
+        "status",
+        "output_ref",
+        "model_versions",
+        "config_hash",
+        "started_at",
+        "completed_at",
+        "latency_s",
+        "error"
+      ],
+      "title": "StageResult",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "candidates": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Candidates",
+      "type": "array"
+    },
+    "case_id": {
+      "title": "Case Id",
+      "type": "string"
+    },
+    "config_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Config Hash",
+      "type": "string"
+    },
+    "cost_usd": {
+      "title": "Cost Usd",
+      "type": "number"
+    },
+    "decisions": {
+      "items": {
+        "$ref": "#/$defs/Decision"
+      },
+      "title": "Decisions",
+      "type": "array"
+    },
+    "error_class": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Error Class"
+    },
+    "error_detail": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Error Detail"
+    },
+    "failed_stage": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Failed Stage"
+    },
+    "hotspots": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Hotspots",
+      "type": "array"
+    },
+    "hpfs": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Hpfs",
+      "type": "array"
+    },
+    "model_versions": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Model Versions",
+      "type": "object"
+    },
+    "patches": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Patches",
+      "type": "array"
+    },
+    "prediction": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Prediction"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "runtime_s": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Runtime S"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "slide_uri": {
+      "title": "Slide Uri",
+      "type": "string"
+    },
+    "specimen_type": {
+      "enum": [
+        "resection",
+        "core_biopsy"
+      ],
+      "title": "Specimen Type",
+      "type": "string"
+    },
+    "stages": {
+      "items": {
+        "$ref": "#/$defs/StageResult"
+      },
+      "title": "Stages",
+      "type": "array"
+    },
+    "status": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "excluded_qc"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "slide_uri",
+    "specimen_type",
+    "run_id",
+    "case_id",
+    "status",
+    "failed_stage",
+    "error_class",
+    "error_detail",
+    "config_hash",
+    "model_versions",
+    "stages",
+    "prediction",
+    "hotspots",
+    "candidates",
+    "hpfs",
+    "patches",
+    "decisions",
+    "cost_usd",
+    "runtime_s"
+  ],
+  "title": "OneShotResult",
+  "type": "object"
+}

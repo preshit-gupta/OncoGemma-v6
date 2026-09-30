@@ -27,6 +27,7 @@ from app.models.case import Case
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
 from app.models.audit import AuditEvent
+from app.services.stages import dispatch, queue_stage
 from worker.runtime import StageRuntime
 
 def calculate_sha256(filepath: str) -> str:
@@ -300,20 +301,31 @@ def upload_dzi_tree_to_gcs(dzi_files_dir: str, slide_id: str):
     if failures:
         raise RuntimeError(f"Pyramid upload failed for {len(failures)}/{len(tile_files)} tiles: {failures[:5]}")
 
+# MPP sources that are set on the slide row before ingest and outrank the file (SPEC-02 §5.1, §8).
+PRESET_MPP_SOURCES = ("dataset_doc", "manual")
+
+
+def app_owns_slide_object(case_id, bucket_name: str, blob_name: str) -> bool:
+    """True for an upload under the raw bucket's ``cases/{case_id}/``; ingest may rewrite only those."""
+    return bucket_name == settings.GCS_RAW_BUCKET and blob_name.startswith(f"cases/{case_id}/")
+
+
 def run_ingest(stage_execution: StageExecution, session: Session, runtime: StageRuntime) -> tuple[str, dict]:
     """
     Ingest handler logic for worker execution.
-    1. Downloads raw WSI from GCS raw bucket.
-    2. De-identifies TIFF/SVS files by stripping label and macro images (Issue #37).
+    1. Downloads the WSI from the slide row's gs:// URI: an app upload, or a dataset or batch
+       object that the harness points at directly (SPEC-02 §5.3, §8).
+    2. De-identifies app uploads by stripping label and macro images (Issue #37). Objects the app
+       does not own are never rewritten; their checksum must match the one the slide row carries.
     3. Computes SHA256 checksum on de-identified file.
-    4. Extracts WSI metadata via OpenSlide / pyvips without guessing MPP (Issue #38, #39).
+    4. Extracts WSI metadata via OpenSlide / pyvips without guessing MPP (Issue #38, #39). An MPP
+       set on the row before ingest (dataset documentation, manual entry) is kept as authoritative.
     5. Sets slide status to 'needs_mpp' and halts downstream chaining if MPP missing (Issue #38).
     6. Generates full-depth DZI tiles and uploads to GCS pyramid storage (Issue #635).
     7. Emits audit event and persists ingest output.
     Returns (output_ref_uri, model_versions_dict).
     """
     input_ref = stage_execution.input_ref or {}
-    gcs_uri_original = input_ref.get("gcs_uri_original")
     slide_id = input_ref.get("slide_id")
 
     if not slide_id:
@@ -326,14 +338,15 @@ def run_ingest(stage_execution: StageExecution, session: Session, runtime: Stage
     if not slide_obj:
         raise ValueError(f"Slide {slide_id} not found in database")
 
+    gcs_uri_original = slide_obj.gcs_uri_original
+    if not gcs_uri_original or not gcs_uri_original.startswith("gs://"):
+        raise ValueError(f"Slide {slide_id} has no gs:// source URI (got {gcs_uri_original!r})")
+    raw_bucket_name, blob_name = parse_gcs_uri(gcs_uri_original)
+    owned = app_owns_slide_object(stage_execution.case_id, raw_bucket_name, blob_name)
+
     scratch_dir = tempfile.mkdtemp(prefix="og_ingest_")
 
     try:
-        raw_bucket_name = settings.GCS_RAW_BUCKET
-        if gcs_uri_original and gcs_uri_original.startswith("gs://"):
-            raw_bucket_name, blob_name = parse_gcs_uri(gcs_uri_original)
-        else:
-            blob_name = f"cases/{stage_execution.case_id}/{slide_id}.svs"
 
         ext = os.path.splitext(blob_name)[1]
         if not ext or len(ext) < 2:
@@ -356,8 +369,9 @@ def run_ingest(stage_execution: StageExecution, session: Session, runtime: Stage
                     f"does not match downloaded GCS object checksum ({download_sha256})"
                 )
 
-        # 1. De-identify and strip label and macro images before metadata extraction (Issue #37)
-        was_stripped = strip_label_and_macro_images(local_slide_path)
+        # 1. De-identify and strip label and macro images before metadata extraction (Issue #37).
+        # A dataset or batch object is read in place and never rewritten.
+        was_stripped = owned and strip_label_and_macro_images(local_slide_path)
         if was_stripped:
             slide_obj.label_stripped_at = datetime.now(timezone.utc)
             # Overwrite raw blob in GCS raw bucket with scrubbed de-identified file
@@ -372,8 +386,14 @@ def run_ingest(stage_execution: StageExecution, session: Session, runtime: Stage
 
         # 3. Metadata extraction (fail fast on unopenable files, never guess 0.25 MPP)
         meta = extract_openslide_metadata(local_slide_path)
-        slide_obj.mpp_x = meta.get("mpp_x")
-        slide_obj.mpp_y = meta.get("mpp_y")
+        preset_mpp = (
+            slide_obj.mpp_source in PRESET_MPP_SOURCES
+            and slide_obj.mpp_x is not None and slide_obj.mpp_x > 0
+            and slide_obj.mpp_y is not None and slide_obj.mpp_y > 0
+        )
+        if not preset_mpp:
+            slide_obj.mpp_x = meta.get("mpp_x")
+            slide_obj.mpp_y = meta.get("mpp_y")
         slide_obj.base_mag = meta.get("base_mag")
         slide_obj.width_px = meta.get("width_px")
         slide_obj.height_px = meta.get("height_px")
@@ -393,17 +413,20 @@ def run_ingest(stage_execution: StageExecution, session: Session, runtime: Stage
                 case_obj.status = "needs_mpp"
         else:
             slide_obj.status = "ready"
-            slide_obj.mpp_source = "file"
+            if not preset_mpp:
+                slide_obj.mpp_source = "file"
             slide_obj.native_mpp = max(slide_obj.mpp_x, slide_obj.mpp_y)
 
-        # Prime local slide cache for zero-latency tile serving (Issue #635)
-        try:
-            cache_dir = os.path.join(tempfile.gettempdir(), "og_slides_cache")
-            os.makedirs(cache_dir, exist_ok=True)
-            cached_slide_dest = os.path.join(cache_dir, f"{slide_obj.id}{ext}")
-            shutil.copy2(local_slide_path, cached_slide_dest)
-        except Exception as ce:
-            print(f"[Ingest Cache Note] Slide cache prime note: {ce}")
+        # Prime local slide cache for zero-latency tile serving (Issue #635). Only clinical cases are
+        # viewed; for eval runs the copy would double the scratch memory a slide takes (SPEC-02 §6.2).
+        if stage_execution.run_mode == "clinical":
+            try:
+                cache_dir = os.path.join(tempfile.gettempdir(), "og_slides_cache")
+                os.makedirs(cache_dir, exist_ok=True)
+                cached_slide_dest = os.path.join(cache_dir, f"{slide_obj.id}{ext}")
+                shutil.copy2(local_slide_path, cached_slide_dest)
+            except Exception as ce:
+                print(f"[Ingest Cache Note] Slide cache prime note: {ce}")
 
         # Persist extracted metadata & slide status immediately so DB is never left in stale state
         session.commit()
@@ -457,24 +480,13 @@ def run_ingest(stage_execution: StageExecution, session: Session, runtime: Stage
             ).first()
 
             if not existing_prep:
-                next_prep_stage = StageExecution(
-                    case_id=stage_execution.case_id,
-                    stage="preprocess",
-                    attempt=1,
-                    status="queued",
-                    input_ref={"slide_id": str(slide_obj.id), "ingest_output_ref": output_ref}
+                next_prep_stage = queue_stage(
+                    session, stage_execution.case_id, "preprocess",
+                    input_ref={"slide_id": str(slide_obj.id), "ingest_output_ref": output_ref},
+                    parent=stage_execution,
                 )
-                session.add(next_prep_stage)
                 session.commit()
-                session.refresh(next_prep_stage)
-
-                from app.core.cloud_tasks import dispatch_stage_task
-                dispatch_stage_task(
-                    case_id=str(stage_execution.case_id),
-                    stage="preprocess",
-                    stage_exec_id=str(next_prep_stage.id),
-                    payload={"slide_id": str(slide_obj.id), "ingest_output_ref": output_ref}
-                )
+                dispatch(next_prep_stage, next_prep_stage.input_ref)
             else:
                 session.commit()
         else:

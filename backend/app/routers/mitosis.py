@@ -22,6 +22,7 @@ from app.core.gcs import (
 )
 from app.core.db import get_db
 from app.auth.deps import CurrentUser, require
+from app.auth.idempotency import IdempotencyContext, IdempotentRoute, idempotent
 from app.core.pipeline_config import get_pipeline_config
 from app.core.slide_access import PRECONDITION_ERRORS, open_case_slide, slide_stain_transform
 from app.core.tissue_mask_store import load_tissue_mask
@@ -36,10 +37,11 @@ from app.models.detection import Detection
 from app.models.hpf_site import HpfSite
 from app.models.audit import AuditEvent
 from app.core.rehydrate import rehydrate_case_from_gcs
+from app.services import stages as stage_service
 from pipeline.hpf import generate_mitosis_density_map, greedy_place_hpfs
 from pipeline.scoring import calculate_hpf_mitosis_counts, compute_nottingham_mitotic_score
 
-router = APIRouter(prefix="/api/v1/stages/mitosis", tags=["mitosis"])
+router = APIRouter(prefix="/api/v1/stages/mitosis", tags=["mitosis"], route_class=IdempotentRoute)
 
 def to_uuid(val: Any) -> uuid.UUID:
     if isinstance(val, uuid.UUID):
@@ -73,6 +75,9 @@ def get_verified_mitosis_stage(
         (StageExecution.case_id == case_uid) | (StageExecution.case_id == str(case_id)),
         StageExecution.stage == "mitosis"
     ).order_by(StageExecution.attempt.desc()).limit(1)
+    if require_awaiting or forbid_confirmed:
+        # Row lock serialises concurrent state-gated writes (SPEC-03 §5.3.3); SQLite ignores it.
+        stmt = stmt.with_for_update()
 
     stage_exec = db.scalars(stmt).first()
     if not stage_exec:
@@ -934,146 +939,24 @@ def re_place_hpfs(payload: BulkActionPayload, db: Session = Depends(get_db), use
 
 
 @router.post("/confirm")
-def confirm_mitosis_stage(payload: MitosisConfirmPayload, db: Session = Depends(get_db), user: CurrentUser = Depends(require("stage:confirm"))):
+def confirm_mitosis_stage(
+    payload: MitosisConfirmPayload,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require("stage:confirm")),
+    _idempotency: IdempotencyContext = idempotent("stages/mitosis/confirm"),
+):
     """
     Clinical Safety Gate & Stage 4 Confirmation.
-    Verifies that all candidate mitotic figures above threshold (conf >= 0.50) have been reviewed.
-    Finalizes 10 HPFs and Nottingham Mitotic Score, marks Stage 4 as confirmed, snapshots metrics, and queues Stage 5.
+    Verifies that no candidate at or above the review gate (configs/mitosis.yaml) is unreviewed,
+    snapshots the confirmed HPFs and Nottingham Mitotic Score, marks Stage 4 confirmed and queues Stage 5.
     """
-    case_id = payload.case_id
-    case_obj, stage_exec = get_verified_mitosis_stage(case_id, db, require_awaiting=True)
-    case_uid = case_obj.id
-
-    # Check unreviewed high-confidence candidates
-    unreviewed_high_conf = db.scalars(
-        select(Detection).where(
-            (Detection.case_id == case_uid) | (Detection.case_id == str(case_id)),
-            Detection.label == "unreviewed",
-            (Detection.det_conf >= 0.50) | (Detection.ver_conf >= 0.50)
-        )
-    ).all()
-
-    if unreviewed_high_conf:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Clinical Safety Gate: {len(unreviewed_high_conf)} unreviewed candidate mitotic figure(s) with confidence >= 0.50 remain. Please review or use 'Bulk Reject' before confirming."
-        )
-
-    stage_exec.status = "confirmed"
-    stage_exec.reviewed_at = datetime.now(timezone.utc)
-    stage_exec.reviewed_by = user.id
-
-    # Queue Stage 5 (grading)
-    next_exec = db.scalars(
-        select(StageExecution).where(
-            (StageExecution.case_id == case_uid) | (StageExecution.case_id == str(case_id)),
-            StageExecution.stage == "grading"
-        ).order_by(StageExecution.attempt.desc())
-    ).first()
-
-    if not next_exec:
-        next_exec = StageExecution(
-            case_id=case_uid,
-            stage="grading",
-            attempt=1,
-            status="queued"
-        )
-        db.add(next_exec)
-    elif next_exec.status not in ("confirmed", "done"):
-        next_exec.status = "queued"
-        next_exec.started_at = None
-        next_exec.completed_at = None
-        next_exec.error = None
-
-    # Synchronize confirmed detections & HPFs back to GCS output.json and snapshot metrics (#118)
-    total_m = 0
-    scoring_summary = {}
     try:
-        from pipeline.grading import calculate_mitotic_score_from_detections_and_hpfs
-        all_dets = db.scalars(select(Detection).where((Detection.case_id == case_uid) | (Detection.case_id == str(case_id)))).all()
-        hpf_rows = db.scalars(select(HpfSite).where((HpfSite.case_id == case_uid) | (HpfSite.case_id == str(case_id))).order_by(HpfSite.seq.asc())).all()
-        cand_dicts = [
-            {
-                "id": d.id,
-                "centroid_um": d.centroid_um,
-                "label": d.label,
-                "label_source": d.label_source,
-                "det_conf": d.det_conf,
-                "ver_conf": d.ver_conf,
-                "hotspot_id": d.hotspot_id,
-                "crop_uri": d.crop_uri,
-                "crop_orig_uri": d.crop_orig_uri
-            }
-            for d in all_dets
-        ]
-        hpf_dicts = [
-            {"seq": h.seq, "center_um": h.center_um, "radius_um": h.radius_um, "count": h.mitotic_count, "source": h.source}
-            for h in hpf_rows
-        ]
-        mitotic_scoring = get_pipeline_config().mitosis.scoring
-        total_m, conf_score = calculate_mitotic_score_from_detections_and_hpfs(cand_dicts, hpf_dicts, mitotic_scoring)
-        scoring_summary = compute_nottingham_mitotic_score(
-            count_total=total_m,
-            n_hpf=len(hpf_dicts),
-            radius_um=None,
-            scoring=mitotic_scoring,
-            hpfs=hpf_dicts
-        )
-
-        stage_exec.metrics = {
-            "count_total": total_m,
-            "area_mm2": scoring_summary.get("area_mm2"),
-            "mitoses_per_mm2": scoring_summary.get("mitoses_per_mm2"),
-            "mitotic_score": scoring_summary.get("score")
-        }
-
-        existing_out = {}
-        try:
-            raw_out = download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_id}/mitosis/output.json")
-            existing_out = json.loads(raw_out.decode("utf-8"))
-        except Exception:
-            pass
-        existing_out["case_id"] = str(case_id)
-        existing_out["candidates"] = cand_dicts
-        existing_out["hpfs"] = hpf_dicts
-        existing_out["summary"] = scoring_summary
-        upload_blob_from_bytes(
-            settings.GCS_ARTIFACTS_BUCKET,
-            f"cases/{case_id}/mitosis/output.json",
-            json.dumps(existing_out, indent=2).encode("utf-8"),
-            "application/json"
-        )
-    except Exception as ge:
-        print(f"[Confirm Mitosis GCS Sync Note] {ge}")
-
-    audit = AuditEvent(
-        case_id=case_id,
-        actor=user.id,
-        event_type="stage_confirmed",
-        stage="mitosis",
-        payload={
-            "next_stage": "grading",
-            "mitotic_score": scoring_summary.get("score"),
-            "count_total": total_m
-        }
-    )
-    db.add(audit)
-    db.commit()
-
-    try:
-        from app.core.cloud_tasks import dispatch_stage_task
-        if next_exec:
-            dispatch_stage_task(
-                case_id=str(case_id),
-                stage="grading",
-                stage_exec_id=str(next_exec.id)
-            )
-    except Exception as e:
-        print(f"[CloudTasks Warning] Failed to dispatch next stage grading: {e}")
-
+        stage_service.confirm_stage(db, payload.case_id, "mitosis", user.id)
+    except stage_service.StageServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     return {
         "status": "success",
-        "case_id": case_id,
+        "case_id": payload.case_id,
         "stage": "mitosis",
         "next_stage": "grading"
     }

@@ -117,7 +117,14 @@ def test_audit_pagination_tiebreaker_order():
 
 
 def test_stage_started_audit_event_emission():
-    """Verify approve_case_stage emits both stage_approved and stage_started audit events (#644)."""
+    """Verify approve_case_stage emits both stage_confirmed and stage_started audit events (#644).
+
+    Approving triage confirms it through the stage service, which reads the triage output.
+    """
+    import json
+    from app.core.config import settings
+    from app.core.gcs import upload_blob_from_bytes
+
     db = TestingSessionLocal()
     case_uid = uuid.uuid4()
     slide_uid = uuid.uuid4()
@@ -130,6 +137,11 @@ def test_stage_started_audit_event_emission():
         stage_exec = StageExecution(case_id=case_uid, stage="triage", attempt=1, status="awaiting_review")
         db.add(stage_exec)
         db.commit()
+        hotspot = {"id": "hs_1", "polygon_um": [[0, 0], [100, 0], [100, 100], [0, 100]], "excluded": False}
+        upload_blob_from_bytes(
+            settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_uid}/triage/output.json",
+            json.dumps({"hotspots": [hotspot]}).encode("utf-8"), "application/json",
+        )
 
         with patch("app.routers.cases.dispatch_stage_task"):
             resp = client.post(
@@ -151,7 +163,7 @@ def test_stage_started_audit_event_emission():
         ).all()
 
         event_types = [e.event_type for e in audit_events]
-        assert "stage_approved" in event_types
+        assert "stage_confirmed" in event_types
         assert "stage_started" in event_types
 
         started_evt = next(e for e in audit_events if e.event_type == "stage_started")

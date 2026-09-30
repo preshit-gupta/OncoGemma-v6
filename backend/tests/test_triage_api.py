@@ -78,7 +78,8 @@ def test_triage_api_workflow(client_and_db):
     mock_bytes = json.dumps(mock_output).encode("utf-8")
 
     from unittest.mock import patch
-    with patch("app.routers.triage.download_blob_as_bytes", return_value=mock_bytes):
+    with patch("app.routers.triage.download_blob_as_bytes", return_value=mock_bytes), \
+         patch("app.services.stages.download_blob_as_bytes", return_value=mock_bytes):
         # 1. GET triage data
         res_get = client.get(f"/api/v1/stages/triage/{case_id}")
         assert res_get.status_code == 200

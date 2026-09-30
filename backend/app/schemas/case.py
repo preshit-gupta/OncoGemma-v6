@@ -37,6 +37,8 @@ class SlideUploadUrlRequest(BaseModel):
 class SlideUploadUrlResponse(BaseModel):
     upload_url: str
     gcs_uri: str
+    # Headers the client must send on the PUT: they are part of the V4 signature (SPEC-03 §5.3.5).
+    upload_headers: dict[str, str]
 
 class SlideFinalizeRequest(BaseModel):
     gcs_uri: str

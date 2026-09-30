@@ -15,6 +15,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Callable, Literal, Mapping, NoReturn
 
 import numpy as np
@@ -34,6 +35,8 @@ from app.core.run_context import DecisionContext, RunMode
 from app.core.tasks import DecisionStatus, EntityType, ProducerKind, Task
 from app.inference import schemas
 from app.inference.adapters.base import (
+    UNTRUSTED_DOCUMENT_BEGIN,
+    UNTRUSTED_DOCUMENT_END,
     Adapter,
     AdapterImage,
     AdapterRequest,
@@ -50,6 +53,7 @@ from app.inference.errors import (
     ModelCallError,
     ModelTimeoutError,
     ModelUnavailableError,
+    PromptVariableError,
     SchemaInvalidError,
     UnpinnedModelError,
 )
@@ -76,7 +80,7 @@ def is_pinned_model_id(model_id: str) -> bool:
 
 _PROMPT_VARIABLE = re.compile(r"\{\{([a-z_][a-z0-9_]*)\}\}")
 
-PromptValue = str | int | float | bool
+PromptValue = int | float | bool | Enum
 
 
 class CacheIntegrityError(RuntimeError):
@@ -118,6 +122,9 @@ class ModelInputs:
     # A configs/prompts file name, rendered with typed ``prompt_vars`` ({{name}} placeholders).
     prompt_id: str | None = None
     prompt_vars: Mapping[str, PromptValue] = field(default_factory=dict)
+    # Text read by the model as data in its own delimited part (SPEC-03 §5.2 rule 2).
+    # Only Task.LABEL_EXTRACT may send one; it is hashed and measured in the record, not stored.
+    untrusted_document: str | None = None
 
 
 @dataclass(frozen=True)
@@ -155,15 +162,24 @@ def sha256_hex(data: bytes) -> str:
 
 
 def render_prompt(template: str, variables: Mapping[str, PromptValue]) -> str:
-    """Replace ``{{name}}`` placeholders. Missing, unused or untyped variables are errors."""
+    """Replace ``{{name}}`` placeholders. Missing, unused, string or untyped variables are errors (SPEC-03 §5.2)."""
     names = set(_PROMPT_VARIABLE.findall(template))
     missing, unused = names - set(variables), set(variables) - names
     if missing or unused:
-        raise ValueError(f"prompt variables missing {sorted(missing)}, unused {sorted(unused)}")
+        raise PromptVariableError(f"prompt variables missing {sorted(missing)}, unused {sorted(unused)}")
     for name, value in variables.items():
-        if not isinstance(value, (str, int, float, bool)):
-            raise ValueError(f"prompt variable {name} has type {type(value).__name__}")
-    return _PROMPT_VARIABLE.sub(lambda m: str(variables[m.group(1)]), template)
+        if isinstance(value, str) and not isinstance(value, Enum):
+            raise PromptVariableError(
+                f"prompt variable {name!r} has disallowed type 'str' to prevent prompt injection (SPEC-03 §5.2)"
+            )
+        if not isinstance(value, (int, float, bool, Enum)):
+            raise PromptVariableError(f"prompt variable {name} has type {type(value).__name__}")
+    return _PROMPT_VARIABLE.sub(lambda m: str(_prompt_value(variables[m.group(1)])), template)
+
+
+def _prompt_value(value: PromptValue) -> int | float | bool | str:
+    """The rendered (and hashed) form of a prompt variable: an Enum member is its value."""
+    return value.value if isinstance(value, Enum) else value
 
 
 def _record_output(output: BaseModel) -> dict[str, Any]:
@@ -255,6 +271,7 @@ class ModelGateway:
             output_model=output_model if entry.kind == "vlm" else None,
             generation=call.params.get("generation", {}),
             parameters={key: value for key, value in call.params.items() if key != "generation"},
+            untrusted_document=inputs.untrusted_document,
         )
         result = self._call_with_retries(call, entry, request, output_model)
         if cache_key is not None:
@@ -348,15 +365,21 @@ class ModelGateway:
                 "shape": list(inputs.features.shape),
                 "dtype": str(inputs.features.dtype),
             },
-            "prompt_vars": dict(inputs.prompt_vars),
+            "prompt_vars": {name: _prompt_value(v) for name, v in inputs.prompt_vars.items()},
         }
+        if inputs.untrusted_document is not None:
+            input_spec["untrusted_document"] = {
+                "sha256": sha256_hex(inputs.untrusted_document.encode("utf-8")),
+                "chars": len(inputs.untrusted_document),
+            }
         hashed = {
             "images": [{"spec": img.spec.as_json(), "sha256": sha256_hex(img.data)} for img in inputs.images],
             "features": None if inputs.features is None else {
                 **input_spec["features"],
                 "sha256": sha256_hex(np.ascontiguousarray(inputs.features).tobytes()),
             },
-            "prompt_vars": dict(inputs.prompt_vars),
+            "prompt_vars": input_spec["prompt_vars"],
+            "untrusted_document": input_spec.get("untrusted_document"),
             "params": params,
         }
         call = _Call(
@@ -397,6 +420,16 @@ class ModelGateway:
             reject("a prompt is required for VLMs and allowed only for them")
         if getattr(entry, "requires_image", False) and not inputs.images:
             reject("this model requires an image and none was given")
+        document = inputs.untrusted_document
+        if (document is not None) != (call.task is Task.LABEL_EXTRACT):
+            reject("an untrusted document is required for label_extract and allowed only for it")
+        if document is not None:
+            if entry.provider != "vertex_genai":
+                reject(f"provider {entry.provider} cannot receive an untrusted document")
+            if not document.strip():
+                reject("the untrusted document is empty")
+            if UNTRUSTED_DOCUMENT_BEGIN in document or UNTRUSTED_DOCUMENT_END in document:
+                reject("the untrusted document contains the document delimiter")
 
         contract = getattr(entry, "input", None)
         if isinstance(contract, FeatureInputContract):
