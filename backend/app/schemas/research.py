@@ -39,7 +39,7 @@ class RunSummary(StrictModel):
     id: str
     name: str
     dataset: str
-    split: Literal["train", "val", "test"]
+    split: Literal["train", "val", "test", "adhoc"]  # an ad-hoc batch has no split (SPEC-02 §6.1)
     arm: str | None = None
     status: Literal["created", "running", "completed", "cancelled", "failed"]
     is_locked_test: bool

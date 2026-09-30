@@ -388,6 +388,54 @@ def test_gate_requires_the_recorded_hashes(client: TestClient, db_session: Sessi
     assert gate["valid"] is False
 
 
+# --- ad-hoc batches are runs too (dataset and split "adhoc") -------------------
+
+
+@pytest.fixture
+def adhoc_run(db_session: Session, tmp_path):
+    from eval.datasets.manifest import MANIFEST_COLUMNS
+
+    rows = {column: [None, None] for column in MANIFEST_COLUMNS}
+    rows["slide_id"] = rows["patient_id"] = ["ad-01", "ad-02"]
+    rows["dataset"] = ["adhoc", "adhoc"]
+    path = tmp_path / "adhoc.parquet"
+    pd.DataFrame(rows).astype(MANIFEST_COLUMNS).to_parquet(path)
+    run = make_run(db_session, "ad-hoc batch", (str(path), sha256_file(path)), dataset="adhoc", split="adhoc",
+                   splits_lock_sha256=None)
+    for slide_id in ("ad-01", "ad-02"):
+        add_item(db_session, run, slide_id, slide_id, (2, 6, 2, 2, 2))
+    db_session.commit()
+    return run
+
+
+def test_adhoc_runs_do_not_break_the_runs_list(client: TestClient, sample_runs, adhoc_run):
+    res = client.get("/api/v1/research/runs", headers=RESEARCHER)
+    assert res.status_code == 200
+    by_name = {r["name"]: r for r in res.json()["items"]}
+    assert by_name["ad-hoc batch"]["split"] == "adhoc"
+    assert by_name["ad-hoc batch"]["gate"] == {"valid": True, "int_prov": 1.0, "int_fall": 0, "disjoint": True}
+    assert "TCGA-BRCA Validated Arm P2" in by_name
+    filtered = client.get("/api/v1/research/runs?split=adhoc", headers=RESEARCHER).json()["items"]
+    assert [r["name"] for r in filtered] == ["ad-hoc batch"]
+
+
+def test_adhoc_run_detail_items_and_metrics(client: TestClient, adhoc_run):
+    base = f"/api/v1/research/runs/{adhoc_run.id}"
+    detail = client.get(base, headers=RESEARCHER)
+    assert detail.status_code == 200
+    assert detail.json()["split"] == "adhoc"
+    assert detail.json()["license_scopes"] == ["pending"]
+    items = client.get(f"{base}/items", headers=RESEARCHER)
+    assert items.status_code == 200
+    assert items.json()["items"][0]["gt"] == {
+        "grade": None, "total": None, "tubule": None, "pleo": None, "mitoses": None, "histotype": None,
+    }
+    assert items.json()["items"][0]["sum_error"] is None
+    metrics = client.get(f"{base}/metrics", headers=RESEARCHER)
+    assert metrics.status_code == 200
+    assert "s5" in metrics.json()["unavailable"]  # no ground truth: said so, not invented
+
+
 # =============================================================================
 # 3. Items & Decision Tree Tests (AC3)
 # =============================================================================
