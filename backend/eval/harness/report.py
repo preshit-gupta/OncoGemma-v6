@@ -168,6 +168,9 @@ def compute_metrics(session: Session, run_id, *, B: int = 2000, seed: int = 7) -
             manifest_sha256=run.manifest_sha256, splits_lock_sha256=run.splits_lock_sha256,
         ),
         items=dict(Counter(i.status for i in items)),
+        no_invasive_tumor=sum(
+            1 for i in items if i.status == "succeeded" and (i.prediction or {}).get("no_invasive_tumor")
+        ),
         failures=[FailureGroup(status=s, stage=st, error_class=e, n=n) for (s, st, e), n in sorted(
             failures.items(), key=lambda kv: (-kv[1], str(kv[0])))],
         grade=grade,
@@ -197,6 +200,7 @@ def render_html(doc: MetricsDocument) -> str:
         rows += [("Grade macro-F1", ci(g.macro_f1)), ("Grade coverage", f"{g.coverage:.3f} (n={g.n})"),
                  ("QWK", ci(g.qwk)), ("F1 high (total 8–9)", f"{ci(g.f1_high)} (n={g.n_high})"),
                  ("Macro-F1 low/moderate", f"{ci(g.macro_f1_lm)} (n={g.n_lm})"), ("Sum MAE", ci(g.sum_mae))]
+    rows.append(("No invasive tumour (graded 'none')", str(doc.no_invasive_tumor)))
     rows += [(f"{name} macro-F1", f"{ci(m.macro_f1)} (coverage {m.coverage:.3f})") for name, m in doc.components.items()]
     rows += [(f"Unavailable: {k}", v) for k, v in doc.unavailable.items()]
     rows += [(f"Failed at {f.stage}: {f.error_class}" if f.status == "failed" else "Excluded by QC", str(f.n))

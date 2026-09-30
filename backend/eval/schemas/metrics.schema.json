@@ -348,6 +348,10 @@
       "title": "Metrics Schema Version",
       "type": "integer"
     },
+    "no_invasive_tumor": {
+      "title": "No Invasive Tumor",
+      "type": "integer"
+    },
     "run": {
       "$ref": "#/$defs/RunInfo"
     },
@@ -376,6 +380,7 @@
   "required": [
     "run",
     "items",
+    "no_invasive_tumor",
     "failures",
     "grade",
     "components",

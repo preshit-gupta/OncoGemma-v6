@@ -52,6 +52,7 @@ def test_every_item_counts_and_missing_predictions_are_none(db, tmp_path, lock):
     assert doc.grade.macro_f1.point == pytest.approx(4 / 7)  # class 2: tp 2, fn 3
     assert doc.grade.per_class == {"2": pytest.approx(4 / 7)}
     assert doc.items == {"succeeded": 3, "excluded_qc": 1, "failed": 1}
+    assert doc.no_invasive_tumor == 1  # s4: counted, and still a 'none' grade in the denominator
     groups = {(f.status, f.stage, f.error_class): f.n for f in doc.failures}
     assert groups == {("failed", "triage", "RuntimeError"): 1, ("excluded_qc", "qc", "QcHardFail"): 1}
     assert set(doc.components) == {"tubule", "pleo", "mitoses"}
@@ -74,7 +75,8 @@ def test_metrics_cli_writes_schema_valid_files_and_links_them(db, tmp_path, lock
     metrics_path = out / str(run.id) / "metrics.json"
     doc = MetricsDocument.model_validate_json(metrics_path.read_text(encoding="utf-8"))
     assert doc.metrics_schema_version == 1 and doc.run.id == str(run.id)
-    assert "Grade macro-F1" in (out / str(run.id) / "report.html").read_text(encoding="utf-8")
+    page = (out / str(run.id) / "report.html").read_text(encoding="utf-8")
+    assert "Grade macro-F1" in page and "No invasive tumour" in page
     db.expire_all()
     assert db.get(ValidationRun, run.id).metrics_uri == str(metrics_path)
 

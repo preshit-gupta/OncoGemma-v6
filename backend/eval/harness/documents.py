@@ -84,6 +84,9 @@ class MetricsDocument(Strict):
     metrics_schema_version: Literal[1] = METRICS_SCHEMA_VERSION
     run: RunInfo
     items: dict[str, int]
+    # Succeeded items whose triage found no invasive tumour. They stay in every denominator as a
+    # 'none' grade (SPEC-00 rule 2); this count says how much of the missing coverage they explain.
+    no_invasive_tumor: int
     failures: list[FailureGroup]
     bootstrap_unit: Literal["patient"] = "patient"
     grade: GradeMetrics | None

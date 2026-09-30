@@ -2,7 +2,7 @@
 
 Update this file at the end of every session (SPEC plan §3 rule 8). Keep it under 60 lines.
 
-**Last updated:** 2026-09-30 (Claude, WP-5.5a)
+**Last updated:** 2026-09-30 (Claude, WP-5.5a–c)
 **Phase:** P1 — Fix
 
 ## Done
@@ -33,7 +33,8 @@ Lanes are in `docs/tasks/README.md`. The specimen-type UI is merged (#21). Lane 
 
 ## Claude — next
 
-1. **WP-5.5 (SPEC-02 §5–6) in slices, each PR based on `main`:** 5.5a (branch `wp/5.5a-stage-service`): `app/services/stages.py` is the one confirm/retry/queue path for `/approve`, `/stages/triage/confirm`, `/stages/mitosis/confirm` and the harness (every review gate; `/approve` refuses grading); queued stages inherit `run_mode`/`run_id`; `0010_validation` (`validation_runs`, `validation_items`, `run_id` FKs); ingest reads any `gs://` slide without rewriting objects the app does not own and keeps a preset MPP. Next: 5.5b controller + collect + CLI `run`/`resume` + test lock; 5.5c `metrics`/`compare`/`one-shot` + schemas; 5.5d batch API. WP-4.3 and 5.2 follow-ups are delegated (2026-09-30). Before any deploy: run `pytest backend/tests/pipeline/test_slide_io.py::test_concurrent_reads_are_byte_identical_to_single_threaded_reads` on Linux (AC7 has only run on Windows).
+1. **WP-5.5 (SPEC-02 §5–6) in slices, each PR based on `main`:** 5.5a (branch `wp/5.5a-stage-service`): `app/services/stages.py` is the one confirm/retry/queue path for `/approve`, `/stages/triage/confirm`, `/stages/mitosis/confirm` and the harness (every review gate; `/approve` refuses grading); queued stages inherit `run_mode`/`run_id`; `0010_validation` (`validation_runs`, `validation_items`, `run_id` FKs); ingest reads any `gs://` slide without rewriting objects the app does not own and keeps a preset MPP. 5.5b (`wp/5.5b-harness`): `eval/harness/` runs, controller (confirms via the service as `harness:<run_id>`; resume repeats no stage), collect, `python -m eval.cli run/resume/status/cancel/retry`, test lock. 5.5c (`wp/5.5c-reports`): `metrics`/`compare`/`one-shot`, `eval/schemas/*.schema.json` exported from pydantic models. Next: 5.5d batch API.
+   - **Owner decisions (2026-09-30):** metrics count every non-cancelled item; failed, QC-excluded and no-tumour slides are a 'none' grade in every denominator, and `metrics.json` also reports the no-tumour count. **5.5d uses option A:** the stage workers also drive active runs, one controller per run under a lease on the run row (migration `0011`); no Cloud Run Job per batch. Batches from a GCS prefix carry no SHA-256; ingest computes and records it. JPG sources are refused until the BCNB conversion (WP-5.2 follow-up) exists. WP-4.3 and 5.2 follow-ups are delegated (2026-09-30). Before any deploy: run `pytest backend/tests/pipeline/test_slide_io.py::test_concurrent_reads_are_byte_identical_to_single_threaded_reads` on Linux (AC7 has only run on Windows).
 2. 4.1 left for WP-4.3 (§5): rate limits, soft delete and unmounting reset-database/bulk delete outside `ENV=test`, Idempotency-Key, audit trigger. IAP is optional.
 
 ## Open items (program owner)
