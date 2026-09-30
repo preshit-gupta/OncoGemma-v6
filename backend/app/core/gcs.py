@@ -103,6 +103,11 @@ class LocalMockBucket:
     def blob(self, blob_name: str) -> LocalMockBlob:
         return LocalMockBlob(self.name, blob_name)
 
+    def get_blob(self, blob_name: str) -> LocalMockBlob | None:
+        """Like ``google.cloud.storage.Bucket.get_blob``: the blob with its size, or None."""
+        blob = LocalMockBlob(self.name, blob_name)
+        return blob if blob.exists() else None
+
     def exists(self, timeout=None):
         return True
 

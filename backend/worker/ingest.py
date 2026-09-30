@@ -417,14 +417,16 @@ def run_ingest(stage_execution: StageExecution, session: Session, runtime: Stage
                 slide_obj.mpp_source = "file"
             slide_obj.native_mpp = max(slide_obj.mpp_x, slide_obj.mpp_y)
 
-        # Prime local slide cache for zero-latency tile serving (Issue #635)
-        try:
-            cache_dir = os.path.join(tempfile.gettempdir(), "og_slides_cache")
-            os.makedirs(cache_dir, exist_ok=True)
-            cached_slide_dest = os.path.join(cache_dir, f"{slide_obj.id}{ext}")
-            shutil.copy2(local_slide_path, cached_slide_dest)
-        except Exception as ce:
-            print(f"[Ingest Cache Note] Slide cache prime note: {ce}")
+        # Prime local slide cache for zero-latency tile serving (Issue #635). Only clinical cases are
+        # viewed; for eval runs the copy would double the scratch memory a slide takes (SPEC-02 §6.2).
+        if stage_execution.run_mode == "clinical":
+            try:
+                cache_dir = os.path.join(tempfile.gettempdir(), "og_slides_cache")
+                os.makedirs(cache_dir, exist_ok=True)
+                cached_slide_dest = os.path.join(cache_dir, f"{slide_obj.id}{ext}")
+                shutil.copy2(local_slide_path, cached_slide_dest)
+            except Exception as ce:
+                print(f"[Ingest Cache Note] Slide cache prime note: {ce}")
 
         # Persist extracted metadata & slide status immediately so DB is never left in stale state
         session.commit()

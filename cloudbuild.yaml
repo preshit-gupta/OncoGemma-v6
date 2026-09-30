@@ -70,7 +70,7 @@ steps:
       - '--min-instances=1'
       # Sign-in (SPEC-03 §3): the API refuses to start without the OAuth client ID and the session key.
       # '^|^' makes '|' the separator, so AUTH_ALLOWED_DOMAINS may hold a comma-separated list.
-      - '--update-env-vars=^|^CLOUD_SQL_CONNECTION_NAME=$PROJECT_ID:$_REGION:oncogemma-dev-psql|GOOGLE_OAUTH_CLIENT_ID=$_GOOGLE_OAUTH_CLIENT_ID|AUTH_ALLOWED_DOMAINS=$_AUTH_ALLOWED_DOMAINS|BOOTSTRAP_ADMIN_EMAIL=$_BOOTSTRAP_ADMIN_EMAIL'
+      - '--update-env-vars=^|^CLOUD_SQL_CONNECTION_NAME=$PROJECT_ID:$_REGION:oncogemma-dev-psql|GOOGLE_OAUTH_CLIENT_ID=$_GOOGLE_OAUTH_CLIENT_ID|AUTH_ALLOWED_DOMAINS=$_AUTH_ALLOWED_DOMAINS|BOOTSTRAP_ADMIN_EMAIL=$_BOOTSTRAP_ADMIN_EMAIL|WORKER_RUN_MODES=clinical'
       - '--set-secrets=DB_PASSWORD=og-db-password:latest,SESSION_SIGNING_KEY=og-session-signing-key:latest'
     id: 'deploy-api'
 
@@ -105,6 +105,31 @@ steps:
       - '--update-env-vars=CLOUD_SQL_CONNECTION_NAME=$PROJECT_ID:$_REGION:oncogemma-dev-psql'
       - '--set-secrets=DB_PASSWORD=og-db-password:latest'
     id: 'update-worker-job'
+
+  # 8. Evaluation worker (SPEC-02 §6.2): executes eval-mode stages and drives validation runs and
+  # batches, so evaluation load stays off the clinical API (whose worker takes WORKER_RUN_MODES=clinical).
+  # 'jobs deploy' creates the job the first time. Start it for an evaluation or a batch:
+  #   gcloud run jobs execute oncogemma-eval-worker --region=us-central1
+  # It exits after WORKER_IDLE_EXIT_S seconds without work. Memory is 8 GiB for now: Cloud Run's
+  # filesystem is memory, and a stage is claimed only with 2x the slide's size free.
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'jobs'
+      - 'deploy'
+      - 'oncogemma-eval-worker'
+      - '--image=$_REGION-docker.pkg.dev/$PROJECT_ID/oncogemma-repo/worker:latest'
+      - '--region=$_REGION'
+      - '--tasks=1'
+      - '--max-retries=0'
+      - '--task-timeout=24h'
+      - '--cpu=4'
+      - '--memory=8Gi'
+      - '--add-cloudsql-instances=$PROJECT_ID:$_REGION:oncogemma-dev-psql'
+      - '--update-env-vars=CLOUD_SQL_CONNECTION_NAME=$PROJECT_ID:$_REGION:oncogemma-dev-psql,RUN_DAEMON=true,WORKER_RUN_MODES=eval,WORKER_IDLE_EXIT_S=900'
+      - '--set-secrets=DB_PASSWORD=og-db-password:latest'
+    id: 'deploy-eval-worker'
 
 substitutions:
   _REGION: 'us-central1'

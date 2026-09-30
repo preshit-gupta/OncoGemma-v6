@@ -1,0 +1,20 @@
+# Packaging for the backend's command-line entry points only. Dependencies are pinned in
+# requirements/*.lock.txt and installed from there; this file adds no dependency.
+#
+#   pip install --no-deps -e ./backend
+#   oncogemma-eval --help            (the same as: cd backend; python -m eval.cli --help)
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oncogemma-backend"
+version = "6.0.0.dev0"
+requires-python = ">=3.12"
+
+[project.scripts]
+oncogemma-eval = "eval.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["app*", "eval*", "pipeline*", "worker*"]
