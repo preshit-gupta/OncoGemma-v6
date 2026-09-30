@@ -279,7 +279,7 @@ def test_confirm_triage_mutual_exclusion_invariant():
     # Machine output has 2 active tumor hotspots
     active_hotspots_json = b'{"hotspots": [{"id": "hs_01", "polygon_um": [[0,0],[1,1],[0,1]]}, {"id": "hs_02", "polygon_um": [[2,2],[3,3],[2,3]]}]}'
     
-    with patch("app.routers.triage.download_blob_as_bytes", return_value=active_hotspots_json):
+    with patch("app.services.stages.download_blob_as_bytes", return_value=active_hotspots_json):
         # Attempt to confirm no_invasive_tumor=True with 2 active hotspots -> Must raise HTTP 409 Conflict (#569)
         payload = TriageConfirmPayload(
             case_id="case-123",
@@ -287,6 +287,6 @@ def test_confirm_triage_mutual_exclusion_invariant():
             no_invasive_tumor=True
         )
         with pytest.raises(HTTPException) as exc:
-            confirm_triage(payload, db=db_mock)
+            confirm_triage(payload, db=db_mock, user=MagicMock(id="dr_smith"))
         assert exc.value.status_code == 409
         assert "active tumor hotspot" in exc.value.detail

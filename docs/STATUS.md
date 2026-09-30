@@ -2,7 +2,7 @@
 
 Update this file at the end of every session (SPEC plan §3 rule 8). Keep it under 60 lines.
 
-**Last updated:** 2026-09-30 (Claude)
+**Last updated:** 2026-09-30 (Claude, WP-5.5a)
 **Phase:** P1 — Fix
 
 ## Done
@@ -13,7 +13,7 @@ Update this file at the end of every session (SPEC plan §3 rule 8). Keep it und
 - **Deployed 2026-09-28** (`cloudbuild.yaml`: API, frontend, worker job); production stamped `0001_v5_baseline`, startup upgraded it to `0002`; later revisions apply at API startup. **Cloud SQL password rotated 2026-09-28**: a random value only in Secret Manager `og-db-password`, read as `DB_PASSWORD` via `--set-secrets`; the old one in git history no longer works; `/health` returns 200.
 - **WP-2.1 + 2.2:** Alembic (`0001`, `0002_drop_v5_reports`), CI `migrations.yml`, startup `upgrade_to_head` under an advisory lock. `PipelineConfig` (every `configs/*.yaml` and prompt, strict, hashed) and `ModelRegistry` (`configs/models.yaml`, verified Vertex deployments).
 - **WP-2.3 is complete on `main`** (#6, #11, #12, #13, #14, #15): DecisionRecord + `ModelGateway` (contract checks, transport-only retries, strict parsing, cache, one record per attempt, EVAL refuses aliases, `invoke_or_fallback`), one `execute_stage`, and triage, mitosis and grading on the gateway with every v5 fallback deleted (random embeddings, forced confidences, defaulted scores and types, unconfirmed-hotspot fallback). Config injection (`QcConfig`, `ScoringConfig`, `MitosisScoringConfig`); AC3 `tests/test_fallback_paths_eval.py`, AC4 Hypothesis schemas; fail-loud ruff (`tools/ruff_fail_loud.toml`, may only shrink). Images `wp2.3e-4c1b34e` are built; the owner deploys.
-- **M3 = WP-3.1–3.4 (SPEC-04): four cumulative PRs, #16 → #17 → #18 → #19 (`wp/3.1-slide-reader` … `3.4-migrate-read-sites`); merge in order, one at a time. #16 and #17 (3.1, 3.2) are merged (owner, 2026-09-30); #18 and #19 (3.3, 3.4) are open.** WP-7.2 (`wp/7.2-detector-client`, depends on 3.1) runs in parallel in its own worktree. Suite at 3.4: 997 passed, 1 skipped (main was 726 passed, 1 skipped; 3.1 784, 3.2 850, 3.3 945); `tools/tests` 49 passed; literal baseline 121 → 77.
+- **M3 = WP-3.1–3.4 (SPEC-04): four cumulative PRs, #16 → #17 → #18 → #19 (`wp/3.1-slide-reader` … `3.4-migrate-read-sites`); merge in order, one at a time. All four are merged (owner, 2026-09-30), as is WP-7.2 (#20).** Suite at 3.4: 997 passed, 1 skipped (main was 726 passed, 1 skipped; 3.1 784, 3.2 850, 3.3 945); `tools/tests` 49 passed; literal baseline 121 → 77.
   - 3.1 `pipeline/slide_io.py`: thread-safe `SlideReader` (one handle per thread, resolution from the `Slide` row) and `read_region_at_mpp` (coarsest fine-enough level, ICC, exact size, `Region` metadata); AC6/AC7 on real pyramidal TIFFs. `0006` adds `slides.mpp_source`/`native_mpp`.
   - 3.2 `StainTransform` (pointwise, bit-exact, AC2), `fit_stain_profile`, `stain_profiles` (`0007`), `configs/specimen_profiles.yaml` + hashed `configs/stain_refs/*.json` (`v5_patch@v1`), `tools/build_stain_reference.py`.
   - 3.3 `TissueMask` (full extent, exact area queries; AC4/AC5), `cases.specimen_type` (`0008`; `unknown` refused, AC8; `PATCH /cases/{id}/specimen-type`), Stage 2 and QC rebuilt (mm² by specimen, focus over the mask, `resolution` check).
@@ -25,7 +25,7 @@ Update this file at the end of every session (SPEC plan §3 rule 8). Keep it und
   - WP-7.2 (branch `wp/7.2-detector-client`): shared `pipeline/mitosis_detect.py` (512 px tiles at 0.25 µm/px, resampling, ownership), v2 raw predict with pinned weights, raw Stage A at min_prob 0.01; MIDOG++ adapter fixed (corner boxes, 'not mitotic figure', TIFF resolution); `eval/mitosis_baseline.py`.
   - Baseline (`reports/baseline/mitosis_midogpp_094.md`): KongNet alone F1 0.862 at τ 0.75, NMS 7.5 µm (old 0.35/20 µm: 0.831). The Gemini referee cuts F1 to 0.676 (rejects 25 true figures), so it is off (`referee.enabled: false`). One image only: generalisation needs more MIDOG++ val images.
 
-- **WP-4.1 (SPEC-03 §3–4), branch `wp/4.1-sso-rbac`, PR open.** `app/auth/`: Google ID-token verification (issuer, verified email, `hd` in `AUTH_ALLOWED_DOMAINS` or an allow-listed invitee), `users`/`sessions` (`0009_auth`), HS256 session cookie checked against the DB on every request (30 s per-instance cache; logout, role change and disable revoke), double-submit CSRF, `require(perm)` from `configs/auth.yaml` on all 44 guarded routes, Cloud Tasks OIDC on the webhook, `/api/v1/auth/*` and `/api/v1/admin/users*` per `docs/contracts/auth_v1.md`. Audit actors are the verified `users.id` (client `reviewed_by` ignored). Tests `backend/tests/auth` (AC1–AC5, 266 cases; suite 1283 passed, 1 skipped, ~16 min); legacy tests sign in through a conftest override (`X-Test-Role`).
+- **WP-4.1 (SPEC-03 §3–4) is merged (#22, deploy settings #24, CSP fix #23); the owner reports it working.** `app/auth/`: Google ID-token verification (issuer, verified email, `hd` in `AUTH_ALLOWED_DOMAINS` or an allow-listed invitee), `users`/`sessions` (`0009_auth`), HS256 session cookie checked against the DB on every request (30 s per-instance cache; logout, role change and disable revoke), double-submit CSRF, `require(perm)` from `configs/auth.yaml` on all 44 guarded routes, Cloud Tasks OIDC on the webhook, `/api/v1/auth/*` and `/api/v1/admin/users*` per `docs/contracts/auth_v1.md`. Audit actors are the verified `users.id` (client `reviewed_by` ignored). Tests `backend/tests/auth` (AC1–AC5, 266 cases; suite 1283 passed, 1 skipped, ~16 min); legacy tests sign in through a conftest override (`X-Test-Role`).
 
 ## Ready for delegates now
 
@@ -33,7 +33,7 @@ Lanes are in `docs/tasks/README.md`. The specimen-type UI is merged (#21). Lane 
 
 ## Claude — next
 
-1. Owner reviews and merges the 4.1 PR. Then 5.4/5.5. Before any deploy: run `pytest backend/tests/pipeline/test_slide_io.py::test_concurrent_reads_are_byte_identical_to_single_threaded_reads` on Linux (AC7 has only run on Windows).
+1. **WP-5.5 (SPEC-02 §5–6) in slices, each PR based on `main`:** 5.5a (branch `wp/5.5a-stage-service`): `app/services/stages.py` is the one confirm/retry/queue path for `/approve`, `/stages/triage/confirm`, `/stages/mitosis/confirm` and the harness (every review gate; `/approve` refuses grading); queued stages inherit `run_mode`/`run_id`; `0010_validation` (`validation_runs`, `validation_items`, `run_id` FKs); ingest reads any `gs://` slide without rewriting objects the app does not own and keeps a preset MPP. Next: 5.5b controller + collect + CLI `run`/`resume` + test lock; 5.5c `metrics`/`compare`/`one-shot` + schemas; 5.5d batch API. WP-4.3 and 5.2 follow-ups are delegated (2026-09-30). Before any deploy: run `pytest backend/tests/pipeline/test_slide_io.py::test_concurrent_reads_are_byte_identical_to_single_threaded_reads` on Linux (AC7 has only run on Windows).
 2. 4.1 left for WP-4.3 (§5): rate limits, soft delete and unmounting reset-database/bulk delete outside `ENV=test`, Idempotency-Key, audit trigger. IAP is optional.
 
 ## Open items (program owner)

@@ -177,7 +177,7 @@ def test_confirm_triage_zero_tumor_guardrail(db_session):
     db_session.add(stage_exec)
     db_session.commit()
 
-    with patch("app.routers.triage.download_blob_as_bytes") as mock_dl:
+    with patch("app.services.stages.download_blob_as_bytes") as mock_dl:
         # Return empty machine hotspots
         mock_dl.return_value = b'{"hotspots": []}'
 

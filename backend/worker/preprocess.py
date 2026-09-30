@@ -37,6 +37,7 @@ from app.models.case import Case
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
 from app.models.audit import AuditEvent
+from app.services.stages import dispatch, queue_stage
 from pipeline.slide_io import (
     DZI_TILE_PX,
     SlideReader,
@@ -257,35 +258,13 @@ def run_preprocess(stage_execution: StageExecution, session: Session, runtime: S
         session.add(audit)
 
         # Auto-chain next stage ('qc') in queued status (monotonic attempt tracking)
-        stmt_qc = (
-            select(StageExecution)
-            .where(
-                StageExecution.case_id == case_id,
-                StageExecution.stage == "qc"
-            )
-            .order_by(StageExecution.attempt.desc())
+        next_qc_stage = queue_stage(
+            session, case_id, "qc",
+            input_ref={"slide_id": str(slide_id), "preprocess_output_ref": output_ref},
+            parent=stage_execution,
         )
-        existing_qc = session.scalars(stmt_qc).first()
-        next_qc_attempt = (existing_qc.attempt + 1) if existing_qc else 1
-
-        next_qc_stage = StageExecution(
-            case_id=case_id,
-            stage="qc",
-            attempt=next_qc_attempt,
-            status="queued",
-            input_ref={"slide_id": str(slide_id), "preprocess_output_ref": output_ref}
-        )
-        session.add(next_qc_stage)
         session.commit()
-        session.refresh(next_qc_stage)
-
-        from app.core.cloud_tasks import dispatch_stage_task
-        dispatch_stage_task(
-            case_id=str(case_id),
-            stage="qc",
-            stage_exec_id=str(next_qc_stage.id),
-            payload={"slide_id": str(slide_id), "preprocess_output_ref": output_ref}
-        )
+        dispatch(next_qc_stage, next_qc_stage.input_ref)
 
         return output_ref, preprocess_output["model_versions"]
 

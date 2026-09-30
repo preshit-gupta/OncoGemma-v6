@@ -30,6 +30,10 @@ class StageExecution(Base):
     run_mode: Mapped[str] = mapped_column(
         String, nullable=False, default=RunMode.CLINICAL.value, server_default=RunMode.CLINICAL.value
     )
+    # validation_runs.id when a harness run or batch queued this execution (SPEC-02 §5.3).
+    run_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID, ForeignKey("validation_runs.id", name="fk_stage_executions_run"), nullable=True
+    )
     
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

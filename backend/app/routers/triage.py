@@ -25,6 +25,7 @@ from app.models.stage_execution import StageExecution
 from app.models.hotspot import Hotspot
 from app.models.audit import AuditEvent
 from app.core.rehydrate import rehydrate_case_from_gcs
+from app.services import stages as stage_service
 from google.api_core.exceptions import NotFound
 from pipeline.errors import SlideReadError
 from pipeline.slide_io import centered_origin_um, read_region_at_mpp
@@ -478,144 +479,16 @@ def confirm_triage(payload: TriageConfirmPayload, db: Session = Depends(get_db),
     """
     Confirms triage stage, writes effective hotspots into DB, and queues next stage.
     """
-    stage_exec = db.scalars(
-        select(StageExecution).where(
-            StageExecution.case_id == payload.case_id,
-            StageExecution.stage == "triage"
-        ).order_by(StageExecution.attempt.desc())
-    ).first()
-
-    if not stage_exec:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Triage stage execution not found for case {payload.case_id}"
-        )
-
-    if stage_exec.status != "awaiting_review":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Triage stage cannot be confirmed because its status is '{stage_exec.status}', expected 'awaiting_review'."
-        )
-
-    output_ref = stage_exec.output_ref or ""
-    machine_hotspots = []
     try:
-        if output_ref and output_ref.startswith("gs://"):
-            b_name, bl_name = parse_gcs_uri(output_ref)
-            out_bytes = download_blob_as_bytes(b_name, bl_name)
-            machine_hotspots = json.loads(out_bytes.decode("utf-8")).get("hotspots", [])
-        else:
-            out_bytes = download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{payload.case_id}/triage/output.json")
-            machine_hotspots = json.loads(out_bytes.decode("utf-8")).get("hotspots", [])
-    except Exception as e:
-        print(f"[Triage Confirm Error] Could not load hotspots from GCS: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to load triage machine output from storage: {e}. Confirmation aborted."
+        result = stage_service.confirm_stage(
+            db, payload.case_id, "triage", user.id, no_invasive_tumor=payload.no_invasive_tumor
         )
-
-    edits = stage_exec.review_edits or []
-    effective_hotspots = apply_edit_ops(machine_hotspots, edits)
-
-    # Zero-tumor guardrail: if 0 active hotspots, must explicitly specify no_invasive_tumor=True (#92)
-    active_hotspots = [h for h in effective_hotspots if not h.get("excluded", False)]
-    if payload.no_invasive_tumor and len(active_hotspots) > 0:
-        # Issue #569: Reject attempt to confirm zero tumor while active hotspots remain
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Cannot confirm 'no_invasive_tumor=True' when {len(active_hotspots)} active tumor hotspot(s) exist. All tumor hotspots must be excluded or deleted before confirming zero tumor."
-        )
-    if len(active_hotspots) == 0 and not payload.no_invasive_tumor:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="No active hotspots remaining. Pathologist must explicitly flag no_invasive_tumor=True to confirm zero tumor on this slide."
-        )
-
-    # Delete any prior confirmed hotspots for this case safely (#700)
-    db.query(Hotspot).filter(Hotspot.case_id == str(payload.case_id)).delete(synchronize_session=False)
-
-    # Persist effective hotspots to DB
-    for hs in effective_hotspots:
-        hotspot_row = Hotspot(
-            id=hs["id"],
-            case_id=str(payload.case_id),
-            stage_execution_id=str(stage_exec.id),
-            polygon_um=hs["polygon_um"],
-            area_mm2=hs.get("area_mm2"),
-            prob_mean=hs.get("prob_mean"),
-            prob_max=hs.get("prob_max"),
-            source=hs.get("source", "model"),
-            excluded=hs.get("excluded", False),
-            exclude_reason=hs.get("exclude_reason")
-        )
-        db.add(hotspot_row)
-
-    stage_exec.status = "confirmed"
-    stage_exec.reviewed_at = datetime.now(timezone.utc)
-    stage_exec.reviewed_by = user.id
-
-    case_uid = to_uuid(payload.case_id)
-    if payload.no_invasive_tumor:
-        next_stage_name = None
-        input_data = {"benign_flag": True, "reason": "No invasive tumor identified"}
-        case_obj = db.get(Case, case_uid)
-        if case_obj:
-            case_obj.status = "done"
-        next_exec = None
-    else:
-        next_stage_name = "mitosis"
-        input_data = {"confirmed_hotspots_count": len(effective_hotspots)}
-
-        # Ensure attempt monotonicity when queuing next stage (Issue #279, #285, #535)
-        stmt_existing = (
-            select(StageExecution)
-            .where(
-                (StageExecution.case_id == case_uid) | (StageExecution.case_id == str(payload.case_id)),
-                StageExecution.stage == next_stage_name
-            )
-            .order_by(StageExecution.attempt.desc())
-        )
-        existing_next = db.scalars(stmt_existing).first()
-        next_attempt = (existing_next.attempt + 1) if existing_next else 1
-
-        next_exec = StageExecution(
-            case_id=case_uid,
-            stage=next_stage_name,
-            attempt=next_attempt,
-            status="queued",
-            input_ref=input_data
-        )
-        db.add(next_exec)
-
-    audit = AuditEvent(
-        case_id=str(payload.case_id),
-        actor=user.id,
-        event_type="stage_confirmed",
-        stage="triage",
-        payload={
-            "confirmed_hotspots": len(effective_hotspots),
-            "no_invasive_tumor": payload.no_invasive_tumor,
-            "next_stage": next_stage_name
-        }
-    )
-    db.add(audit)
-    db.commit()
-
-    if next_exec and next_stage_name:
-        try:
-            from app.core.cloud_tasks import dispatch_stage_task
-            dispatch_stage_task(
-                case_id=str(payload.case_id),
-                stage=next_stage_name,
-                stage_exec_id=str(next_exec.id)
-            )
-        except Exception as e:
-            print(f"[CloudTasks Warning] Failed to dispatch next stage {next_stage_name}: {e}")
-
+    except stage_service.StageServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     return {
         "status": "confirmed",
         "case_id": payload.case_id,
-        "confirmed_hotspots_count": len(effective_hotspots),
-        "next_stage_queued": next_stage_name
+        "confirmed_hotspots_count": result.details["confirmed_hotspots_count"],
+        "next_stage_queued": result.next_stage
     }
 
