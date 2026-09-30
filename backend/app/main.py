@@ -28,6 +28,7 @@ from app.routers import (
 from app.routers.admin import router as admin_router
 from app.routers.auth import router as auth_router
 from app.routers.batches import router as batches_router
+from app.routers.research import router as research_router
 from app.routers.users import router as users_router
 
 import logging
@@ -136,6 +137,7 @@ def create_app(env: str | None = None) -> FastAPI:
     application.include_router(auth_router)
     application.include_router(users_router)
     application.include_router(batches_router)
+    application.include_router(research_router)
 
     # Destructive endpoints: mounted only when ENV=test (SPEC-03 §5.3.1, AC6)
     if runtime_env == "test":
