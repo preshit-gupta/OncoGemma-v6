@@ -7,10 +7,15 @@
     python -m eval.cli status  --run <run_id>
     python -m eval.cli cancel  --run <run_id>
     python -m eval.cli retry   --run <run_id> --statuses failed
+    python -m eval.cli metrics --run <run_id> [--bootstrap 2000 --seed 7] [--upload gs://bucket/reports]
+    python -m eval.cli compare --run-a <id> --run-b <id> --metric grade_macro_f1
+    python -m eval.cli one-shot --slide gs://.../x.svs --specimen resection [--mpp 0.25] --out result.json
 
 The CLI talks to the app's database (``DATABASE_URL`` or the Cloud SQL settings) and queue; the
-app's workers run the stages. ``--split test`` is refused without ``--confirm-test-access``.
-Exit codes: 0 done, 1 refused or not found, 2 the run finished with failed items.
+app's workers run the stages (``one-shot`` runs them in-process unless ``--use-workers``).
+``--split test`` is refused without ``--confirm-test-access``.
+Exit codes: 0 done, 1 refused or not found, 2 the run finished with failed items (one-shot: the
+slide did not succeed).
 """
 from __future__ import annotations
 
@@ -58,7 +63,50 @@ def build_parser() -> argparse.ArgumentParser:
     retry = commands.add_parser("retry", help="run failed or cancelled items again")
     retry.add_argument("--run", required=True)
     retry.add_argument("--statuses", default="failed", help="comma-separated: failed, cancelled")
+
+    metrics = commands.add_parser("metrics", help="write reports/<run_id>/metrics.json and report.html")
+    metrics.add_argument("--run", required=True)
+    metrics.add_argument("--bootstrap", type=int, default=2000, help="bootstrap resamples (B)")
+    metrics.add_argument("--seed", type=int, default=7)
+    metrics.add_argument("--out-dir", type=Path, default=Path("reports"))
+    metrics.add_argument("--upload", default=None, metavar="GS_PREFIX",
+                         help="also upload both files under this gs:// prefix and link metrics.json from the run")
+
+    compare = commands.add_parser("compare", help="paired bootstrap of a metric between two runs")
+    compare.add_argument("--run-a", required=True)
+    compare.add_argument("--run-b", required=True)
+    compare.add_argument("--metric", default="grade_macro_f1")
+    compare.add_argument("--bootstrap", type=int, default=2000)
+    compare.add_argument("--seed", type=int, default=7)
+
+    one_shot = commands.add_parser("one-shot", help="one slide in EVAL mode; writes one JSON document")
+    one_shot.add_argument("--slide", required=True, help="gs:// URI of the slide")
+    one_shot.add_argument("--specimen", required=True, choices=("resection", "core_biopsy"))
+    one_shot.add_argument("--mpp", type=float, default=None, help="µm/px when the file has none (recorded as manual)")
+    one_shot.add_argument("--out", type=Path, required=True)
+    one_shot.add_argument("--stages", default="ingest,preprocess,qc,triage,mitosis,grading")
+    one_shot.add_argument("--use-workers", action="store_true", help="let the app's workers run the stages")
     return parser
+
+
+def write_metrics(session, run_id, B: int, seed: int, out_dir: Path, upload: str | None) -> Path:
+    from app.core.gcs import parse_gcs_uri, upload_blob_from_filename
+    from app.models.validation import ValidationRun
+    from eval.harness.report import compute_metrics, write_report
+
+    doc = compute_metrics(session, run_id, B=B, seed=seed)
+    metrics_path, page_path = write_report(doc, out_dir / doc.run.id)
+    link = str(metrics_path)
+    if upload is not None:
+        bucket, prefix = parse_gcs_uri(upload.rstrip("/") + "/")
+        for path, content_type in ((metrics_path, "application/json"), (page_path, "text/html")):
+            upload_blob_from_filename(bucket, f"{prefix}{doc.run.id}/{path.name}", str(path), content_type)
+        link = f"gs://{bucket}/{prefix}{doc.run.id}/metrics.json"
+    run = session.get(ValidationRun, run_id)
+    run.metrics_uri = link
+    session.commit()
+    print(f"wrote {metrics_path} and {page_path}" + (f"; uploaded to {link}" if upload else ""))
+    return metrics_path
 
 
 def print_status(session, run_id, out=sys.stdout) -> dict[str, int]:
@@ -98,6 +146,8 @@ def main(argv: list[str] | None = None, *, session_factory=None) -> int:
         from app.core.db import SessionLocal as session_factory
 
     from eval.harness.controller import cancel_run, retry_items
+    from eval.harness.one_shot import one_shot
+    from eval.harness.report import RunNotFinishedError, RunsNotComparableError, compare_runs, dumps
     from eval.harness.runs import RunConfigError, RunRequest, LockedTestSplitError, create_run
 
     session = session_factory()
@@ -129,6 +179,32 @@ def main(argv: list[str] | None = None, *, session_factory=None) -> int:
             statuses = tuple(s.strip() for s in args.statuses.split(",") if s.strip())
             print(f"retrying {retry_items(session, args.run, statuses, args.actor)} items")
             return 0
+        if args.command == "metrics":
+            if args.upload is not None and not args.upload.startswith("gs://"):
+                print(f"refused: --upload must be a gs:// prefix, got {args.upload!r}", file=sys.stderr)
+                return 1
+            try:
+                write_metrics(session, args.run, args.bootstrap, args.seed, args.out_dir, args.upload)
+            except RunNotFinishedError as exc:
+                print(f"refused: {exc}", file=sys.stderr)
+                return 1
+            return 0
+        if args.command == "compare":
+            try:
+                result = compare_runs(session, args.run_a, args.run_b, args.metric, B=args.bootstrap, seed=args.seed)
+            except (RunNotFinishedError, RunsNotComparableError, ValueError) as exc:
+                print(f"refused: {exc}", file=sys.stderr)
+                return 1
+            print(dumps(result))
+            return 0
+        if args.command == "one-shot":
+            code, result = one_shot(
+                session, args.slide, args.specimen, args.out, actor=args.actor, mpp=args.mpp,
+                stages=tuple(s.strip() for s in args.stages.split(",") if s.strip()),
+                in_process=not args.use_workers,
+            )
+            print(f"{result.status}: wrote {args.out}" + (f" ({result.failed_stage}: {result.error_class})" if code else ""))
+            return code
     except LookupError as exc:
         print(str(exc), file=sys.stderr)
         return 1
