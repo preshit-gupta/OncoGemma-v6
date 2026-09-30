@@ -25,6 +25,8 @@ def test_research_migration_upgrade_and_downgrade(engine):
     run(engine, command.upgrade, "0013_research")
     tables = set(inspect(engine).get_table_names())
     assert {"issues", "gt_annotations", "run_metrics", "annotation_tasks", "qa_items"} <= tables
+    qa_columns = {c["name"]: c["nullable"] for c in inspect(engine).get_columns("qa_items")}
+    assert qa_columns["dataset"] is False and qa_columns["protocol_version"] is False
 
     # Downgrade back to 0012_safety_hardening
     run(engine, command.downgrade, "0012_safety_hardening")

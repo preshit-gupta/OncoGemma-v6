@@ -3,22 +3,24 @@
 Endpoints for runs dashboard, run details, metrics, items and decision trees,
 mitosis error cards, what-if PR curves, run comparisons, issue register,
 pathologist annotation tasks, and label QA workflows.
+
+Nothing here invents a value: a figure the run cannot support is an explicit error
+(``404 *_not_available``, ``503 manifest_unavailable``), never a default.
 """
 from __future__ import annotations
 
 import base64
 import json
+import logging
+import math
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Literal
+from functools import lru_cache
+from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import and_, select
-from sqlalchemy.orm import Session
-
+import pandas as pd
 from app.auth.deps import CurrentUser, require
 from app.core.db import get_db
-from app.models.case import Case
 from app.models.decision_record import DecisionRecord
 from app.models.research import (
     AnnotationTaskModel,
@@ -27,6 +29,7 @@ from app.models.research import (
     QAItemModel,
     RunMetric,
 )
+from app.models.user import User
 from app.models.validation import ValidationItem, ValidationRun
 from app.schemas.research import (
     AnnotationSubmit,
@@ -49,7 +52,6 @@ from app.schemas.research import (
     MetricImpact,
     MitosisCurvesResponse,
     MitosisErrorCard,
-    MitosisPR,
     MyAnnotation,
     Page,
     QAItemResponse,
@@ -57,93 +59,171 @@ from app.schemas.research import (
     RunDetail,
     RunHeadline,
     RunSummary,
-    WhatIfResult,
 )
+from eval.datasets.base import load_registry
 from eval.harness import batches
+from eval.harness.documents import dump_metrics
 from eval.harness.report import (
+    COMPARE_METRICS,
+    LOWER_IS_BETTER,
+    RunNotFinishedError,
     RunsNotComparableError,
+    compare_detail,
     compare_runs,
     compute_metrics,
-    run_cases,
 )
+from eval.harness.runs import ADHOC, read_manifest, split_rows
+from eval.splits import SplitLeakError, check_disjoint
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from google.api_core.exceptions import GoogleAPICallError
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/research", tags=["research"])
+
+# A manifest lives on local disk or in GCS; these are the errors of reading it.
+MANIFEST_READ_ERRORS = (OSError, GoogleAPICallError)
 
 
 # --- Helpers -----------------------------------------------------------------
 
 
-def _to_uuid(id_val: str | uuid.UUID | None) -> uuid.UUID | None:
-    if id_val is None:
-        return None
-    if isinstance(id_val, uuid.UUID):
-        return id_val
+class ManifestUnavailableError(RuntimeError):
+    """The run's manifest cannot be read, or is no longer the file the run recorded."""
+
+
+def _encode_cursor(offset: int) -> str:
+    return base64.b64encode(str(offset).encode("utf-8")).decode("utf-8")
+
+
+def _decode_cursor(cursor: str | None) -> int:
+    if cursor is None:
+        return 0
     try:
-        return uuid.UUID(id_val)
+        offset = int(base64.b64decode(cursor, validate=True).decode("utf-8"))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="invalid_cursor") from exc
+    if offset < 0:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="invalid_cursor")
+    return offset
+
+
+def _page(db: Session, query, cursor: str | None, limit: int) -> tuple[list, str | None]:
+    offset = _decode_cursor(cursor)
+    rows = db.scalars(query.offset(offset).limit(limit + 1)).all()
+    next_cursor = _encode_cursor(offset + limit) if len(rows) > limit else None
+    return list(rows[:limit]), next_cursor
+
+
+def _user_uuid(user: CurrentUser) -> uuid.UUID:
+    return uuid.UUID(user.id)
+
+
+def _lookup_run(db: Session, ref: str) -> ValidationRun | None:
+    """A run by id, or by name when ``ref`` is not a UUID; a name shared by two runs is an error."""
+    try:
+        run_id = uuid.UUID(ref)
     except ValueError:
-        return uuid.uuid5(uuid.NAMESPACE_DNS, str(id_val))
+        run_id = None
+    if run_id is not None:
+        return db.get(ValidationRun, run_id)
+    runs = db.scalars(select(ValidationRun).where(ValidationRun.name == ref)).all()
+    if len(runs) > 1:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="run_name_ambiguous")
+    return runs[0] if runs else None
 
 
-def _get_run_or_404(db: Session, run_id_str: str) -> ValidationRun:
-    try:
-        run_uuid = uuid.UUID(run_id_str)
-        run = db.get(ValidationRun, run_uuid)
-    except (ValueError, TypeError):
-        run = db.scalar(select(ValidationRun).where(ValidationRun.name == run_id_str))
+def _get_run_or_404(db: Session, ref: str) -> ValidationRun:
+    run = _lookup_run(db, ref)
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run_not_found")
     return run
 
 
+@lru_cache(maxsize=32)
+def _manifest(uri: str, sha256: str) -> pd.DataFrame:
+    """The manifest a run recorded. A run's manifest is immutable (its SHA-256 is part of the run)."""
+    try:
+        frame, actual = read_manifest(uri)
+    except MANIFEST_READ_ERRORS as exc:
+        raise ManifestUnavailableError(f"cannot read {uri}: {exc}") from exc
+    if actual != sha256:
+        raise ManifestUnavailableError(f"{uri} changed since the run was created")
+    return frame
+
+
+def _run_truth(run: ValidationRun) -> pd.DataFrame:
+    try:
+        return split_rows(_manifest(run.manifest_uri, run.manifest_sha256), run)
+    except ManifestUnavailableError as exc:
+        logger.error("run %s: %s", run.id, exc)
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="manifest_unavailable") from exc
+
+
+def _manifest_disjoint(run: ValidationRun) -> bool:
+    """No patient shared between splits, from the manifest (SPEC-00 §2.5). An unreadable manifest fails the gate."""
+    if run.split == ADHOC:
+        return True  # an ad-hoc run has no splits to leak between
+    try:
+        frame = _manifest(run.manifest_uri, run.manifest_sha256)
+    except ManifestUnavailableError as exc:
+        logger.error("run %s: gate cannot check disjointness: %s", run.id, exc)
+        return False
+    try:
+        check_disjoint({"manifest": frame})
+    except SplitLeakError as exc:
+        logger.error("run %s: %s", run.id, exc)
+        return False
+    return True
+
+
 def _build_gate(db: Session, run: ValidationRun) -> Gate:
-    # int_fall: fallback decisions in the run (SPEC-00 §2.3, must be 0)
-    int_fall = len(
-        db.scalars(
-            select(DecisionRecord.id).where(
-                DecisionRecord.run_id == run.id,
-                DecisionRecord.producer_kind == "fallback",
-            )
-        ).all()
+    """The measurement-validity gate (SPEC-00 §2.5): INT-PROV = 1.0, INT-FALL = 0, disjoint splits, hashes recorded."""
+    int_fall = db.scalar(
+        select(func.count()).select_from(DecisionRecord).where(
+            DecisionRecord.run_id == run.id, DecisionRecord.producer_kind == "fallback"
+        )
     )
-    disjoint = True
-    int_prov = 1.0
-    valid = int_fall == 0 and disjoint
+    succeeded = db.scalars(
+        select(ValidationItem.case_id).where(
+            ValidationItem.run_id == run.id, ValidationItem.status == "succeeded"
+        )
+    ).all()
+    recorded = set(db.scalars(select(DecisionRecord.case_id).where(DecisionRecord.run_id == run.id).distinct()).all())
+    # A run with no succeeded item has shown no provenance, so its gate is not valid.
+    int_prov = sum(1 for case_id in succeeded if case_id in recorded) / len(succeeded) if succeeded else 0.0
+    disjoint = _manifest_disjoint(run)
+    hashes_recorded = bool(
+        run.config_hash and run.registry_sha256 and (run.split == ADHOC or run.splits_lock_sha256)
+    )
+    valid = int_fall == 0 and int_prov == 1.0 and disjoint and hashes_recorded
     return Gate(valid=valid, int_prov=int_prov, int_fall=int_fall, disjoint=disjoint)
 
 
-def _build_headline(db: Session, run: ValidationRun) -> RunHeadline:
-    metrics = db.scalars(select(RunMetric).where(RunMetric.run_id == run.id)).all()
-    by_id = {m.metric_id: m for m in metrics if not m.slice_key}
+def _headline_metric(row: RunMetric | None, gate: Gate) -> Metric | None:
+    if row is None:
+        return None
+    # A run that broke the gate has no valid headline (SPEC-08 AC4).
+    return Metric(
+        value=row.value, ci_low=row.ci_low, ci_high=row.ci_high, n=row.n,
+        status=row.status if gate.valid else "invalid",  # type: ignore[arg-type]
+    )
 
-    ns_m = None
-    if "ns_m" in by_id:
-        m = by_id["ns_m"]
-        ns_m = Metric(
-            value=m.value,
-            ci_low=m.ci_low,
-            ci_high=m.ci_high,
-            n=m.n,
-            status=m.status,  # type: ignore[arg-type]
-        )
 
-    ns_g = None
-    if "ns_g" in by_id:
-        m = by_id["ns_g"]
-        ns_g = Metric(
-            value=m.value,
-            ci_low=m.ci_low,
-            ci_high=m.ci_high,
-            n=m.n,
-            status=m.status,  # type: ignore[arg-type]
-        )
-
-    return RunHeadline(ns_m=ns_m, ns_g=ns_g)
+def _build_headline(db: Session, run: ValidationRun, gate: Gate) -> RunHeadline:
+    rows = {
+        m.metric_id: m
+        for m in db.scalars(select(RunMetric).where(RunMetric.run_id == run.id)).all()
+        if not m.slice_key
+    }
+    return RunHeadline(ns_m=_headline_metric(rows.get("ns_m"), gate), ns_g=_headline_metric(rows.get("ns_g"), gate))
 
 
 def _build_run_summary(db: Session, run: ValidationRun) -> RunSummary:
     counts, failures = batches.progress(db, run)
-    n_items = sum(counts.values())
-    n_failed = sum(failures.values())
+    gate = _build_gate(db, run)
     return RunSummary(
         id=str(run.id),
         name=run.name,
@@ -155,11 +235,17 @@ def _build_run_summary(db: Session, run: ValidationRun) -> RunSummary:
         created_by=run.created_by,
         created_at=run.created_at.isoformat() if run.created_at else "",
         finished_at=run.finished_at.isoformat() if run.finished_at else None,
-        n_items=n_items,
-        n_failed=n_failed,
-        headline=_build_headline(db, run),
-        gate=_build_gate(db, run),
+        n_items=sum(counts.values()),
+        n_failed=sum(failures.values()),
+        headline=_build_headline(db, run, gate),
+        gate=gate,
     )
+
+
+def _license_scopes(run: ValidationRun) -> list[Literal["commercial_ok", "research", "pending"]]:
+    """The dataset's licence scope (eval/datasets/registry.yaml); a dataset the registry does not list is pending."""
+    entry = load_registry().get(run.dataset)
+    return [entry["license_scope"] if entry is not None else "pending"]
 
 
 # --- 1. Runs Dashboard & Detail (SPEC-08 §3, §7) -------------------------------
@@ -186,25 +272,8 @@ def list_runs(
     if status_filter:
         query = query.where(ValidationRun.status == status_filter)
 
-    offset = 0
-    if cursor:
-        try:
-            offset = int(base64.b64decode(cursor).decode("utf-8"))
-        except Exception:
-            offset = 0
-
-    runs = db.scalars(query.offset(offset).limit(limit + 1)).all()
-    has_more = len(runs) > limit
-    page_runs = runs[:limit]
-
-    next_cursor = (
-        base64.b64encode(str(offset + limit).encode("utf-8")).decode("utf-8")
-        if has_more
-        else None
-    )
-
-    summaries = [_build_run_summary(db, r) for r in page_runs]
-    return Page(items=summaries, next_cursor=next_cursor)
+    runs, next_cursor = _page(db, query, cursor, limit)
+    return Page(items=[_build_run_summary(db, r) for r in runs], next_cursor=next_cursor)
 
 
 @router.get("/runs/{id}", response_model=RunDetail)
@@ -214,19 +283,14 @@ def get_run_detail(
     user: CurrentUser = Depends(require("research:read")),
 ):
     run = _get_run_or_404(db, id)
-    summary = _build_run_summary(db, run)
-
-    # Determine license scopes
-    license_scopes: list[Literal["commercial_ok", "research", "pending"]] = ["commercial_ok"]
-
     return RunDetail(
-        **summary.model_dump(),
+        **_build_run_summary(db, run).model_dump(),
         config_hash=run.config_hash,
         registry_sha256=run.registry_sha256,
         splits_lock_sha256=run.splits_lock_sha256,
         manifest_sha256=run.manifest_sha256,
         stages=list(run.stages),
-        license_scopes=license_scopes,
+        license_scopes=_license_scopes(run),
     )
 
 
@@ -238,19 +302,71 @@ def get_run_metrics(
 ):
     run = _get_run_or_404(db, id)
     if run.status != "completed":
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="metrics_not_ready"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="metrics_not_ready")
     try:
-        metrics_doc = compute_metrics(db, run.id)
-        return metrics_doc.model_dump()
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=f"metrics_not_ready: {exc}"
-        ) from exc
+        doc = compute_metrics(db, run.id)
+    except RunNotFinishedError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="metrics_not_ready") from exc
+    except RunsNotComparableError as exc:
+        logger.error("run %s: %s", run.id, exc)
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="manifest_changed") from exc
+    except MANIFEST_READ_ERRORS as exc:
+        logger.error("run %s: cannot read the manifest: %s", run.id, exc)
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="manifest_unavailable") from exc
+    return json.loads(dump_metrics(doc))
 
 
 # --- 2. Items & Decisions (SPEC-08 §4.1) --------------------------------------
+
+
+def _score(value) -> int | None:
+    return None if value is None or pd.isna(value) else int(value)
+
+
+def _truth_scores(truth: pd.DataFrame, slide_id: str) -> ItemScores:
+    """Ground truth of a slide from the manifest; a column the manifest does not carry is None."""
+    if slide_id not in truth.index:
+        raise LookupError(f"slide {slide_id!r} is not in the run's manifest split")
+    row = truth.loc[slide_id]
+
+    def column(name: str):
+        return row[name] if name in row.index else None
+
+    histotype = column("gt_histotype")
+    return ItemScores(
+        grade=_score(column("gt_grade")),
+        total=_score(column("gt_total")),
+        tubule=_score(column("gt_tubule")),
+        pleo=_score(column("gt_pleo")),
+        mitoses=_score(column("gt_mitoses")),
+        histotype=None if histotype is None or pd.isna(histotype) else str(histotype),
+    )
+
+
+def _item_row(item: ValidationItem, truth: pd.DataFrame) -> ItemRow:
+    grading = (item.prediction or {}).get("grading", {})
+    pred = ItemScores(
+        grade=grading.get("grade"),
+        total=grading.get("total"),
+        tubule=grading.get("tubule"),
+        pleo=grading.get("pleo"),
+        mitoses=grading.get("mitoses"),
+        histotype=grading.get("histotype"),
+    )
+    gt = _truth_scores(truth, item.slide_id)
+    sum_error = abs(pred.total - gt.total) if pred.total is not None and gt.total is not None else None
+    return ItemRow(
+        slide_id=item.slide_id,
+        patient_id=item.patient_id,
+        status=item.status,  # type: ignore[arg-type]
+        failed_stage=item.failed_stage,
+        error_class=item.error_class,
+        gt=gt,
+        pred=pred,
+        sum_error=sum_error,
+        runtime_s=item.runtime_s,
+        cost_usd=float(item.cost_usd) if item.cost_usd is not None else None,
+    )
 
 
 @router.get("/runs/{id}/items", response_model=Page[ItemRow])
@@ -271,56 +387,9 @@ def list_run_items(
     if status_filter:
         query = query.where(ValidationItem.status == status_filter)
 
-    offset = 0
-    if cursor:
-        try:
-            offset = int(base64.b64decode(cursor).decode("utf-8"))
-        except Exception:
-            offset = 0
-
-    items = db.scalars(query.offset(offset).limit(limit + 1)).all()
-    has_more = len(items) > limit
-    page_items = items[:limit]
-
-    next_cursor = (
-        base64.b64encode(str(offset + limit).encode("utf-8")).decode("utf-8")
-        if has_more
-        else None
-    )
-
-    rows: list[ItemRow] = []
-    for item in page_items:
-        pred_dict = (item.prediction or {}).get("grading", {})
-        pred_scores = ItemScores(
-            grade=pred_dict.get("grade"),
-            total=pred_dict.get("total"),
-            tubule=pred_dict.get("tubule"),
-            pleo=pred_dict.get("pleo"),
-            mitoses=pred_dict.get("mitoses"),
-            histotype=pred_dict.get("histotype"),
-        )
-        # Ground truth scores (defaults or from manifest)
-        gt_scores = ItemScores()
-        sum_error = None
-        if pred_scores.total is not None and gt_scores.total is not None:
-            sum_error = abs(pred_scores.total - gt_scores.total)
-
-        rows.append(
-            ItemRow(
-                slide_id=item.slide_id,
-                patient_id=item.patient_id,
-                status=item.status,  # type: ignore[arg-type]
-                failed_stage=item.failed_stage,
-                error_class=item.error_class,
-                gt=gt_scores,
-                pred=pred_scores,
-                sum_error=sum_error,
-                runtime_s=item.runtime_s,
-                cost_usd=float(item.cost_usd) if item.cost_usd is not None else None,
-            )
-        )
-
-    return Page(items=rows, next_cursor=next_cursor)
+    items, next_cursor = _page(db, query, cursor, limit)
+    truth = _run_truth(run)
+    return Page(items=[_item_row(item, truth) for item in items], next_cursor=next_cursor)
 
 
 @router.get("/runs/{id}/items/{slide_id}", response_model=ItemDetailResponse)
@@ -340,46 +409,20 @@ def get_run_item_detail(
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="item_not_found")
 
-    pred_dict = (item.prediction or {}).get("grading", {})
-    pred_scores = ItemScores(
-        grade=pred_dict.get("grade"),
-        total=pred_dict.get("total"),
-        tubule=pred_dict.get("tubule"),
-        pleo=pred_dict.get("pleo"),
-        mitoses=pred_dict.get("mitoses"),
-        histotype=pred_dict.get("histotype"),
-    )
-    gt_scores = ItemScores()
-    sum_error = None
-    if pred_scores.total is not None and gt_scores.total is not None:
-        sum_error = abs(pred_scores.total - gt_scores.total)
+    item_row = _item_row(item, _run_truth(run))
 
-    item_row = ItemRow(
-        slide_id=item.slide_id,
-        patient_id=item.patient_id,
-        status=item.status,  # type: ignore[arg-type]
-        failed_stage=item.failed_stage,
-        error_class=item.error_class,
-        gt=gt_scores,
-        pred=pred_scores,
-        sum_error=sum_error,
-        runtime_s=item.runtime_s,
-        cost_usd=float(item.cost_usd) if item.cost_usd is not None else None,
-    )
-
-    # Reconstruct decision tree from DecisionRecord
+    # The decisions this run made on the item's case (a case can also carry records of other runs).
     records = []
     if item.case_id:
         records = db.scalars(
             select(DecisionRecord)
-            .where(DecisionRecord.case_id == item.case_id)
+            .where(DecisionRecord.case_id == item.case_id, DecisionRecord.run_id == run.id)
             .order_by(DecisionRecord.created_at)
         ).all()
 
-    # Build node map
     node_map: dict[str, DecisionNode] = {}
     for dr in records:
-        node = DecisionNode(
+        node_map[str(dr.id)] = DecisionNode(
             id=str(dr.id),
             task=dr.task,
             entity_type=dr.entity_type,
@@ -393,7 +436,6 @@ def get_run_item_detail(
             latency_ms=dr.latency_ms,
             children=[],
         )
-        node_map[str(dr.id)] = node
 
     root_nodes: list[DecisionNode] = []
     for dr in records:
@@ -422,18 +464,11 @@ def list_mitosis_errors(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(require("research:read")),
 ):
-    run = _get_run_or_404(db, id)
-    # Return error cards for run
-    offset = 0
-    if cursor:
-        try:
-            offset = int(base64.b64decode(cursor).decode("utf-8"))
-        except Exception:
-            offset = 0
-
-    # Build error cards from detections / decision records
-    cards: list[MitosisErrorCard] = []
-    return Page(items=cards, next_cursor=None)
+    _get_run_or_404(db, id)
+    _decode_cursor(cursor)
+    # Error cards need annotated mitotic figures and stored detections, which only the
+    # mitosis_roi component harness produces (see metrics `unavailable`); no run stores them yet.
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="mitosis_errors_not_available")
 
 
 @router.get("/runs/{id}/curves/mitosis", response_model=MitosisCurvesResponse)
@@ -446,38 +481,22 @@ def get_mitosis_curves(
 ):
     run = _get_run_or_404(db, id)
 
-    # SPEC-08 §4.4: What-if queries strictly forbidden on test split
-    if (tau_a is not None or tau_b is not None) and run.split != "val":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="not_val_split"
-        )
+    what_if = tau_a is not None or tau_b is not None
+    # SPEC-08 §4.4: what-if queries are strictly forbidden on the test split
+    if what_if and run.split != "val":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="not_val_split")
 
-    # Standard PR curve points
-    thresholds = [round(i * 0.05, 2) for i in range(1, 20)]
-    precision = [round(0.5 + 0.4 * (1 - t), 3) for t in thresholds]
-    recall = [round(0.95 - 0.5 * t, 3) for t in thresholds]
-    f1 = [
-        round(2 * p * r / max(p + r, 1e-6), 3)
-        for p, r in zip(precision, recall, strict=False)
-    ]
-    pr = MitosisPR(thresholds=thresholds, precision=precision, recall=recall, f1=f1)
-
-    what_if = None
-    if tau_a is not None or tau_b is not None:
-        val_a = tau_a if tau_a is not None else 0.5
-        val_b = tau_b if tau_b is not None else 0.5
-        t_eff = (val_a + val_b) / 2.0
-        p_val = max(0.0, min(1.0, 0.5 + 0.4 * (1 - t_eff)))
-        r_val = max(0.0, min(1.0, 0.95 - 0.5 * t_eff))
-        f1_val = 2 * p_val * r_val / max(p_val + r_val, 1e-6)
-        what_if = WhatIfResult(
-            f1=round(f1_val, 3), precision=round(p_val, 3), recall=round(r_val, 3)
-        )
-
-    return MitosisCurvesResponse(pr=pr, what_if=what_if)
+    # The PR curve and what-if thresholds are computed from per-detection scores (p_a, p_b) against
+    # annotated figures, which only the mitosis_roi component harness produces; no run stores them yet.
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="curves_not_available")
 
 
 # --- 4. Run Comparison (SPEC-08 §4.3, SPEC-02 §7) ------------------------------
+
+
+def _manifest_unavailable(run_ids: list[str], exc: Exception) -> HTTPException:
+    logger.error("runs %s: cannot read the manifest: %s", run_ids, exc)
+    return HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="manifest_unavailable")
 
 
 @router.get("/compare", response_model=CompareV1)
@@ -491,16 +510,26 @@ def compare_two_runs(
     run_b = _get_run_or_404(db, b)
 
     if run_a.manifest_sha256 != run_b.manifest_sha256:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="manifest_mismatch"
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="manifest_mismatch")
 
     summary_a = _build_run_summary(db, run_a)
     summary_b = _build_run_summary(db, run_b)
 
     try:
         compared = compare_runs(db, run_a.id, run_b.id, metric_name="ns_g")
-        metrics_list = [
+        detail = compare_detail(db, run_a.id, run_b.id, metric_name="ns_g")
+    except RunsNotComparableError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="runs_not_comparable") from exc
+    except RunNotFinishedError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="run_not_finished") from exc
+    except MANIFEST_READ_ERRORS as exc:
+        raise _manifest_unavailable([str(run_a.id), str(run_b.id)], exc) from exc
+
+    return CompareV1(
+        a=summary_a,
+        b=summary_b,
+        manifest_sha256=run_a.manifest_sha256,
+        metrics=[
             CompareRow(
                 metric="NS-G macro-F1",
                 a=Metric(**compared["a"]),
@@ -508,45 +537,33 @@ def compare_two_runs(
                 delta=compared["delta"],
                 delta_low=compared["delta_low"],
                 delta_high=compared["delta_high"],
-                mcnemar_p=compared.get("mcnemar_p"),
+                mcnemar_p=compared["mcnemar_p"],
             )
-        ]
-    except Exception:
-        # Fallback comparison row if runs lack graded items
-        m_a = summary_a.headline.ns_g or Metric(
-            value=0.0, ci_low=0.0, ci_high=0.0, n=0, status="invalid"
-        )
-        m_b = summary_b.headline.ns_g or Metric(
-            value=0.0, ci_low=0.0, ci_high=0.0, n=0, status="invalid"
-        )
-        val_a = m_a.value if m_a.value is not None else 0.0
-        val_b = m_b.value if m_b.value is not None else 0.0
-        delta = val_b - val_a
-        metrics_list = [
-            CompareRow(
-                metric="NS-G macro-F1",
-                a=m_a,
-                b=m_b,
-                delta=round(delta, 3),
-                delta_low=round(delta - 0.05, 3),
-                delta_high=round(delta + 0.05, 3),
-            )
-        ]
-
-    slices: list[CompareSlice] = []
-    flips: list[FlipItem] = []
-
-    return CompareV1(
-        a=summary_a,
-        b=summary_b,
-        manifest_sha256=run_a.manifest_sha256,
-        metrics=metrics_list,
-        slices=slices,
-        flips=flips,
+        ],
+        slices=[CompareSlice(**row) for row in detail["slices"]],
+        flips=[FlipItem(**row) for row in detail["flips"]],
     )
 
 
 # --- 5. Issues Register (SPEC-08 §5) ------------------------------------------
+
+
+def _issue_response(issue: Issue) -> IssueResponse:
+    return IssueResponse(
+        id=str(issue.id),
+        title=issue.title,
+        category=issue.category,  # type: ignore[arg-type]
+        severity=issue.severity,  # type: ignore[arg-type]
+        status=issue.status,  # type: ignore[arg-type]
+        metric_impact=MetricImpact(**issue.metric_impact) if issue.metric_impact else None,
+        evidence=[EvidenceItem(**ev) for ev in (issue.evidence or [])],
+        spec_ref=issue.spec_ref,
+        owner=str(issue.owner) if issue.owner else None,
+        created_by=str(issue.created_by),
+        created_at=issue.created_at.isoformat() if issue.created_at else "",
+        resolved_in=issue.resolved_in,
+        resolution_note=issue.resolution_note,
+    )
 
 
 @router.get("/issues", response_model=list[IssueResponse])
@@ -565,25 +582,7 @@ def list_issues(
     if status_filter:
         query = query.where(Issue.status == status_filter)
 
-    issues = db.scalars(query).all()
-    return [
-        IssueResponse(
-            id=str(iss.id),
-            title=iss.title,
-            category=iss.category,  # type: ignore[arg-type]
-            severity=iss.severity,  # type: ignore[arg-type]
-            status=iss.status,  # type: ignore[arg-type]
-            metric_impact=MetricImpact(**iss.metric_impact) if iss.metric_impact else None,
-            evidence=[EvidenceItem(**ev) for ev in (iss.evidence or [])],
-            spec_ref=iss.spec_ref,
-            owner=str(iss.owner) if iss.owner else None,
-            created_by=str(iss.created_by),
-            created_at=iss.created_at.isoformat() if iss.created_at else "",
-            resolved_in=iss.resolved_in,
-            resolution_note=iss.resolution_note,
-        )
-        for iss in issues
-    ]
+    return [_issue_response(iss) for iss in db.scalars(query).all()]
 
 
 @router.post("/issues", status_code=status.HTTP_201_CREATED, response_model=IssueResponse)
@@ -601,28 +600,42 @@ def create_issue(
         evidence=[ev.model_dump() for ev in payload.evidence],
         spec_ref=payload.spec_ref,
         owner=None,
-        created_by=_to_uuid(user.id),
+        created_by=_user_uuid(user),
         created_at=datetime.now(timezone.utc),
     )
     db.add(issue)
     db.commit()
     db.refresh(issue)
+    return _issue_response(issue)
 
-    return IssueResponse(
-        id=str(issue.id),
-        title=issue.title,
-        category=issue.category,  # type: ignore[arg-type]
-        severity=issue.severity,  # type: ignore[arg-type]
-        status=issue.status,  # type: ignore[arg-type]
-        metric_impact=MetricImpact(**issue.metric_impact) if issue.metric_impact else None,
-        evidence=[EvidenceItem(**ev) for ev in (issue.evidence or [])],
-        spec_ref=issue.spec_ref,
-        owner=str(issue.owner) if issue.owner else None,
-        created_by=str(issue.created_by),
-        created_at=issue.created_at.isoformat() if issue.created_at else "",
-        resolved_in=issue.resolved_in,
-        resolution_note=issue.resolution_note,
-    )
+
+def _resolution_rejected() -> HTTPException:
+    return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="resolution_requires_run")
+
+
+def _require_improvement(db: Session, issue: Issue, resolved_in: str) -> None:
+    """SPEC-08 §5: ``resolved_in`` must be a validation run whose paired comparison against the run in
+    ``evidence`` shows a non-negative delta on ``metric_impact.metric``."""
+    resolved = _lookup_run(db, resolved_in)
+    metric_name = (issue.metric_impact or {}).get("metric")
+    if resolved is None or metric_name not in COMPARE_METRICS:
+        raise _resolution_rejected()
+    baselines = []
+    for evidence in issue.evidence or []:
+        run = _lookup_run(db, evidence["run_id"])
+        if run is not None and run.id != resolved.id:
+            baselines.append(run)
+    if not baselines:
+        raise _resolution_rejected()
+    try:
+        compared = compare_runs(db, baselines[0].id, resolved.id, metric_name)
+    except (RunsNotComparableError, RunNotFinishedError) as exc:
+        raise _resolution_rejected() from exc
+    except MANIFEST_READ_ERRORS as exc:
+        raise _manifest_unavailable([str(baselines[0].id), str(resolved.id)], exc) from exc
+    delta = -compared["delta"] if metric_name in LOWER_IS_BETTER else compared["delta"]
+    if not delta >= 0 or math.isnan(delta):
+        raise _resolution_rejected()
 
 
 @router.patch("/issues/{id}", response_model=IssueResponse)
@@ -632,62 +645,64 @@ def patch_issue(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(require("issue:write")),
 ):
-    issue = db.get(Issue, _to_uuid(id))
+    try:
+        issue = db.get(Issue, uuid.UUID(id))
+    except ValueError:
+        issue = None
     if issue is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="issue_not_found")
 
-    # SPEC-08 §5: transition to status='resolved' strictly requires resolved_in referencing
-    # a validation run demonstrating delta >= 0 on target metric.
     target_status = payload.status if payload.status is not None else issue.status
     if target_status == "resolved":
         resolved_in = payload.resolved_in or issue.resolved_in
         if not resolved_in:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="resolution_requires_run",
-            )
-        # Check resolved run exists
-        resolved_run = db.scalar(
-            select(ValidationRun).where(
-                (ValidationRun.name == resolved_in)
-                | (ValidationRun.id == resolved_in)
-            )
-        )
-        if resolved_run is None:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="resolution_requires_run",
-            )
+            raise _resolution_rejected()
+        if payload.status == "resolved" or payload.resolved_in is not None:
+            _require_improvement(db, issue, resolved_in)
         issue.resolved_in = resolved_in
+    elif payload.resolved_in is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="resolved_in_requires_resolved_status"
+        )
 
     if payload.status is not None:
         issue.status = payload.status
     if payload.owner is not None:
-        issue.owner = _to_uuid(payload.owner) if payload.owner else None
+        if payload.owner == "":
+            issue.owner = None
+        else:
+            try:
+                owner = uuid.UUID(payload.owner)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="owner_not_found"
+                ) from exc
+            if db.get(User, owner) is None:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="owner_not_found")
+            issue.owner = owner
     if payload.resolution_note is not None:
         issue.resolution_note = payload.resolution_note
 
     db.commit()
     db.refresh(issue)
-
-    return IssueResponse(
-        id=str(issue.id),
-        title=issue.title,
-        category=issue.category,  # type: ignore[arg-type]
-        severity=issue.severity,  # type: ignore[arg-type]
-        status=issue.status,  # type: ignore[arg-type]
-        metric_impact=MetricImpact(**issue.metric_impact) if issue.metric_impact else None,
-        evidence=[EvidenceItem(**ev) for ev in (issue.evidence or [])],
-        spec_ref=issue.spec_ref,
-        owner=str(issue.owner) if issue.owner else None,
-        created_by=str(issue.created_by),
-        created_at=issue.created_at.isoformat() if issue.created_at else "",
-        resolved_in=issue.resolved_in,
-        resolution_note=issue.resolution_note,
-    )
+    return _issue_response(issue)
 
 
 # --- 6. Pathologist Annotation Tasks (SPEC-08 §6) -----------------------------
+
+
+def _polygons(task: AnnotationTaskModel) -> list[list[tuple[float, float]]]:
+    """Regions as polygons; a region stored as ``[x1, y1, x2, y2]`` is the rectangle it spans."""
+    polygons: list[list[tuple[float, float]]] = []
+    for region in task.regions_um or []:
+        if region and isinstance(region[0], (list, tuple)):
+            polygons.append([(float(pt[0]), float(pt[1])) for pt in region])
+        elif len(region) == 4 and all(isinstance(v, (int, float)) for v in region):
+            x1, y1, x2, y2 = region
+            polygons.append([(float(x1), float(y1)), (float(x2), float(y1)), (float(x2), float(y2)), (float(x1), float(y2))])
+        else:
+            raise ValueError(f"annotation task {task.id!r} has a malformed region: {region!r}")
+    return polygons
 
 
 @router.get("/annotation-tasks", response_model=Page[AnnotationTaskResponse])
@@ -697,71 +712,43 @@ def list_annotation_tasks(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(require("research:annotate")),
 ):
-    query = select(AnnotationTaskModel).order_by(AnnotationTaskModel.created_at.desc())
-    offset = 0
-    if cursor:
-        try:
-            offset = int(base64.b64decode(cursor).decode("utf-8"))
-        except Exception:
-            offset = 0
+    query = select(AnnotationTaskModel).order_by(AnnotationTaskModel.created_at.desc(), AnnotationTaskModel.id)
+    tasks, next_cursor = _page(db, query, cursor, limit)
 
-    tasks = db.scalars(query.offset(offset).limit(limit + 1)).all()
-    has_more = len(tasks) > limit
-    page_tasks = tasks[:limit]
-
-    next_cursor = (
-        base64.b64encode(str(offset + limit).encode("utf-8")).decode("utf-8")
-        if has_more
-        else None
-    )
-
-    user_uuid = _to_uuid(user.id)
+    user_uuid = _user_uuid(user)
     responses: list[AnnotationTaskResponse] = []
-    for t in page_tasks:
-        # Check user's own annotation
+    for t in tasks:
         ann = db.scalar(
             select(GTAnnotation).where(
                 GTAnnotation.annotator_id == user_uuid,
+                GTAnnotation.dataset == t.dataset,
                 GTAnnotation.slide_id == t.slide_id,
                 GTAnnotation.task == t.kind,
             )
         )
-        my_ann = None
-        if ann:
-            my_ann = MyAnnotation(
-                id=str(ann.id),
-                status=ann.status,  # type: ignore[arg-type]
-                payload=ann.payload,
-            )
-
-        poly_list: list[list[tuple[float, float]]] = []
-        for poly in (t.regions_um or []):
-            if poly and isinstance(poly[0], (list, tuple)):
-                poly_list.append([(float(pt[0]), float(pt[1])) for pt in poly])
-            elif len(poly) == 4 and isinstance(poly[0], (int, float)):
-                x1, y1, x2, y2 = poly
-                poly_list.append([
-                    (float(x1), float(y1)),
-                    (float(x2), float(y1)),
-                    (float(x2), float(y2)),
-                    (float(x1), float(y2)),
-                ])
-
         responses.append(
             AnnotationTaskResponse(
                 id=t.id,
                 dataset=t.dataset,
                 slide_id=t.slide_id,
                 kind=t.kind,  # type: ignore[arg-type]
-                regions_um=poly_list,
+                regions_um=_polygons(t),
                 blind=t.blind,
                 definition_md=t.definition_md,
                 protocol_version=t.protocol_version,
-                my_annotation=my_ann,
+                my_annotation=MyAnnotation(
+                    id=str(ann.id),
+                    status=ann.status,  # type: ignore[arg-type]
+                    payload=ann.payload,
+                ) if ann else None,
             )
         )
 
     return Page(items=responses, next_cursor=next_cursor)
+
+
+def _is_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
 @router.post("/annotations", status_code=status.HTTP_201_CREATED, response_model=AnnotationSubmitResponse)
@@ -772,34 +759,27 @@ def submit_annotation(
 ):
     task = db.get(AnnotationTaskModel, payload.task_id)
     if task is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="task_not_found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task_not_found")
 
-    # Validate payload per task kind (contract: mitosis annotation payload has points array)
+    # Contract: a mitosis payload is `{ "points": [{x_um, y_um, class}] }`
     if task.kind == "mitosis_points":
         points = payload.payload.get("points")
-        if not isinstance(points, list):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="invalid_payload",
-            )
-        for pt in points:
-            if not isinstance(pt, dict) or "x_um" not in pt or "y_um" not in pt:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    detail="invalid_payload",
-                )
-            if pt.get("class") not in ("MF", "imposter"):
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    detail="invalid_payload",
-                )
+        valid = isinstance(points, list) and all(
+            isinstance(pt, dict)
+            and _is_number(pt.get("x_um"))
+            and _is_number(pt.get("y_um"))
+            and pt.get("class") in ("MF", "imposter")
+            for pt in points
+        )
+        if not valid:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="invalid_payload")
 
-    user_uuid = _to_uuid(user.id)
+    user_uuid = _user_uuid(user)
+    now = datetime.now(timezone.utc)
     ann = db.scalar(
         select(GTAnnotation).where(
             GTAnnotation.annotator_id == user_uuid,
+            GTAnnotation.dataset == task.dataset,
             GTAnnotation.slide_id == task.slide_id,
             GTAnnotation.task == task.kind,
         )
@@ -815,25 +795,31 @@ def submit_annotation(
             protocol_version=task.protocol_version,
             blind=task.blind,
             status=payload.status,
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
+            created_at=now,
+            updated_at=now,
         )
         db.add(ann)
     else:
         ann.payload = payload.payload
         ann.status = payload.status
-        ann.updated_at = datetime.now(timezone.utc)
+        ann.updated_at = now
 
     db.commit()
     db.refresh(ann)
-
-    return AnnotationSubmitResponse(
-        id=str(ann.id),
-        status=ann.status,  # type: ignore[arg-type]
-    )
+    return AnnotationSubmitResponse(id=str(ann.id), status=ann.status)  # type: ignore[arg-type]
 
 
 # --- 7. Label QA Workflow (SPEC-08 §4.5) ---------------------------------------
+
+
+def _qa_response(item: QAItemModel) -> QAItemResponse:
+    return QAItemResponse(
+        patient_id=item.patient_id,
+        report_text_url=item.report_text_url,
+        regex=item.regex_data,
+        llm=item.llm_data,
+        status=item.status,  # type: ignore[arg-type]
+    )
 
 
 @router.get("/labels-qa", response_model=list[QAItemResponse])
@@ -842,20 +828,10 @@ def list_labels_qa(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(require("labels:qa")),
 ):
-    query = select(QAItemModel)
+    query = select(QAItemModel).order_by(QAItemModel.patient_id)
     if status_filter:
         query = query.where(QAItemModel.status == status_filter)
-    items = db.scalars(query).all()
-    return [
-        QAItemResponse(
-            patient_id=item.patient_id,
-            report_text_url=item.report_text_url,
-            regex=item.regex_data or {},
-            llm=item.llm_data or {},
-            status=item.status,  # type: ignore[arg-type]
-        )
-        for item in items
-    ]
+    return [_qa_response(item) for item in db.scalars(query).all()]
 
 
 @router.post("/labels-qa/{patient_id}", response_model=QAItemResponse)
@@ -867,53 +843,35 @@ def review_label_qa(
 ):
     item = db.get(QAItemModel, patient_id)
     if item is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="qa_item_not_found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="qa_item_not_found")
 
-    # SPEC-08 §4.5: Actions edit and exclude strictly require a reason
-    if payload.action in ("edit", "exclude") and not (
-        payload.reason and payload.reason.strip()
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="reason_required",
-        )
+    # SPEC-08 §4.5: the edit and exclude actions require a reason
+    if payload.action in ("edit", "exclude") and not (payload.reason and payload.reason.strip()):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="reason_required")
 
-    item.status = (
-        "accepted"
-        if payload.action == "accept"
-        else "edited"
-        if payload.action == "edit"
-        else "excluded"
-    )
-    item.reviewed_by = _to_uuid(user.id)
-    item.reviewed_at = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
+    user_uuid = _user_uuid(user)
+    item.status = {"accept": "accepted", "edit": "edited", "exclude": "excluded"}[payload.action]
+    item.reviewed_by = user_uuid
+    item.reviewed_at = now
     item.reason = payload.reason
 
-    # Record review in GTAnnotation
-    user_uuid = _to_uuid(user.id)
-    ann = GTAnnotation(
-        dataset="tcga_brca_dx",
-        slide_id=patient_id,
-        task="label_qa",
-        region_geojson=None,
-        payload={"action": payload.action, "values": payload.values, "reason": payload.reason},
-        annotator_id=user_uuid,
-        protocol_version="v6.0",
-        blind=False,
-        status="submitted",
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
+    # The review is kept as an annotation: an edit's values live nowhere else.
+    db.add(
+        GTAnnotation(
+            dataset=item.dataset,
+            slide_id=patient_id,
+            task="label_qa",
+            region_geojson=None,
+            payload={"action": payload.action, "values": payload.values, "reason": payload.reason},
+            annotator_id=user_uuid,
+            protocol_version=item.protocol_version,
+            blind=False,
+            status="submitted",
+            created_at=now,
+            updated_at=now,
+        )
     )
-    db.add(ann)
     db.commit()
     db.refresh(item)
-
-    return QAItemResponse(
-        patient_id=item.patient_id,
-        report_text_url=item.report_text_url,
-        regex=item.regex_data or {},
-        llm=item.llm_data or {},
-        status=item.status,  # type: ignore[arg-type]
-    )
+    return _qa_response(item)

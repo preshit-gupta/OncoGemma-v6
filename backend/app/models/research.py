@@ -155,6 +155,8 @@ class QAItemModel(Base):
     __tablename__ = "qa_items"
 
     patient_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    dataset: Mapped[str] = mapped_column(Text, nullable=False)
+    protocol_version: Mapped[str] = mapped_column(Text, nullable=False)
     report_text_url: Mapped[str] = mapped_column(Text, nullable=False)
     regex_data: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
     llm_data: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
