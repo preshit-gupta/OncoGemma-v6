@@ -136,9 +136,13 @@ interface QAItem {
 | POST | `/annotations` | `{ task_id, payload, status: "draft" \| "submitted" }` | `201 { id, status }` | `422 invalid_payload` |
 | GET | `/labels-qa` | `?status` | `QAItem[]` | |
 | POST | `/labels-qa/{patient_id}` | `{ action: "accept" \| "edit" \| "exclude", values?, reason? }` | `QAItem` | `422 reason_required` |
-| POST | `/api/v1/batches` | `{ name, source: {manifest_uri} \| {gcs_prefix, specimen_type, mpp_override?}, stages, mode, concurrency }` | `201 { batch_id }` | `403` · `422` |
-| GET | `/api/v1/batches/{id}/events` | Server-sent events (SSE) | `data: {"counts":{...by status}, "failures_by_error_class":{...}}` every ≤ 2 s | |
+| POST | `/api/v1/batches` | `{ name, source: {manifest_uri, split, confirm_test_access?} \| {gcs_prefix, specimen_type, mpp_override?}, stages, mode, concurrency }` (`split: "test"` needs `eval:test_split` and `confirm_test_access`; JPEG prefixes are refused until conversion exists) | `201 { batch_id }` | `403` · `422` |
+| GET | `/api/v1/batches` | | `BatchSummary[]` (newest first) | |
+| GET | `/api/v1/batches/{id}` | | `BatchSummary & { items: { slide_id, patient_id, status, case_id, failed_stage, error_class, error_detail, runtime_s, cost_usd }[] }` | `404` |
+| GET | `/api/v1/batches/{id}/events` | Server-sent events (SSE) | `data: {"status": ..., "counts":{...by status}, "failures_by_error_class":{...}}` every ≤ 2 s; the stream ends when the batch does | |
 | POST | `/api/v1/batches/{id}/cancel` · `/retry` | `{ statuses: ["failed"] }` (retry) | `202` | |
+
+`BatchSummary` (WP-5.5d): `{ batch_id, name, dataset, split, stages, mode, concurrency, status, is_locked_test, created_by, created_at, finished_at, n_items, counts: Record<status, number>, failures_by_error_class: Record<string, number> }`. A batch is a validation run; ad-hoc batches have `dataset` and `split` `"adhoc"`.
 
 Mitosis annotation payload: `{ "points": [{ "x_um": n, "y_um": n, "class": "MF" | "imposter" }] }`. One point per dividing cell (SPEC-06 §3).
 

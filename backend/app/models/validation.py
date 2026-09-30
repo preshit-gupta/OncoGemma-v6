@@ -69,6 +69,9 @@ class ValidationRun(Base):
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     metrics_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The worker driving this run's controller, and until when (eval/harness/driver.py).
+    controller_lease_owner: Mapped[str | None] = mapped_column(Text, nullable=True)
+    controller_lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         CheckConstraint(_in("mode", RUN_MODES), name="ck_validation_runs_mode"),

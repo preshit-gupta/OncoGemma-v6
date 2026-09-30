@@ -99,6 +99,36 @@ def split_rows(manifest: pd.DataFrame, run: ValidationRun) -> pd.DataFrame:
     return rows.set_index("slide_id", drop=False)
 
 
+def validate_adhoc_manifest(manifest: pd.DataFrame) -> None:
+    """Rows of an ad-hoc run: a batch from a GCS prefix has no SHA-256 per slide (ingest records it),
+    so ``sha256`` may be empty; everything the controller reads must be present and valid."""
+    from eval.datasets.manifest import SHA256_REGEX, VALID_MPP_SOURCES, VALID_SPECIMEN_TYPES
+
+    errors = []
+    if manifest.empty:
+        errors.append("the manifest has no rows")
+    if manifest["slide_id"].duplicated().any():
+        errors.append(f"duplicate slide ids: {sorted(manifest.loc[manifest['slide_id'].duplicated(), 'slide_id'])[:5]}")
+    for idx, row in manifest.iterrows():
+        if row["dataset"] != ADHOC:
+            errors.append(f"row {idx}: dataset must be {ADHOC!r}")
+        for column in ("patient_id", "slide_id", "uri"):
+            if pd.isna(row[column]) or not str(row[column]).strip():
+                errors.append(f"row {idx}: {column} is empty")
+        if not str(row["uri"]).startswith("gs://"):
+            errors.append(f"row {idx}: uri must be a gs:// URI")
+        if row["specimen_type"] not in VALID_SPECIMEN_TYPES:
+            errors.append(f"row {idx}: specimen_type must be one of {sorted(VALID_SPECIMEN_TYPES)}")
+        if row["mpp_source"] not in VALID_MPP_SOURCES:
+            errors.append(f"row {idx}: mpp_source must be one of {sorted(VALID_MPP_SOURCES)}")
+        if row["mpp_source"] != "file" and (pd.isna(row["mpp_override"]) or float(row["mpp_override"]) <= 0):
+            errors.append(f"row {idx}: mpp_source {row['mpp_source']!r} needs a positive mpp_override")
+        if not pd.isna(row["sha256"]) and not SHA256_REGEX.match(str(row["sha256"])):
+            errors.append(f"row {idx}: sha256 must be 64 hex characters or empty")
+    if errors:
+        raise RunConfigError("ad-hoc manifest is invalid:\n- " + "\n- ".join(errors))
+
+
 def create_adhoc_run(
     session: Session, *, name: str, manifest_uri: str, stages: tuple[str, ...], mode: str,
     concurrency: int, actor: str,
@@ -110,9 +140,7 @@ def create_adhoc_run(
     if concurrency < 1:
         raise RunConfigError(f"concurrency must be at least 1, got {concurrency}")
     manifest, manifest_sha256 = read_manifest(manifest_uri)
-    validate_manifest(manifest)
-    if (manifest["dataset"] != ADHOC).any():
-        raise RunConfigError(f"an ad-hoc manifest has dataset {ADHOC!r} on every row")
+    validate_adhoc_manifest(manifest)
     run = ValidationRun(
         name=name, dataset=ADHOC, split=ADHOC, manifest_uri=manifest_uri, manifest_sha256=manifest_sha256,
         stages=list(stages), mode=mode, concurrency=concurrency, config_hash=get_config_hash(),
