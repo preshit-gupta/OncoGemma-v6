@@ -33,7 +33,7 @@ from app.models.stage_execution import StageExecution
 from app.models.validation import ValidationItem, ValidationRun
 from app.services import stages as stage_service
 from eval.harness.collect import collect_prediction, item_cost_usd
-from eval.harness.runs import read_manifest
+from eval.harness.runs import read_manifest, split_rows
 
 ACTIVE_ITEM = ("pending", "running")
 FINAL_RUN = ("completed", "cancelled", "failed")
@@ -94,7 +94,7 @@ class RunController:
                     f"{self.run.manifest_uri} has SHA-256 {sha256}; run {self.run.id} was created from "
                     f"{self.run.manifest_sha256}"
                 )
-            self._manifest = manifest[manifest["split"] == self.run.split].set_index("slide_id", drop=False)
+            self._manifest = split_rows(manifest, self.run)
         return self._manifest.loc[slide_id]
 
     # --- one pass --------------------------------------------------------------

@@ -90,6 +90,44 @@ def registry_sha256() -> str:
     return sha256_file(Path(settings.CONFIGS_DIR) / "models.yaml")
 
 
+ADHOC = "adhoc"  # dataset and split of a run over arbitrary slides (one-shot, batch from a GCS prefix)
+
+
+def split_rows(manifest: pd.DataFrame, run: ValidationRun) -> pd.DataFrame:
+    """The manifest rows a run evaluates: its split, or every row of an ad-hoc run."""
+    rows = manifest if run.split == ADHOC else manifest[manifest["split"] == run.split]
+    return rows.set_index("slide_id", drop=False)
+
+
+def create_adhoc_run(
+    session: Session, *, name: str, manifest_uri: str, stages: tuple[str, ...], mode: str,
+    concurrency: int, actor: str,
+) -> ValidationRun:
+    """A run over every row of a generated manifest; it has no split and no splits lock (SPEC-02 §6.1). Commits."""
+    stages = check_stages(tuple(stages))
+    if mode not in RUN_MODES:
+        raise RunConfigError(f"mode must be one of {list(RUN_MODES)}, got {mode!r}")
+    if concurrency < 1:
+        raise RunConfigError(f"concurrency must be at least 1, got {concurrency}")
+    manifest, manifest_sha256 = read_manifest(manifest_uri)
+    validate_manifest(manifest)
+    if (manifest["dataset"] != ADHOC).any():
+        raise RunConfigError(f"an ad-hoc manifest has dataset {ADHOC!r} on every row")
+    run = ValidationRun(
+        name=name, dataset=ADHOC, split=ADHOC, manifest_uri=manifest_uri, manifest_sha256=manifest_sha256,
+        stages=list(stages), mode=mode, concurrency=concurrency, config_hash=get_config_hash(),
+        registry_sha256=registry_sha256(), splits_lock_sha256=None, status="created", created_by=actor,
+    )
+    session.add(run)
+    session.flush()
+    for row in manifest.itertuples(index=False):
+        session.add(ValidationItem(
+            run_id=run.id, slide_id=str(row.slide_id), patient_id=str(row.patient_id), status="pending"
+        ))
+    session.commit()
+    return run
+
+
 def create_run(session: Session, request: RunRequest) -> ValidationRun:
     """Validate the request and the manifest, then insert the run and one pending item per slide. Commits."""
     stages = check_stages(tuple(request.stages))
