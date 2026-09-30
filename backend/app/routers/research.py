@@ -222,7 +222,7 @@ def _build_headline(db: Session, run: ValidationRun, gate: Gate) -> RunHeadline:
 
 
 def _build_run_summary(db: Session, run: ValidationRun) -> RunSummary:
-    counts, failures = batches.progress(db, run)
+    counts, _ = batches.progress(db, run)
     gate = _build_gate(db, run)
     return RunSummary(
         id=str(run.id),
@@ -236,7 +236,7 @@ def _build_run_summary(db: Session, run: ValidationRun) -> RunSummary:
         created_at=run.created_at.isoformat() if run.created_at else "",
         finished_at=run.finished_at.isoformat() if run.finished_at else None,
         n_items=sum(counts.values()),
-        n_failed=sum(failures.values()),
+        n_failed=counts.get("failed", 0) + counts.get("excluded_qc", 0),  # SPEC-00 rule 2: QC exclusions are failures
         headline=_build_headline(db, run, gate),
         gate=gate,
     )
