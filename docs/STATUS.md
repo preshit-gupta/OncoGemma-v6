@@ -2,7 +2,7 @@
 
 Update this file at the end of every session (SPEC plan §3 rule 8). Keep it under 60 lines.
 
-**Last updated:** 2026-09-30 (Claude, WP-5.5a–d)
+**Last updated:** 2026-09-30 (Claude, WP-5.4)
 **Phase:** P1 — Fix
 
 ## Done
@@ -26,6 +26,8 @@ Update this file at the end of every session (SPEC plan §3 rule 8). Keep it und
   - Baseline (`reports/baseline/mitosis_midogpp_094.md`): KongNet alone F1 0.862 at τ 0.75, NMS 7.5 µm (old 0.35/20 µm: 0.831). The Gemini referee cuts F1 to 0.676 (rejects 25 true figures), so it is off (`referee.enabled: false`). One image only: generalisation needs more MIDOG++ val images.
 
 - **WP-4.1 (SPEC-03 §3–4) is merged (#22, deploy settings #24, CSP fix #23); the owner reports it working.** `app/auth/`: Google ID-token verification (issuer, verified email, `hd` in `AUTH_ALLOWED_DOMAINS` or an allow-listed invitee), `users`/`sessions` (`0009_auth`), HS256 session cookie checked against the DB on every request (30 s per-instance cache; logout, role change and disable revoke), double-submit CSRF, `require(perm)` from `configs/auth.yaml` on all 44 guarded routes, Cloud Tasks OIDC on the webhook, `/api/v1/auth/*` and `/api/v1/admin/users*` per `docs/contracts/auth_v1.md`. Audit actors are the verified `users.id` (client `reviewed_by` ignored). Tests `backend/tests/auth` (AC1–AC5, 266 cases; suite 1283 passed, 1 skipped, ~16 min); legacy tests sign in through a conftest override (`X-Test-Role`).
+
+- **WP-5.4 (SPEC-02 §4), branch `wp/5.4-report-labels`, PR open.** `eval/labels/`: report grammar + Gemini extraction (`gemini_labeler`, `label_extract@v2.md`; the report goes as an untrusted-document part, `Task.LABEL_EXTRACT`, SPEC-03 §5.2) with verified quotes, reconciliation, stratified QA sample, `apply-qa`. Text: TCGA-Reports corpus (CC BY 4.0) for 999 patients, GDC PDF text layer for 62, 1 needs OCR. Live run 2026-09-30 over 1,062 DX patients: 720 labels accepted (grade 1/2/3: 83/319/318), 173 state no grade, QA queue 258 (`backend/eval/datasets/labels/`). **Labels are pre-QA:** accuracy is unmeasured until a researcher reviews the queue (research API/UI, WP-9.1/9.2).
 
 ## Ready for delegates now
 

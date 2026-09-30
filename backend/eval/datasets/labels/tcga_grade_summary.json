@@ -1,0 +1,23 @@
+{
+  "corpus": "TCGA-Reports v1 (doi:10.17632/hyg5xkznpx.1)",
+  "producer": "gemini_labeler",
+  "model": "gemini-2.5-flash",
+  "prompt": "label_extract@v2.md",
+  "config_hash": "a46e3bc196a88216988f11755499760868540fe032a115792331eacd002388a6",
+  "patients": 1062,
+  "accepted": 720,
+  "excluded": {
+    "no_grade_in_report": 173,
+    "qa_pending": 141,
+    "multiple_grades_in_report": 27,
+    "needs_ocr": 1
+  },
+  "qa_queue": {
+    "disagreement": 112,
+    "sampled_agreement": 90,
+    "multiple_grades": 27,
+    "regex_conflict": 18,
+    "inconsistent": 11
+  },
+  "seed": 0
+}
