@@ -126,7 +126,8 @@ steps:
       - '--task-timeout=24h'
       - '--cpu=4'
       - '--memory=8Gi'
-      - '--add-cloudsql-instances=$PROJECT_ID:$_REGION:oncogemma-dev-psql'
+      # 'jobs deploy' takes --set-cloudsql-instances ('jobs update' takes --add-cloudsql-instances).
+      - '--set-cloudsql-instances=$PROJECT_ID:$_REGION:oncogemma-dev-psql'
       - '--update-env-vars=CLOUD_SQL_CONNECTION_NAME=$PROJECT_ID:$_REGION:oncogemma-dev-psql,RUN_DAEMON=true,WORKER_RUN_MODES=eval,WORKER_IDLE_EXIT_S=900'
       - '--set-secrets=DB_PASSWORD=og-db-password:latest'
     id: 'deploy-eval-worker'
