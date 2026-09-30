@@ -4,14 +4,14 @@ SPEC-02 §3.2 and WP-5.2.
 """
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
-from typing import Any
+import tempfile
+from typing import Any, Callable
 import pandas as pd
 
 from .base import DatasetAdapter, DatasetConfigMissing, FetchedFile, load_config
 from .manifest import empty_manifest, validate_manifest
-from .storage import Storage
+from .storage import Storage, copy_with_hashes
 
 REQUIRED_CONFIG_KEYS = (
     "mpp",
@@ -24,6 +24,12 @@ REQUIRED_CONFIG_KEYS = (
     "split_source",
     "license_ref",
 )
+# Fixed by SPEC-02 §3.2 rather than configured: BCNB slides are core-needle biopsies, their
+# µm/px comes from the dataset documentation (config ``mpp``), and grades from the clinical file.
+SPECIMEN_TYPE = "core_biopsy"
+MPP_SOURCE = "dataset_doc"
+GT_LABEL_SOURCE = "clinical_records"
+GT_LABEL_CONFIDENCE = "high"
 
 
 def convert_to_pyramidal_tiff(jpg_path: str | Path, out_path: str | Path, mpp: float) -> str:
@@ -57,8 +63,14 @@ def convert_to_pyramidal_tiff(jpg_path: str | Path, out_path: str | Path, mpp: f
 class BCNBAdapter(DatasetAdapter):
     key = "bcnb"
 
-    def __init__(self, config: dict[str, Any] | None = None, check_config_on_init: bool = True) -> None:
+    def __init__(
+        self,
+        config: dict[str, Any] | None = None,
+        check_config_on_init: bool = True,
+        converter: Callable[[Path, Path, float], str] = convert_to_pyramidal_tiff,
+    ) -> None:
         self.config = config if config is not None else load_config().get("bcnb", {})
+        self.converter = converter
         if check_config_on_init:
             self.validate_config()
 
@@ -141,36 +153,24 @@ class BCNBAdapter(DatasetAdapter):
 
     def fetch(self, row: pd.Series, dest: Storage) -> FetchedFile:
         """
-        Stream slide payload to destination storage with real SHA-256 and MD5 hash computation.
-        Raises FileNotFoundError if the source file cannot be found.
+        Convert the slide's JPEG to a pyramidal TIFF (SPEC-02 §3.2), stream the TIFF into ``dest``
+        and return its hashes: the manifest's canonical slide is the converted file.
+        Raises FileNotFoundError if the source JPEG is missing.
         """
+        self.validate_config()
         slide_id = str(row["slide_id"])
-        file_path_str = str(row.get("file_path", ""))
-        source_path = Path(file_path_str) if file_path_str else None
-
-        if source_path is None or not source_path.exists():
-            raise FileNotFoundError(f"BCNB source slide file not found: '{file_path_str}'")
+        source_path = Path(str(row["file_path"]))
+        if not source_path.is_file():
+            raise FileNotFoundError(f"BCNB source slide file not found: '{source_path}'")
 
         relpath = f"bcnb/slides/{slide_id}.tif"
-        sha256_hasher = hashlib.sha256()
-        md5_hasher = hashlib.md5()
-        total_bytes = 0
-        chunk_size = 8 * 1024 * 1024  # 8 MiB streaming
-
-        with open(source_path, "rb") as src, dest.open_write(relpath) as writer:
-            while chunk := src.read(chunk_size):
-                writer.write(chunk)
-                sha256_hasher.update(chunk)
-                md5_hasher.update(chunk)
-                total_bytes += len(chunk)
-
-        return FetchedFile(
-            slide_id=slide_id,
-            uri=dest.uri(relpath),
-            sha256=sha256_hasher.hexdigest().lower(),
-            md5=md5_hasher.hexdigest().lower(),
-            size_bytes=total_bytes,
-        )
+        with tempfile.TemporaryDirectory(prefix="bcnb-") as work_dir:
+            tiff_path = Path(work_dir) / f"{slide_id}.tif"
+            self.converter(source_path, tiff_path, float(self.config["mpp"]))
+            if not tiff_path.is_file():
+                raise FileNotFoundError(f"BCNB conversion of {source_path} wrote no TIFF at {tiff_path}")
+            sha256, md5, size = copy_with_hashes(tiff_path, dest, relpath)
+        return FetchedFile(slide_id=slide_id, uri=dest.uri(relpath), sha256=sha256, md5=md5, size_bytes=size)
 
     def labels(self) -> pd.DataFrame:
         """Read clinical file and return mapped ground truth labels."""
@@ -195,12 +195,6 @@ class BCNBAdapter(DatasetAdapter):
         if discovered.empty or not fetched:
             return empty_manifest()
 
-        specimen_type = str(self.config.get("specimen_type", "core_biopsy"))
-        mpp_source = str(self.config.get("mpp_source", "dataset_doc"))
-        scanner = self.config.get("default_scanner")
-        gt_label_source = str(self.config.get("gt_label_source", "clinical_records"))
-        gt_label_confidence = str(self.config.get("gt_label_confidence", "high"))
-
         rows = []
         for _, row in discovered.iterrows():
             slide_id = str(row["slide_id"])
@@ -217,11 +211,11 @@ class BCNBAdapter(DatasetAdapter):
                 "slide_id": slide_id,
                 "uri": fetched_file.uri,
                 "sha256": fetched_file.sha256,
-                "specimen_type": specimen_type,
+                "specimen_type": SPECIMEN_TYPE,
                 "mpp_override": mpp,
-                "mpp_source": mpp_source,
+                "mpp_source": MPP_SOURCE,
                 "native_mag": native_mag,
-                "scanner": scanner,
+                "scanner": None,
                 "tss": None,
                 "split": None,
                 "gt_grade": row.get("gt_grade"),
@@ -230,8 +224,8 @@ class BCNBAdapter(DatasetAdapter):
                 "gt_pleo": None,
                 "gt_mitoses": None,
                 "gt_histotype": None,
-                "gt_label_source": gt_label_source,
-                "gt_label_confidence": gt_label_confidence,
+                "gt_label_source": GT_LABEL_SOURCE,
+                "gt_label_confidence": GT_LABEL_CONFIDENCE,
                 "regions_uri": None,
             }
             rows.append(manifest_row)
