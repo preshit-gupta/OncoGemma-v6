@@ -152,7 +152,9 @@ class RunController:
         case = Case(created_by=actor, status="open", specimen_type=str(row["specimen_type"]))
         self.session.add(case)
         self.session.flush()
-        slide = Slide(case_id=case.id, gcs_uri_original=str(row["uri"]), checksum_sha256=str(row["sha256"]))
+        # A batch from a GCS prefix has no hash; ingest then computes and records it.
+        checksum = None if pd.isna(row["sha256"]) else str(row["sha256"])
+        slide = Slide(case_id=case.id, gcs_uri_original=str(row["uri"]), checksum_sha256=checksum)
         if not pd.isna(row["mpp_override"]):
             slide.mpp_x = slide.mpp_y = float(row["mpp_override"])
             slide.mpp_source = str(row["mpp_source"])

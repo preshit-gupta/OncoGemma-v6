@@ -24,6 +24,7 @@ from app.routers import (
 )
 from app.routers.admin import router as admin_router
 from app.routers.auth import router as auth_router
+from app.routers.batches import router as batches_router
 from app.routers.users import router as users_router
 
 import logging
@@ -124,6 +125,7 @@ app.include_router(worker_webhook_router)
 app.include_router(admin_router)
 app.include_router(auth_router)
 app.include_router(users_router)
+app.include_router(batches_router)
 
 @app.get("/health", dependencies=[Depends(public)])
 @app.get("/api/health", dependencies=[Depends(public)])

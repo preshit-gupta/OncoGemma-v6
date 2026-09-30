@@ -80,3 +80,12 @@ def test_downgrade_drops_the_tables_and_columns_and_keeps_the_rows(engine):
         fk["referred_table"] != "validation_runs" for fk in inspect(engine).get_foreign_keys("decision_records")
     )
     assert (count(engine, "stage_executions"), count(engine, "decision_records")) == (1, 1)
+
+
+def test_0011_adds_and_removes_the_controller_lease(engine):
+    run(engine, command.upgrade, "0011_run_controller_lease")
+    columns = {c["name"] for c in inspect(engine).get_columns("validation_runs")}
+    assert {"controller_lease_owner", "controller_lease_until"} <= columns
+    run(engine, command.downgrade, "0010_validation")
+    columns = {c["name"] for c in inspect(engine).get_columns("validation_runs")}
+    assert not {"controller_lease_owner", "controller_lease_until"} & columns
