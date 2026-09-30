@@ -47,8 +47,24 @@ def reset_database(
             dialect = conn.dialect.name
             if dialect == "sqlite":
                 conn.execute(text("PRAGMA foreign_keys = OFF;"))
+                conn.execute(text("DROP TRIGGER IF EXISTS trg_audit_events_no_delete;"))
+                conn.execute(text("DROP TRIGGER IF EXISTS trg_audit_events_no_update;"))
                 for tbl in tables:
                     conn.execute(text(f"DELETE FROM {tbl};"))
+                conn.execute(text("""
+                    CREATE TRIGGER IF NOT EXISTS trg_audit_events_no_update
+                    BEFORE UPDATE ON audit_events
+                    BEGIN
+                        SELECT RAISE(ABORT, 'audit_events is append-only: UPDATE is prohibited');
+                    END;
+                """))
+                conn.execute(text("""
+                    CREATE TRIGGER IF NOT EXISTS trg_audit_events_no_delete
+                    BEFORE DELETE ON audit_events
+                    BEGIN
+                        SELECT RAISE(ABORT, 'audit_events is append-only: DELETE is prohibited');
+                    END;
+                """))
                 conn.execute(text("PRAGMA foreign_keys = ON;"))
             else:
                 # PostgreSQL — TRUNCATE with CASCADE and restart identity

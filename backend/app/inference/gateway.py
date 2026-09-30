@@ -44,12 +44,14 @@ from app.inference.adapters.base import (
     Unavailable,
 )
 from app.inference.blobs import BlobStore
+from enum import Enum
 from app.inference.errors import (
     GatewayError,
     InputContractError,
     ModelCallError,
     ModelTimeoutError,
     ModelUnavailableError,
+    PromptVariableError,
     SchemaInvalidError,
     UnpinnedModelError,
 )
@@ -76,7 +78,7 @@ def is_pinned_model_id(model_id: str) -> bool:
 
 _PROMPT_VARIABLE = re.compile(r"\{\{([a-z_][a-z0-9_]*)\}\}")
 
-PromptValue = str | int | float | bool
+PromptValue = int | float | bool | Enum
 
 
 class CacheIntegrityError(RuntimeError):
@@ -155,15 +157,19 @@ def sha256_hex(data: bytes) -> str:
 
 
 def render_prompt(template: str, variables: Mapping[str, PromptValue]) -> str:
-    """Replace ``{{name}}`` placeholders. Missing, unused or untyped variables are errors."""
+    """Replace ``{{name}}`` placeholders. Missing, unused, string or untyped variables are errors (SPEC-03 §5.2)."""
     names = set(_PROMPT_VARIABLE.findall(template))
     missing, unused = names - set(variables), set(variables) - names
     if missing or unused:
-        raise ValueError(f"prompt variables missing {sorted(missing)}, unused {sorted(unused)}")
+        raise PromptVariableError(f"prompt variables missing {sorted(missing)}, unused {sorted(unused)}")
     for name, value in variables.items():
-        if not isinstance(value, (str, int, float, bool)):
-            raise ValueError(f"prompt variable {name} has type {type(value).__name__}")
-    return _PROMPT_VARIABLE.sub(lambda m: str(variables[m.group(1)]), template)
+        if isinstance(value, str) and not isinstance(value, Enum):
+            raise PromptVariableError(
+                f"prompt variable {name!r} has disallowed type 'str' to prevent prompt injection (SPEC-03 §5.2)"
+            )
+        if not isinstance(value, (int, float, bool, Enum)):
+            raise PromptVariableError(f"prompt variable {name} has type {type(value).__name__}")
+    return _PROMPT_VARIABLE.sub(lambda m: str(variables[m.group(1)].value if isinstance(variables[m.group(1)], Enum) else variables[m.group(1)]), template)
 
 
 def _record_output(output: BaseModel) -> dict[str, Any]:

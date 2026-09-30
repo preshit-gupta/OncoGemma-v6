@@ -6,6 +6,7 @@ from typing import Any, Optional, Literal
 import numpy as np
 from PIL import Image
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -18,6 +19,8 @@ from app.core.gcs import (
 )
 from app.core.db import get_db
 from app.auth.deps import CurrentUser, require
+from app.auth.idempotency import require_idempotency_key, canonical_request_hash, IdempotencyContext
+from app.core.geometry import validate_polygon_geometry, validate_hotspots_non_overlapping
 from app.core.slide_access import PRECONDITION_ERRORS, open_case_slide, slide_stain_transform
 from app.models.case import Case
 from app.models.slide import Slide
@@ -454,10 +457,38 @@ def save_triage_edits(payload: TriageEditsPayload, db: Session = Depends(get_db)
             detail=f"Triage stage for case {payload.case_id} is already confirmed and immutable."
         )
 
+    case_uid = to_uuid(payload.case_id)
+    slide_row = db.scalars(select(Slide).where(Slide.case_id == case_uid)).first()
+    slide_bounds = None
+    if slide_row and slide_row.width_px and slide_row.height_px and slide_row.mpp_x:
+        mpp_y = slide_row.mpp_y or slide_row.mpp_x
+        slide_bounds = (slide_row.width_px * slide_row.mpp_x, slide_row.height_px * mpp_y)
+
+    for op in payload.edits:
+        if op.op in ("add", "modify") and op.polygon_um is not None:
+            validate_polygon_geometry(op.polygon_um, slide_bounds_um=slide_bounds)
+
     edits_dict = [
         e.model_dump() if hasattr(e, "model_dump") else (e.dict() if hasattr(e, "dict") else dict(e))
         for e in payload.edits
     ]
+
+    output_ref = stage_exec.output_ref or ""
+    machine_hotspots = []
+    try:
+        if output_ref and output_ref.startswith("gs://"):
+            b_name, bl_name = parse_gcs_uri(output_ref)
+            out_bytes = download_blob_as_bytes(b_name, bl_name)
+            machine_hotspots = json.loads(out_bytes.decode("utf-8")).get("hotspots", [])
+        else:
+            out_bytes = download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{payload.case_id}/triage/output.json")
+            machine_hotspots = json.loads(out_bytes.decode("utf-8")).get("hotspots", [])
+    except Exception:
+        machine_hotspots = []
+
+    effective_hotspots = apply_edit_ops(machine_hotspots, edits_dict)
+    validate_hotspots_non_overlapping(effective_hotspots)
+
     stage_exec.review_edits = edits_dict
     
     audit = AuditEvent(
@@ -474,10 +505,25 @@ def save_triage_edits(payload: TriageEditsPayload, db: Session = Depends(get_db)
 
 
 @router.post("/confirm")
-def confirm_triage(payload: TriageConfirmPayload, db: Session = Depends(get_db), user: CurrentUser = Depends(require("stage:confirm"))):
+def confirm_triage(
+    payload: TriageConfirmPayload,
+    idempotency_key: str = Depends(require_idempotency_key),
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require("stage:confirm"))
+):
     """
     Confirms triage stage, writes effective hotspots into DB, and queues next stage.
     """
+    req_data = payload.model_dump(mode="json")
+    req_hash = canonical_request_hash(req_data)
+    user_id = user.id if hasattr(user, "id") else getattr(user, "username", getattr(payload, "reviewed_by", "system"))
+    idem_ctx = None
+    if isinstance(idempotency_key, str) and idempotency_key.strip():
+        idem_ctx = IdempotencyContext(idempotency_key, str(user_id), "/api/v1/stages/triage/confirm", req_hash, db)
+        is_cached, cached_body, cached_status = idem_ctx.check()
+        if is_cached:
+            return JSONResponse(content=cached_body, status_code=cached_status or status.HTTP_200_OK, headers={"Idempotent-Replay": "true"})
+
     stage_exec = db.scalars(
         select(StageExecution).where(
             StageExecution.case_id == payload.case_id,
@@ -516,6 +562,20 @@ def confirm_triage(payload: TriageConfirmPayload, db: Session = Depends(get_db),
 
     edits = stage_exec.review_edits or []
     effective_hotspots = apply_edit_ops(machine_hotspots, edits)
+
+    validate_hotspots_non_overlapping(effective_hotspots)
+    case_uid = to_uuid(payload.case_id)
+    slide_row = db.scalars(select(Slide).where(Slide.case_id == case_uid)).first()
+    slide_bounds = None
+    try:
+        if slide_row and isinstance(slide_row.width_px, (int, float)) and isinstance(slide_row.height_px, (int, float)) and isinstance(slide_row.mpp_x, (int, float)):
+            mpp_y = slide_row.mpp_y if isinstance(slide_row.mpp_y, (int, float)) else slide_row.mpp_x
+            slide_bounds = (float(slide_row.width_px * slide_row.mpp_x), float(slide_row.height_px * mpp_y))
+    except Exception:
+        slide_bounds = None
+    for hs in effective_hotspots:
+        if not hs.get("excluded", False) and hs.get("polygon_um"):
+            validate_polygon_geometry(hs["polygon_um"], slide_bounds_um=slide_bounds)
 
     # Zero-tumor guardrail: if 0 active hotspots, must explicitly specify no_invasive_tumor=True (#92)
     active_hotspots = [h for h in effective_hotspots if not h.get("excluded", False)]
@@ -612,10 +672,14 @@ def confirm_triage(payload: TriageConfirmPayload, db: Session = Depends(get_db),
         except Exception as e:
             print(f"[CloudTasks Warning] Failed to dispatch next stage {next_stage_name}: {e}")
 
-    return {
+    resp_payload = {
         "status": "confirmed",
         "case_id": payload.case_id,
         "confirmed_hotspots_count": len(effective_hotspots),
         "next_stage_queued": next_stage_name
     }
+    if idem_ctx:
+        idem_ctx.complete(resp_payload, status.HTTP_200_OK)
+
+    return resp_payload
 

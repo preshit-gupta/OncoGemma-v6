@@ -1,0 +1,29 @@
+# Safety hardening configuration (SPEC-03 §5).
+
+schema_version: 1
+
+rate_limits:
+  mutating_per_user_per_min: 60
+  auth_session_per_ip_per_min: 10
+  window_seconds: 60
+
+idempotency:
+  ttl_hours: 24
+
+soft_delete:
+  retention_days: 7
+
+signed_upload:
+  expiration_minutes: 15
+  max_bytes: 10737418240  # 10 GiB
+  allowed_wsi_mimes:
+    - "image/tiff"
+    - "image/x-tiff"
+    - "image/vnd.bif"
+    - "application/octet-stream"
+
+geometry:
+  max_vertices: 64
+  min_vertices: 3
+  coordinate_tolerance_um: 1.0
+  overlap_iou_threshold: 0.0

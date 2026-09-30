@@ -293,7 +293,7 @@ def get_service_account_email() -> str:
 def generate_signed_upload_url(
     bucket_name: str,
     blob_name: str,
-    expiration_minutes: int = 60,
+    expiration_minutes: int | None = None,
     content_type: str = "application/octet-stream"
 ) -> str:
     """
@@ -308,6 +308,13 @@ def generate_signed_upload_url(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unsupported WSI file extension '{ext}'. Allowed: {sorted(list(ALLOWED_WSI_EXTS))}"
         )
+
+    if expiration_minutes is None:
+        try:
+            from app.core.pipeline_config import get_pipeline_config
+            expiration_minutes = get_pipeline_config().safety.signed_upload.expiration_minutes
+        except Exception:
+            expiration_minutes = 15
 
     if not settings.USE_REAL_GCS:
         return f"http://localhost:8000/api/v1/mock-upload/{bucket_name}/{clean_blob}"

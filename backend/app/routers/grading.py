@@ -13,12 +13,14 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Literal, get_args
 from fastapi import APIRouter, Depends, HTTPException, status, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.auth.deps import CurrentUser, require
+from app.auth.idempotency import require_idempotency_key, canonical_request_hash, IdempotencyContext
 from app.core.gcs import download_blob_as_bytes
 from app.core.db import get_db
 from app.core.pipeline_config import get_pipeline_config
@@ -768,6 +770,7 @@ def recompute_grade_preview(payload: RecomputeGradePayload, db: Session = Depend
 @router.post("/{case_id}/type/confirm")
 def confirm_histologic_type(
     payload: ConfirmHistologicTypePayload,
+    idempotency_key: str = Depends(require_idempotency_key),
     current_user: CurrentUser = Depends(require("stage:confirm")),
     db: Session = Depends(get_db)
 ):
@@ -775,6 +778,16 @@ def confirm_histologic_type(
     Dedicated server-side histologic subtype confirmation action.
     Validates against approved CAP subtype ontology and stamps the pathologist actor.
     """
+    req_data = payload.model_dump(mode="json")
+    req_hash = canonical_request_hash(req_data)
+    actor = current_user.id if hasattr(current_user, "id") else getattr(current_user, "username", "pathologist")
+    idem_ctx = None
+    if isinstance(idempotency_key, str) and idempotency_key.strip():
+        idem_ctx = IdempotencyContext(idempotency_key, str(actor), "/api/v1/stages/grading/type/confirm", req_hash, db)
+        is_cached, cached_body, cached_status = idem_ctx.check()
+        if is_cached:
+            return JSONResponse(content=cached_body, status_code=cached_status or status.HTTP_200_OK, headers={"Idempotent-Replay": "true"})
+
     if payload.histologic_type not in VALID_HISTOLOGIC_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -808,7 +821,7 @@ def confirm_histologic_type(
             detail="Cannot modify histologic subtype for a signed or amended case report."
         )
 
-    actor = current_user.id
+    actor = str(actor)
     grading_record.histologic_type = payload.histologic_type
     grading_record.type_confirmed_by = actor
 
@@ -831,12 +844,16 @@ def confirm_histologic_type(
         .where(StageExecution.case_id == case_uid, StageExecution.stage == "grading")
         .order_by(StageExecution.attempt.desc())
     ).first()
-    return _build_grading_stage_data_dict(payload.case_id, case, stage_exec, grading_record, db)
+    resp_payload = _build_grading_stage_data_dict(payload.case_id, case, stage_exec, grading_record, db)
+    if idem_ctx:
+        idem_ctx.complete(resp_payload, status.HTTP_200_OK)
+    return resp_payload
 
 
 @router.post("/confirm")
 def confirm_grading_stage(
     payload: ConfirmGradingPayload,
+    idempotency_key: str = Depends(require_idempotency_key),
     current_user: CurrentUser = Depends(require("stage:confirm")),
     db: Session = Depends(get_db)
 ):
@@ -853,7 +870,17 @@ def confirm_grading_stage(
     8. Pure code mathematical invariants validation.
     Persists final state to DB and marks case done.
     """
-    actor = current_user.id
+    req_data = payload.model_dump(mode="json")
+    req_hash = canonical_request_hash(req_data)
+    actor = current_user.id if hasattr(current_user, "id") else getattr(current_user, "username", getattr(payload, "reviewed_by", "pathologist"))
+    idem_ctx = None
+    if isinstance(idempotency_key, str) and idempotency_key.strip():
+        idem_ctx = IdempotencyContext(idempotency_key, str(actor), "/api/v1/stages/grading/confirm", req_hash, db)
+        is_cached, cached_body, cached_status = idem_ctx.check()
+        if is_cached:
+            return JSONResponse(content=cached_body, status_code=cached_status or status.HTTP_200_OK, headers={"Idempotent-Replay": "true"})
+
+    actor = str(actor)
     case_id = payload.case_id
     case_uid = to_uuid(case_id)
 
@@ -1099,7 +1126,7 @@ def confirm_grading_stage(
 
     db.commit()
 
-    return {
+    resp_payload = {
         "status": "success",
         "case_id": case_id,
         "stage": "grading",
@@ -1108,4 +1135,8 @@ def confirm_grading_stage(
         "nottingham_sum": computed_sum,
         "histologic_type": grading_record.histologic_type
     }
+    if idem_ctx:
+        idem_ctx.complete(resp_payload, status.HTTP_200_OK)
+
+    return resp_payload
 
