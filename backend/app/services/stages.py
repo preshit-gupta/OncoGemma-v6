@@ -102,14 +102,22 @@ def queue_stage(
     *,
     input_ref: dict | None = None,
     parent: StageExecution | None = None,
+    run_id=None,
 ) -> StageExecution:
     """Add the next attempt of ``stage`` as ``queued``; the caller commits, then calls ``dispatch``.
 
     ``parent`` is the execution this one follows from (the previous stage, or the attempt being
-    retried); its ``run_mode`` and ``run_id`` carry over. Without it the execution is clinical.
+    retried); its ``run_mode`` and ``run_id`` carry over. ``run_id`` starts a validation run's
+    first execution, in ``eval`` mode. With neither, the execution is clinical.
     """
     if stage not in STAGES:
         raise InvalidStage(f"Invalid stage_name '{stage}'. Known stages: {', '.join(STAGES)}")
+    if parent is not None and run_id is not None:
+        raise ValueError("pass either parent or run_id: a queued stage inherits its parent's run")
+    if parent is not None:
+        run_mode, run_id = parent.run_mode, parent.run_id
+    else:
+        run_mode = RunMode.CLINICAL.value if run_id is None else RunMode.EVAL.value
     latest = latest_execution(session, case_id, stage)
     execution = StageExecution(
         case_id=case_id,
@@ -117,8 +125,8 @@ def queue_stage(
         attempt=(latest.attempt + 1) if latest else 1,
         status="queued",
         input_ref=input_ref,
-        run_mode=parent.run_mode if parent is not None else RunMode.CLINICAL.value,
-        run_id=parent.run_id if parent is not None else None,
+        run_mode=run_mode,
+        run_id=run_id,
     )
     session.add(execution)
     session.flush()
