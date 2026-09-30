@@ -2,7 +2,7 @@
 
 Update this file at the end of every session (SPEC plan §3 rule 8). Keep it under 60 lines.
 
-**Last updated:** 2026-09-30 (Claude, WP-5.5a–d)
+**Last updated:** 2026-09-30 (Claude, WP-5.4)
 **Phase:** P1 — Fix
 
 ## Done
@@ -28,7 +28,8 @@ Update this file at the end of every session (SPEC plan §3 rule 8). Keep it und
 - **WP-4.1 (SPEC-03 §3–4) is merged (#22, deploy settings #24, CSP fix #23); the owner reports it working.** `app/auth/`: Google ID-token verification (issuer, verified email, `hd` in `AUTH_ALLOWED_DOMAINS` or an allow-listed invitee), `users`/`sessions` (`0009_auth`), HS256 session cookie checked against the DB on every request (30 s per-instance cache; logout, role change and disable revoke), double-submit CSRF, `require(perm)` from `configs/auth.yaml` on all 44 guarded routes, Cloud Tasks OIDC on the webhook, `/api/v1/auth/*` and `/api/v1/admin/users*` per `docs/contracts/auth_v1.md`. Audit actors are the verified `users.id` (client `reviewed_by` ignored). Tests `backend/tests/auth` (AC1–AC5, 266 cases; suite 1283 passed, 1 skipped, ~16 min); legacy tests sign in through a conftest override (`X-Test-Role`).
 
 - **WP-4.3 (SPEC-03 §5), branch `wp/4.3-safety-hardening`.** `/admin/reset-database` and bulk `DELETE /cases` mount only with `ENV=test` (AC6). Soft delete: `cases.deleted_at`, 404 on every case-scoped route (`app/core/soft_delete.py`, audit stays readable), purge after 7 days plus expired idempotency keys (`python -m app.services.purge`). `audit_events`: trigger + `REVOKE UPDATE, DELETE` (`0012`). `render_prompt` rejects `str` (AC7, with a static test of every render call site and `prompt_vars` producer). Geometry (≤ 64 vertices, bounds, simple, area range, no overlap) on edits and confirm. `Idempotency-Key` on the 5 confirm/approve routes, keyed per user + path + body, released on error (`IdempotentRoute`); row locks on confirm. Rate limits 60/min per verified session, 10/min per IP on sign-in (IP = 2nd from right of X-Forwarded-For). Signed uploads: 15 min, MIME allow-list, signed `x-goog-content-length-range` (response gains `upload_headers`, the frontend sends them). CI `security_audit.yml` (gitleaks, `react/no-danger`) (AC10). AC9 greps clean. Tests: `test_safety_hardening.py`, `test_safety_hardening_regressions.py`.
-  - Not done here: `untrusted_document` prompt slot and the AC8 injection regression need `label_extract` (WP-5.4, SPEC-02 §4). §5.4 (no `GEMINI_API_KEY` path) and §5.6 (CSP, headers) were already on `main`.
+  - Not done here, now in WP-5.4 (#30): the `untrusted_document` prompt slot and the AC8 injection regression (`test_an_injected_instruction_cannot_create_an_accepted_label`). §5.4 (no `GEMINI_API_KEY` path) and §5.6 (CSP, headers) were already on `main`.
+- **WP-5.4 (SPEC-02 §4), branch `wp/5.4-report-labels`, PR open.** `eval/labels/`: report grammar + Gemini extraction (`gemini_labeler`, `label_extract@v2.md`; the report goes as an untrusted-document part, `Task.LABEL_EXTRACT`, SPEC-03 §5.2) with verified quotes, reconciliation, stratified QA sample, `apply-qa`. Text: TCGA-Reports corpus (CC BY 4.0) for 999 patients, GDC PDF text layer for 62, 1 needs OCR. Live run 2026-09-30 over 1,062 DX patients: 720 labels accepted (grade 1/2/3: 83/319/318), 173 state no grade, QA queue 258 (`backend/eval/datasets/labels/`). **Labels are pre-QA:** accuracy is unmeasured until a researcher reviews the queue (research API/UI, WP-9.1/9.2).
 
 ## Ready for delegates now
 

@@ -35,6 +35,8 @@ from app.core.run_context import DecisionContext, RunMode
 from app.core.tasks import DecisionStatus, EntityType, ProducerKind, Task
 from app.inference import schemas
 from app.inference.adapters.base import (
+    UNTRUSTED_DOCUMENT_BEGIN,
+    UNTRUSTED_DOCUMENT_END,
     Adapter,
     AdapterImage,
     AdapterRequest,
@@ -120,6 +122,9 @@ class ModelInputs:
     # A configs/prompts file name, rendered with typed ``prompt_vars`` ({{name}} placeholders).
     prompt_id: str | None = None
     prompt_vars: Mapping[str, PromptValue] = field(default_factory=dict)
+    # Text read by the model as data in its own delimited part (SPEC-03 §5.2 rule 2).
+    # Only Task.LABEL_EXTRACT may send one; it is hashed and measured in the record, not stored.
+    untrusted_document: str | None = None
 
 
 @dataclass(frozen=True)
@@ -266,6 +271,7 @@ class ModelGateway:
             output_model=output_model if entry.kind == "vlm" else None,
             generation=call.params.get("generation", {}),
             parameters={key: value for key, value in call.params.items() if key != "generation"},
+            untrusted_document=inputs.untrusted_document,
         )
         result = self._call_with_retries(call, entry, request, output_model)
         if cache_key is not None:
@@ -361,6 +367,11 @@ class ModelGateway:
             },
             "prompt_vars": {name: _prompt_value(v) for name, v in inputs.prompt_vars.items()},
         }
+        if inputs.untrusted_document is not None:
+            input_spec["untrusted_document"] = {
+                "sha256": sha256_hex(inputs.untrusted_document.encode("utf-8")),
+                "chars": len(inputs.untrusted_document),
+            }
         hashed = {
             "images": [{"spec": img.spec.as_json(), "sha256": sha256_hex(img.data)} for img in inputs.images],
             "features": None if inputs.features is None else {
@@ -368,6 +379,7 @@ class ModelGateway:
                 "sha256": sha256_hex(np.ascontiguousarray(inputs.features).tobytes()),
             },
             "prompt_vars": input_spec["prompt_vars"],
+            "untrusted_document": input_spec.get("untrusted_document"),
             "params": params,
         }
         call = _Call(
@@ -408,6 +420,16 @@ class ModelGateway:
             reject("a prompt is required for VLMs and allowed only for them")
         if getattr(entry, "requires_image", False) and not inputs.images:
             reject("this model requires an image and none was given")
+        document = inputs.untrusted_document
+        if (document is not None) != (call.task is Task.LABEL_EXTRACT):
+            reject("an untrusted document is required for label_extract and allowed only for it")
+        if document is not None:
+            if entry.provider != "vertex_genai":
+                reject(f"provider {entry.provider} cannot receive an untrusted document")
+            if not document.strip():
+                reject("the untrusted document is empty")
+            if UNTRUSTED_DOCUMENT_BEGIN in document or UNTRUSTED_DOCUMENT_END in document:
+                reject("the untrusted document contains the document delimiter")
 
         contract = getattr(entry, "input", None)
         if isinstance(contract, FeatureInputContract):

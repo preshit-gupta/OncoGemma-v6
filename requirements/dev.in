@@ -10,3 +10,4 @@ bandit>=1.7.8
 pip-audit>=2.7.2
 types-PyYAML>=6.0.12
 types-requests>=2.31.0
+pypdf>=5.0.0  # eval.labels.tcga_reports: report PDF text layer (SPEC-02 §4)
