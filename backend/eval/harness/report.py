@@ -350,6 +350,9 @@ def write_report(doc: MetricsDocument, out_dir: Path) -> tuple[Path, Path]:
 # --- compare ---------------------------------------------------------------------
 
 COMPARE_METRICS = ("ns_g", "qwk", "f1_high", "macro_f1_lm", "sum_mae", "f1_t", "f1_p", "f1_m")
+# An error metric: a negative delta is an improvement.
+LOWER_IS_BETTER = ("sum_mae",)
+FLIP_COMPONENTS = ("grade", *COMPONENTS)
 
 
 def compare_runs(session: Session, run_a, run_b, metric_name: str, *, B: int = 2000, seed: int = 7) -> dict:
@@ -385,6 +388,49 @@ def compare_runs(session: Session, run_a, run_b, metric_name: str, *, B: int = 2
                                    [c.pred["grade"] == c.gt["grade"] for c in list_b]),
         "run_a": str(a.id), "run_b": str(b.id), "n_slides": len(order), "B": B, "seed": seed,
     }
+
+
+def compare_detail(session: Session, run_a, run_b, metric_name: str = "ns_g", *, B: int = 2000, seed: int = 7) -> dict:
+    """Per-slice deltas of ``metric_name`` (paired bootstrap over patients) and the slides whose
+    correctness flipped between the runs, over the graded slides both runs cover."""
+    if metric_name not in COMPARE_METRICS:
+        raise ValueError(f"metric must be one of {list(COMPARE_METRICS)}")
+    runs = [session.get(ValidationRun, r) for r in (run_a, run_b)]
+    if None in runs:
+        raise LookupError("both runs must exist")
+    a, b = runs
+    if (a.dataset, a.split) != (b.dataset, b.split):
+        raise RunsNotComparableError(f"{a.dataset}/{a.split} vs {b.dataset}/{b.split}")
+    cases_a = {c.slide_id: c for c in run_cases(session, a) if c.gt["grade"] is not None}
+    cases_b = {c.slide_id: c for c in run_cases(session, b) if c.gt["grade"] is not None}
+    if set(cases_a) != set(cases_b):
+        raise RunsNotComparableError(
+            f"the runs cover different slides ({len(set(cases_a) ^ set(cases_b))} differ); pairing needs the same set"
+        )
+    fn = METRIC_FUNCTIONS[metric_name]
+    slices = []
+    for column in SLICE_COLUMNS:
+        groups: dict[str, list[str]] = defaultdict(list)
+        for slide_id, case in cases_a.items():
+            groups[case.slices[column]].append(slide_id)
+        for key, slide_ids in sorted(groups.items()):
+            units_a = by_patient([cases_a[s] for s in sorted(slide_ids)])
+            units_b = [[cases_b[c.slide_id] for c in unit] for unit in units_a]
+            delta = paired_bootstrap_delta(lambda us: fn(flat(us)), units_a, units_b, B=B, seed=seed)
+            slices.append({"slice": column, "key": key, "metric": metric_name,
+                           "delta": delta.delta, "delta_low": delta.low, "delta_high": delta.high})
+    flips = []
+    for slide_id in sorted(cases_a):
+        for component in FLIP_COMPONENTS:
+            truth = cases_a[slide_id].gt[component]
+            if truth is None:
+                continue
+            a_correct = cases_a[slide_id].pred[component] == truth
+            b_correct = cases_b[slide_id].pred[component] == truth
+            if a_correct != b_correct:
+                flips.append({"slide_id": slide_id, "component": component,
+                              "a_correct": a_correct, "b_correct": b_correct})
+    return {"slices": slices, "flips": flips}
 
 
 def dumps(value: dict) -> str:

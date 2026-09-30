@@ -11,6 +11,13 @@ from app.models.stain_profile import StainProfile
 from app.models.user import AuthSession, User
 from app.models.idempotency import IdempotencyKeyRecord
 from app.models.validation import ValidationItem, ValidationRun
+from app.models.research import (
+    Issue,
+    GTAnnotation,
+    RunMetric,
+    AnnotationTaskModel,
+    QAItemModel,
+)
 
 __all__ = [
     "Case",
@@ -28,4 +35,10 @@ __all__ = [
     "IdempotencyKeyRecord",
     "ValidationRun",
     "ValidationItem",
+    "Issue",
+    "GTAnnotation",
+    "RunMetric",
+    "AnnotationTaskModel",
+    "QAItemModel",
 ]
+
