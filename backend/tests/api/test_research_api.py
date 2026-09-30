@@ -419,6 +419,19 @@ def test_adhoc_runs_do_not_break_the_runs_list(client: TestClient, sample_runs, 
     assert [r["name"] for r in filtered] == ["ad-hoc batch"]
 
 
+def test_n_failed_counts_failed_and_qc_excluded_items(client: TestClient, db_session: Session, manifest):
+    run = make_run(db_session, "mixed outcomes", manifest)
+    add_item(db_session, run, "slide-01", "TCGA-01", PRED_BEFORE["slide-01"])
+    for slide_id, patient, status in (("slide-02", "TCGA-02", "failed"), ("slide-03", "TCGA-03", "excluded_qc"),
+                                      ("slide-04", "TCGA-04", "excluded_qc")):
+        db_session.add(ValidationItem(run_id=run.id, slide_id=slide_id, patient_id=patient, status=status,
+                                      error_class="StageFailed" if status == "failed" else None))
+    db_session.commit()
+    data = client.get(f"/api/v1/research/runs/{run.id}", headers=RESEARCHER).json()
+    assert data["n_items"] == 4
+    assert data["n_failed"] == 3
+
+
 def test_adhoc_run_detail_items_and_metrics(client: TestClient, adhoc_run):
     base = f"/api/v1/research/runs/{adhoc_run.id}"
     detail = client.get(base, headers=RESEARCHER)
