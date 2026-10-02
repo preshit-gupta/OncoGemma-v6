@@ -11,13 +11,13 @@ No hardcoded clinical or geometric constants: all configuration is passed in via
 HotspotsConfig (configs/specimen_profiles.yaml) and SafetyConfig (configs/safety.yaml).
 """
 from dataclasses import dataclass
-import math
-from typing import Sequence
+from typing import Callable, Sequence
 
 import numpy as np
 from shapely.geometry import Polygon
 
-from pipeline.tile_grid import TileGrid
+from app.core.pipeline_config import HotspotsConfig
+from pipeline.tissue_mask import TissueMask
 
 UM2_PER_MM2 = 1e6
 
@@ -109,65 +109,48 @@ def generate_candidate_lattice(
     return list(zip(grid_x.ravel().tolist(), grid_y.ravel().tolist()))
 
 
-def compute_window_tumor_metrics_from_grid(
-    cx: float,
-    cy: float,
+def _overlaps(lo: np.ndarray, hi: np.ndarray, n_cells: int, origin_um: float, cell_um: float) -> np.ndarray:
+    """(n_windows, n_cells): length of each window interval [lo, hi) inside each cell along one axis."""
+    edges = origin_um + np.arange(n_cells + 1, dtype=np.float64) * cell_um
+    return np.clip(np.minimum(hi[:, None], edges[None, 1:]) - np.maximum(lo[:, None], edges[None, :-1]), 0.0, None)
+
+
+def window_tumor_metrics(
+    centers_um: np.ndarray,
     window_um: float,
-    tile_grid: TileGrid,
-    p_tumor_cal: np.ndarray,
-    tau_tumor: float,
-) -> tuple[float, float]:
-    """Computes area-weighted tumor fraction and mean calibrated tumor probability.
+    p_raster: np.ndarray,
+    is_tumor_raster: np.ndarray,
+    cell_um: float,
+    origin_um: tuple[float, float] = (0.0, 0.0),
+    chunk: int = 2048,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Tumour fraction and mean calibrated tumour probability of square windows (SPEC-05 §5.1, §5.2 H1).
 
-    Args:
-        cx, cy: Window center in micrometers.
-        window_um: Window side length in micrometers.
-        tile_grid: Slide TileGrid instance.
-        p_tumor_cal: Calibrated tumor probability per tile in tile_grid (shape: [n_tiles]).
-        tau_tumor: Calibrated tumor classification threshold from config.
-
-    Returns:
-        tuple (tumor_fraction, mean_p_tumor)
+    The tumour fraction is the share of the window's area covered by tumour cells (area-weighted);
+    the mean is ``p_tumor_cal`` weighted by the area of each tissue cell inside the window (NaN
+    when the window holds no tissue cell). ``p_raster`` is NaN off tissue. Windows are computed in
+    chunks, each as two separable overlap matrices.
     """
+    centers = np.asarray(centers_um, dtype=np.float64).reshape(-1, 2)
+    n_rows, n_cols = p_raster.shape
+    tissue = ~np.isnan(p_raster)
+    p = np.where(tissue, p_raster, 0.0)
+    tumor = (np.asarray(is_tumor_raster, dtype=bool) & tissue).astype(np.float64)
+    tissue_f = tissue.astype(np.float64)
     half = window_um / 2.0
-    wx0, wy0 = cx - half, cy - half
-    wx1, wy1 = cx + half, cy + half
-
-    tile_size = tile_grid.tile_um
-    tx0 = tile_grid.x_um
-    ty0 = tile_grid.y_um
-    tx1 = tx0 + tile_size
-    ty1 = ty0 + tile_size
-
-    # Intersection of each tile with window W
-    ix0 = np.maximum(wx0, tx0)
-    iy0 = np.maximum(wy0, ty0)
-    ix1 = np.minimum(wx1, tx1)
-    iy1 = np.minimum(wy1, ty1)
-
-    inter_w = np.maximum(0.0, ix1 - ix0)
-    inter_h = np.maximum(0.0, iy1 - iy0)
-    inter_area = inter_w * inter_h
-
-    intersecting = inter_area > 0.0
-    if not np.any(intersecting):
-        return 0.0, 0.0
-
-    areas = inter_area[intersecting]
-    probs = p_tumor_cal[intersecting]
-    is_tumor = probs >= tau_tumor
-
-    window_area = window_um * window_um
-    tumor_area = np.sum(areas[is_tumor])
-    tumor_fraction = float(tumor_area / window_area)
-
-    total_tiled_area = np.sum(areas)
-    if total_tiled_area > 0.0:
-        mean_p_tumor = float(np.sum(areas * probs) / total_tiled_area)
-    else:
-        mean_p_tumor = 0.0
-
-    return tumor_fraction, mean_p_tumor
+    tumor_fraction = np.empty(len(centers))
+    mean_p = np.empty(len(centers))
+    for k in range(0, len(centers), chunk):
+        cx, cy = centers[k:k + chunk, 0], centers[k:k + chunk, 1]
+        ox = _overlaps(cx - half, cx + half, n_cols, origin_um[0], cell_um)
+        oy = _overlaps(cy - half, cy + half, n_rows, origin_um[1], cell_um)
+        tumor_area = np.einsum("wi,wi->w", oy @ tumor, ox)
+        tissue_area = np.einsum("wi,wi->w", oy @ tissue_f, ox)
+        p_area = np.einsum("wi,wi->w", oy @ p, ox)
+        tumor_fraction[k:k + chunk] = tumor_area / (window_um * window_um)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            mean_p[k:k + chunk] = np.where(tissue_area > 0.0, p_area / tissue_area, np.nan)
+    return tumor_fraction, mean_p
 
 
 def compute_window_tumor_metrics_from_prob_map(
@@ -179,60 +162,62 @@ def compute_window_tumor_metrics_from_prob_map(
     stride_um: float,
     tau_tumor: float,
 ) -> tuple[float, float]:
-    """Computes tumor fraction and mean calibrated probability from a 2D probability grid.
+    """Tumour fraction and mean probability of one window, tumour being ``prob_grid >= tau_tumor``."""
+    is_tumor = np.nan_to_num(prob_grid, nan=-1.0) >= tau_tumor
+    tf, mean_p = window_tumor_metrics(np.array([[cx, cy]]), window_um, prob_grid.astype(np.float64), is_tumor, stride_um, origin_um)
+    return float(tf[0]), float(mean_p[0])
 
-    Used when working directly with a 2D probability array (e.g. synthetic test grids).
+
+def score_lattice_windows(
+    p_raster: np.ndarray,
+    is_tumor_raster: np.ndarray,
+    tile_um: float,
+    tissue: TissueMask,
+    extent_um: tuple[float, float],
+    cfg: HotspotsConfig,
+) -> list[HotspotWindow]:
+    """The valid candidate windows of SPEC-05 §5.1, scored under arm H1 (§5.2).
+
+    Windows of side ``cfg.window_um`` are centred on a lattice of step ``cfg.lattice_step_um``
+    over the bounding box of the tumour mask (tile rasters from the slide origin). A window is
+    valid when it lies inside the slide, its tissue fraction is at least ``cfg.min_tissue_fraction``
+    and its tumour fraction at least ``cfg.min_tumor_fraction``. No tumour tile: no windows.
     """
-    half = window_um / 2.0
-    wx0, wy0 = cx - half, cy - half
-    wx1, wy1 = cx + half, cy + half
-
-    ox, oy = origin_um
-    ny, nx = prob_grid.shape
-
-    # Bounding index range in prob_grid
-    col_min = max(0, int(math.floor((wx0 - ox) / stride_um)))
-    col_max = min(nx, int(math.ceil((wx1 - ox) / stride_um)))
-    row_min = max(0, int(math.floor((wy0 - oy) / stride_um)))
-    row_max = min(ny, int(math.ceil((wy1 - oy) / stride_um)))
-
-    if col_min >= col_max or row_min >= row_max:
-        return 0.0, 0.0
-
-    sub_probs = prob_grid[row_min:row_max, col_min:col_max]
-    sub_cols = np.arange(col_min, col_max)
-    sub_rows = np.arange(row_min, row_max)
-    grid_c, grid_r = np.meshgrid(sub_cols, sub_rows)
-
-    tx0 = ox + grid_c * stride_um
-    ty0 = oy + grid_r * stride_um
-    tx1 = tx0 + stride_um
-    ty1 = ty0 + stride_um
-
-    ix0 = np.maximum(wx0, tx0)
-    iy0 = np.maximum(wy0, ty0)
-    ix1 = np.minimum(wx1, tx1)
-    iy1 = np.minimum(wy1, ty1)
-
-    inter_w = np.maximum(0.0, ix1 - ix0)
-    inter_h = np.maximum(0.0, iy1 - iy0)
-    inter_area = inter_w * inter_h
-
-    valid = (~np.isnan(sub_probs)) & (inter_area > 0.0)
-    if not np.any(valid):
-        return 0.0, 0.0
-
-    areas = inter_area[valid]
-    probs = sub_probs[valid]
-    is_tumor = probs >= tau_tumor
-
-    window_area = window_um * window_um
-    tumor_area = np.sum(areas[is_tumor])
-    tumor_fraction = float(tumor_area / window_area)
-
-    total_area = np.sum(areas)
-    mean_p = float(np.sum(areas * probs) / total_area) if total_area > 0 else 0.0
-    return tumor_fraction, mean_p
+    if cfg.ranking_arm != "H1":
+        raise NotImplementedError(f"hotspot ranking arm {cfg.ranking_arm} needs the mitotic prescan (SPEC-05 §5.2)")
+    rows, cols = np.nonzero(is_tumor_raster)
+    if rows.size == 0:
+        return []
+    w = cfg.window_um
+    bbox = (cols.min() * tile_um, rows.min() * tile_um, (cols.max() + 1) * tile_um, (rows.max() + 1) * tile_um)
+    centers = np.array(generate_candidate_lattice(bbox, cfg.lattice_step_um), dtype=np.float64).reshape(-1, 2)
+    width_um, height_um = extent_um
+    half = w / 2.0
+    inside = (
+        (centers[:, 0] - half >= 0.0) & (centers[:, 0] + half <= width_um)
+        & (centers[:, 1] - half >= 0.0) & (centers[:, 1] + half <= height_um)
+    )
+    centers = centers[inside]
+    if len(centers) == 0:
+        return []
+    tissue_fraction = tissue.fractions_of_boxes_um(
+        centers[:, 0] - half, centers[:, 1] - half, centers[:, 0] + half, centers[:, 1] + half
+    )
+    tumor_fraction, mean_p = window_tumor_metrics(centers, w, p_raster, is_tumor_raster, tile_um)
+    valid = (tissue_fraction >= cfg.min_tissue_fraction) & (tumor_fraction >= cfg.min_tumor_fraction)
+    return [
+        HotspotWindow(
+            id=f"win_{n:05d}",
+            cx=float(centers[n, 0]),
+            cy=float(centers[n, 1]),
+            window_um=w,
+            rank=None,
+            rank_score=float(mean_p[n]),
+            score_kind="mean_p_tumor",
+            tumor_fraction=float(tumor_fraction[n]),
+        )
+        for n in np.flatnonzero(valid)
+    ]
 
 
 def select_hotspots(
@@ -293,6 +278,49 @@ def select_hotspots(
                 break
 
     return selected
+
+
+def select_verified_hotspots(
+    cands: Sequence[HotspotWindow],
+    k_max: int,
+    w: float,
+    gap: float,
+    verify: Callable[[HotspotWindow], bool | None],
+    max_checks: int,
+) -> tuple[list[HotspotWindow], list[tuple[HotspotWindow, bool | None]]]:
+    """Greedy selection (SPEC-05 §5.3) with the tumour referee in the loop (§5.4).
+
+    Down the ranked list, each window that clears the Chebyshev rule against those already
+    selected is put to ``verify`` (at most ``max_checks`` calls): True selects it, False removes it
+    and selection continues; nothing rejected is ever added back. ``None`` (no verdict: an outage
+    the fallback policy allows) is held; held windows are selected only when the referee neither
+    confirmed nor rejected any window (SPEC-01 §3.6).
+
+    Returns the selected windows (ranked, ``hs_NN``) and every (window, verdict) checked.
+    """
+    ranked = sorted(
+        cands,
+        key=lambda c: (c.rank_score, c.tumor_fraction is not None, c.tumor_fraction or 0.0),
+        reverse=True,
+    )
+    confirmed: list[HotspotWindow] = []
+    checked: list[tuple[HotspotWindow, bool | None]] = []
+    for c in ranked:
+        if len(confirmed) == k_max or len(checked) == max_checks:
+            break
+        if not all(max(abs(c.cx - s.cx), abs(c.cy - s.cy)) >= (w + gap) for s in confirmed):
+            continue
+        verdict = verify(c)
+        checked.append((c, verdict))
+        if verdict is True:
+            confirmed.append(c)
+    if confirmed:
+        eligible = confirmed
+    elif checked and all(v is None for _, v in checked):
+        eligible = [c for c, _ in checked]
+    else:
+        eligible = []
+    return select_hotspots(eligible, k_max=k_max, w=w, gap=gap), checked
 
 
 def validate_hotspots_mitre_overlap(

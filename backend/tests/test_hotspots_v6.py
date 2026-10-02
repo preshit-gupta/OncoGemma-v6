@@ -16,7 +16,11 @@ from pipeline.hotspots_v6 import (
     select_hotspots,
     validate_hotspots_mitre_overlap,
     compute_window_tumor_metrics_from_prob_map,
+    score_lattice_windows,
+    select_verified_hotspots,
 )
+from app.core.pipeline_config import HotspotsConfig
+from pipeline.tissue_mask import TissueMask
 
 
 # ---------------------------------------------------------------------------
@@ -204,3 +208,74 @@ def test_validate_hotspots_mitre_overlap_overlapping_boxes():
 
     collisions = validate_hotspots_mitre_overlap([h1, h2], gap_um=0.0)
     assert collisions == [["hs_01", "hs_02"]]
+
+
+# ---------------------------------------------------------------------------
+# §5.1 lattice windows and §5.4 referee-in-the-loop selection
+# ---------------------------------------------------------------------------
+TILE_UM = 100.0
+HS_CFG = HotspotsConfig(
+    window_um=400.0, lattice_step_um=100.0, min_tissue_fraction=0.70, min_tumor_fraction=0.50, gap_um=0.0, k_max=3,
+)
+
+
+def _slide(n_tiles: int = 30):
+    """A fully tissue slide of n_tiles x n_tiles 100 um tiles with p_tumor_cal 0.1 everywhere."""
+    p = np.full((n_tiles, n_tiles), 0.1)
+    mask = TissueMask(np.ones((n_tiles * 10, n_tiles * 10), dtype=bool), mpp=TILE_UM / 10)
+    return p, mask, (n_tiles * TILE_UM, n_tiles * TILE_UM)
+
+
+def test_lattice_windows_cover_the_tumour_and_obey_the_filters():
+    p, mask, extent = _slide()
+    p[10:16, 10:16] = 0.9  # a 600 um tumour block
+    windows = score_lattice_windows(p, p >= 0.5, TILE_UM, mask, extent, HS_CFG)
+    assert windows
+    assert all(w.tumor_fraction >= HS_CFG.min_tumor_fraction for w in windows)
+    best = max(windows, key=lambda w: w.rank_score)
+    assert best.tumor_fraction == pytest.approx(1.0) and best.rank_score == pytest.approx(0.9)
+    assert 1200.0 <= best.cx <= 1400.0 and 1200.0 <= best.cy <= 1400.0
+
+
+def test_lattice_has_no_windows_without_tumour_or_tissue():
+    p, mask, extent = _slide()
+    assert score_lattice_windows(p, p >= 0.5, TILE_UM, mask, extent, HS_CFG) == []
+    p[10:16, 10:16] = 0.9
+    no_tissue = TissueMask(np.zeros((300, 300), dtype=bool), mpp=TILE_UM / 10)
+    assert score_lattice_windows(p, p >= 0.5, TILE_UM, no_tissue, extent, HS_CFG) == []
+
+
+def test_lattice_windows_stay_inside_the_slide():
+    p, mask, extent = _slide()
+    p[0:3, 0:3] = 0.9  # tumour in the corner: windows centred on its bbox would leave the slide
+    windows = score_lattice_windows(p, p >= 0.5, TILE_UM, mask, extent, HS_CFG)
+    half = HS_CFG.window_um / 2
+    assert windows and all(w.cx - half >= 0 and w.cy - half >= 0 for w in windows)
+
+
+def _ranked(n: int, spacing: float = 1000.0) -> list[HotspotWindow]:
+    return [HotspotWindow(f"c{k}", k * spacing, 0.0, 400.0, None, 1.0 - k / 100, "mean_p_tumor", 0.9) for k in range(n)]
+
+
+def test_rejected_windows_are_skipped_and_never_padded_back():
+    verdicts = {"c0": False, "c1": True, "c2": False, "c3": True}
+    selected, checked = select_verified_hotspots(_ranked(4), 3, 400.0, 0.0, lambda c: verdicts[c.id], 20)
+    assert [s.candidate_id for s in selected] == ["c1", "c3"]
+    assert [s.rank for s in selected] == [1, 2]
+    assert [c.id for c, _ in checked] == ["c0", "c1", "c2", "c3"]
+
+
+def test_referee_calls_are_capped_and_overlapping_windows_are_not_checked():
+    cands = _ranked(3) + [HotspotWindow("dup", 10.0, 0.0, 400.0, None, 0.995, "mean_p_tumor", 0.9)]
+    calls = []
+    selected, _ = select_verified_hotspots(cands, 10, 400.0, 0.0, lambda c: calls.append(c.id) or True, 2)
+    assert calls == ["c0", "c1"]  # "dup" overlaps c0; the cap stops after two calls
+    assert [s.candidate_id for s in selected] == ["c0", "c1"]
+
+
+def test_unverified_windows_are_used_only_without_any_verdict():
+    selected, _ = select_verified_hotspots(_ranked(3), 3, 400.0, 0.0, lambda c: None, 20)
+    assert [s.candidate_id for s in selected] == ["c0", "c1", "c2"]
+    verdicts = {"c0": None, "c1": False, "c2": None}
+    selected, _ = select_verified_hotspots(_ranked(3), 3, 400.0, 0.0, lambda c: verdicts[c.id], 20)
+    assert selected == []
