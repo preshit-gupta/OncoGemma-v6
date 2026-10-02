@@ -1,0 +1,46 @@
+# Tumour-head training (SPEC-05 §4; WP-6.2). Decision D20: TCGA-BRCA only, so the tile labels
+# come from BCSS (expert ROI masks on TCGA-BRCA slides) and BCNB is deferred.
+schema_version: 1
+
+# Head label space (SPEC-05 §4.1), in column order. The positive class is S3-F1's and the tumour mask's.
+classes: [invasive_tumor, in_situ, benign_epithelium, stroma, inflammatory, necrosis, adipose_background]
+positive_class: invasive_tumor
+
+# BCSS ground-truth codes (eval/datasets/config.yaml bcss.class_map) -> head class.
+# SPEC-05 §4.1 says to verify this map. Checked against meta/gtruth_codes.tsv on 2026-10-02.
+# - Codes listed under not_annotated count as no annotation (BCSS: 0 is "don't care").
+# - Annotated codes the spec does not map (unmapped) still count as annotated area, but a tile
+#   whose majority is one of them is excluded: we don't guess a class for it.
+bcss_class_map:
+  tumor: invasive_tumor
+  dcis: in_situ
+  normal_acinus_or_duct: benign_epithelium
+  stroma: stroma
+  lymphocytic_infiltrate: inflammatory
+  plasma_cells: inflammatory
+  other_immune_infiltrate: inflammatory
+  necrosis_or_debris: necrosis
+  fat: adipose_background
+  blood: adipose_background
+  other: adipose_background
+  undetermined: adipose_background
+bcss_not_annotated: [outside_roi, exclude]
+# Unmapped (annotated, no head class): glandular_secretions, metaplasia_NOS, mucoid_material,
+# lymphatics, nerve, skin_adnexa, blood_vessel, angioinvasion.
+
+# Tile labelling rule (SPEC-05 §4.1): the annotated area is at least min_annotated_fraction of the
+# tile, and its majority class covers at least min_majority_fraction of the annotated area.
+tile_rule:
+  min_annotated_fraction: 0.5
+  min_majority_fraction: 0.5
+
+# Model selection (SPEC-05 §4.2).
+model:
+  c_grid: [0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0]
+  cv_folds: 5 # GroupKFold on patients within train
+  max_iter: 5000
+  tol: 1.0e-10 # tight, so the same data and seed give the same coefficients (AC7)
+  binary_weights: [0.0, 0.5] # ensemble weight of the binary head; 0 is the multinomial head alone
+  smoothing_sigma_tiles: [null, 1.0] # spatial smoothing ablation on the tile grid
+  bootstrap_resamples: 2000
+  seed: 20260928

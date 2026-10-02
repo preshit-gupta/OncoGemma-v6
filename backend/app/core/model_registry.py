@@ -168,10 +168,13 @@ class ModelRegistry(StrictModel):
         for key, entry in self.models.items():
             contract = getattr(entry, "input", None)
             if isinstance(contract, FeatureInputContract):
+                # Features are an embedding, or a classifier's probabilities (the calibrator over
+                # the tumour head, SPEC-05 §4.2). A model never consumes its own output.
                 upstream = self.models.get(contract.features)
-                if upstream is None or upstream.kind != "embedding":
+                if upstream is None or upstream.kind not in ("embedding", "classifier") or contract.features == key:
                     raise ValueError(
-                        f"models.{key}.input.features must name an embedding model, got {contract.features!r}"
+                        f"models.{key}.input.features must name an embedding model or another classifier, "
+                        f"got {contract.features!r}"
                     )
         return self
 
