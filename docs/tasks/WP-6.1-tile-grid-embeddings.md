@@ -24,7 +24,7 @@ This WP replaces the v5 "Smart Scout" sampler (2,048-patch budget, 80% by thumbn
 - `backend/worker/triage.py`.
 - `backend/app/core/pipeline_config.py` (triage and specimen-profile models only).
 - `configs/triage.yaml`, `configs/specimen_profiles.yaml`, `configs/models.yaml` (`path_foundation.input.color`).
-- Tests: create `backend/tests/pipeline/test_tile_grid.py`, `backend/tests/pipeline/test_tile_embeddings.py`. Edit `backend/tests/test_triage_worker.py`, the triage tests in `backend/tests/test_read_sites_workers.py`, and the triage seed helpers of other tests only to give seeded slides a checksum and to clear the embedding cache where a test is about the gateway cache. Delete `backend/tests/test_batch10_triage_hybrid.py`, which re-implements the deleted sampler inline and imports no production code.
+- Tests: create `backend/tests/pipeline/test_tile_grid.py`, `backend/tests/pipeline/test_tile_embeddings.py`. Edit `backend/tests/test_triage_worker.py`, the triage tests in `backend/tests/test_read_sites_workers.py`, the `path_foundation` test images in `backend/tests/inference/test_gateway.py` (now normalised), and the triage seed helpers of other tests only to give seeded slides a checksum and to clear the embedding cache where a test is about the gateway cache. Delete `backend/tests/test_batch10_triage_hybrid.py`, which re-implements the deleted sampler inline and imports no production code.
 - `docs/tasks/WP-6.1-tile-grid-embeddings.md` (this card), `docs/STATUS.md`.
 
 ## Tasks

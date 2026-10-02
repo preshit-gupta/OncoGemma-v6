@@ -271,7 +271,7 @@ def test_batch_limits_are_enforced():
     limits = RequestLimits(max_batch=2, max_request_bytes=10_000, qps=1.0, deadline_s=5.0, max_attempts=2)
     config = with_entry(get_pipeline_config(), "path_foundation", limits=limits)
     gateway = make_gateway(config, {"vertex_endpoint_raw_predict": FakeAdapter()})
-    tiles = tuple(png_image((224, 224), 1.0) for _ in range(3))
+    tiles = tuple(png_image((224, 224), 1.0, color="normalized") for _ in range(3))  # path_foundation takes normalised tiles
     batch = EntityRef(EntityType.TILE_BATCH, "tb_0001", ids=("t_1", "t_2", "t_3"))
     with pytest.raises(InputContractError, match="3 images exceed max_batch 2"):
         gateway.invoke(Task.PF_EMBED, "path_foundation", ModelInputs(images=tiles), decision_context(), batch, EmbeddingBatch)
@@ -630,7 +630,7 @@ def test_records_are_unique_per_attempt():
 def test_request_size_limit_counts_base64_bytes():
     import math
 
-    image = png_image((224, 224), 1.0)
+    image = png_image((224, 224), 1.0, color="normalized")
     encoded = 4 * math.ceil(len(image.data) / 3)
     limits = RequestLimits(max_batch=6, max_request_bytes=2 * encoded - 1, qps=1.0, deadline_s=5.0, max_attempts=2)
     config = with_entry(get_pipeline_config(), "path_foundation", limits=limits)
