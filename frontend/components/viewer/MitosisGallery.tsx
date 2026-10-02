@@ -252,13 +252,13 @@ export function MitosisGallery({
                       <span>
                         {L.field.detectorProb}:{" "}
                         <strong className="text-slate-300">
-                          {cand.p_a !== null ? cand.p_a.toFixed(2) : "—"}
+                          {cand.p_a != null ? cand.p_a.toFixed(2) : "—"}
                         </strong>
                       </span>
                       <span>
                         {L.field.classifierProb}:{" "}
                         <strong className="text-slate-300">
-                          {cand.p_b !== null ? cand.p_b.toFixed(2) : "—"}
+                          {cand.p_b != null ? cand.p_b.toFixed(2) : "—"}
                         </strong>
                       </span>
                       <span className="text-slate-500">[{cand.decision_path}]</span>

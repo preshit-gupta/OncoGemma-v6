@@ -484,13 +484,13 @@ export function MitosisViewer({
                 <div className="bg-slate-950 p-2 rounded border border-slate-800">
                   <div className="text-[10px] text-slate-400">{L.field.detectorProb}</div>
                   <div className="text-sm font-bold text-slate-200">
-                    {selectedCandidate.p_a !== null ? selectedCandidate.p_a.toFixed(2) : "—"}
+                    {selectedCandidate.p_a != null ? selectedCandidate.p_a.toFixed(2) : "—"}
                   </div>
                 </div>
                 <div className="bg-slate-950 p-2 rounded border border-slate-800">
                   <div className="text-[10px] text-slate-400">{L.field.classifierProb}</div>
                   <div className="text-sm font-bold text-slate-200">
-                    {selectedCandidate.p_b !== null ? selectedCandidate.p_b.toFixed(2) : "—"}
+                    {selectedCandidate.p_b != null ? selectedCandidate.p_b.toFixed(2) : "—"}
                   </div>
                 </div>
               </div>
