@@ -351,6 +351,21 @@ def write_artifacts(out: Path, version: str, result: dict, meta: dict) -> dict:
     return hashes
 
 
+def locked_splits(frame: pd.DataFrame, splits_path: Path, lock_path: Path, root: Path) -> pd.Series:
+    """Each tile's split from the BCSS split file, after the lock check (SPEC-02 §5.2). Unassigned slides raise."""
+    from eval.splits import LockMismatchError, verify_lock
+
+    verify_lock(lock_path, root)
+    locked = json.loads(Path(lock_path).read_text())
+    if Path(splits_path).resolve() not in {(Path(root) / rel).resolve() for rel in locked}:
+        raise LockMismatchError(f"{splits_path} is not listed in {lock_path}")
+    split_of = pd.read_parquet(splits_path).set_index("slide_id")["split"]
+    missing = sorted(set(frame["slide_id"]) - set(split_of.index))
+    if missing:
+        raise KeyError(f"slides without a locked split: {missing}")
+    return frame["slide_id"].map(split_of)
+
+
 def run(args) -> int:
     import pyarrow.parquet as pq
 
@@ -363,6 +378,7 @@ def run(args) -> int:
     x = np.asarray(table.column("emb").combine_chunks().flatten().to_numpy(zero_copy_only=False), dtype=np.float32)
     frame = table.drop(["emb"]).to_pandas()
     x = x.reshape(len(frame), -1)
+    frame["split"] = locked_splits(frame, args.splits, args.splits_lock, args.splits_root)
     dataset_sha = hashlib.sha256(Path(args.dataset).read_bytes()).hexdigest()
     probe = joblib.load(args.v5_probe) if args.v5_probe else None
 
@@ -374,6 +390,7 @@ def run(args) -> int:
         "train_snapshot_id": f"bcss_tiles@{dataset_sha[:12]}",  # SPEC-09 snapshots do not exist yet: the dataset hash stands in
         "dataset_sha256": dataset_sha,
         "splits_lock_sha256": hashlib.sha256(Path(args.splits_lock).read_bytes()).hexdigest(),
+        "splits_file_sha256": hashlib.sha256(Path(args.splits).read_bytes()).hexdigest(),
         "seed": settings.seed,
         "config": config,
         "data": json.loads(Path(args.dataset_meta).read_text()) if args.dataset_meta else None,

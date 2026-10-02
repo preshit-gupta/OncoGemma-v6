@@ -11,7 +11,8 @@ For each BCSS ROI (decision D20):
    makes no endpoint calls;
 4. the tile's v5 stain darkness (``od_sum``) is kept for the ``od_fusion_v5`` ablation row.
 
-The split of every tile is its patient's split from ``eval/splits/bcss.parquet`` (SPLITS.lock).
+The dataset carries no split: training joins each slide's split from the locked
+``eval/splits/bcss.parquet``, so a split can never go stale inside the dataset.
 """
 from __future__ import annotations
 
@@ -33,7 +34,7 @@ from training.tumor_head.labels import LabelSpace, label_roi_tiles
 Image.MAX_IMAGE_PIXELS = None
 MPP_FIELD = re.compile(r"\|\s*MPP\s*=\s*([0-9.]+)")
 TILE_COLUMNS = [
-    "slide_id", "patient_id", "file_id", "split", "i", "j", "x_um", "y_um", "label",
+    "slide_id", "patient_id", "file_id", "i", "j", "x_um", "y_um", "label",
     "annotated_fraction", "majority_fraction", "od_sum",
 ]
 
@@ -46,7 +47,6 @@ class SlideMppMissingError(ValueError):
 class RoiSource:
     slide_id: str
     patient_id: str
-    split: str
     file_id: str
     origin_px: tuple[int, int]
     size_px: tuple[int, int]
@@ -72,16 +72,13 @@ def tile_od_sum(rgb: np.ndarray) -> float:
     return float(np.maximum(0.0, -np.log10(np.clip(mean / 255.0, 1e-4, 1.0))).sum())
 
 
-def roi_sources(
-    roi_bounds: Path, masks_dir: Path, dx: pd.DataFrame, bcss_splits: pd.DataFrame, exclude: frozenset[str] = frozenset()
-) -> list[RoiSource]:
-    """Every ROI not in ``exclude``; each must have a mask, a GDC slide and a split, or this raises."""
+def roi_sources(roi_bounds: Path, masks_dir: Path, dx: pd.DataFrame, exclude: frozenset[str] = frozenset()) -> list[RoiSource]:
+    """Every ROI not in ``exclude``; each must have a mask and a GDC slide, or this raises."""
     from eval.make_splits import short_barcode
 
     bounds = pd.read_csv(roi_bounds, index_col=0)
     hashes = json.loads((masks_dir / "SHA256.json").read_text())
     slide_files = {short_barcode(name): fid for name, fid in zip(dx["file_name"], dx["file_id"])}
-    split_of = bcss_splits.set_index("slide_id")["split"].to_dict()
     sources = []
     unknown = sorted(exclude - set(bounds.index))
     if unknown:
@@ -89,8 +86,6 @@ def roi_sources(
     for slide_id, row in bounds.iterrows():
         if slide_id in exclude:
             continue
-        if slide_id not in split_of:
-            raise KeyError(f"BCSS slide {slide_id} has no split in the BCSS split file")
         if slide_id not in slide_files:
             raise KeyError(f"BCSS slide {slide_id} has no open-access GDC diagnostic slide")
         mask_path = masks_dir / f"{slide_id}_xmin{row.xmin}_ymin{row.ymin}_base.png"
@@ -99,8 +94,7 @@ def roi_sources(
         if actual != expected:
             raise ValueError(f"{mask_path} has sha256 {actual}, SHA256.json records {expected}")
         sources.append(RoiSource(
-            slide_id=str(slide_id), patient_id=str(slide_id)[:12], split=str(split_of[slide_id]),
-            file_id=slide_files[slide_id], origin_px=(int(row.xmin), int(row.ymin)),
+            slide_id=str(slide_id), patient_id=str(slide_id)[:12], file_id=slide_files[slide_id], origin_px=(int(row.xmin), int(row.ymin)),
             size_px=(int(row.xmax - row.xmin), int(row.ymax - row.ymin)), mask_path=mask_path, mask_sha256=actual,
         ))
     return sources
@@ -141,7 +135,7 @@ class TileDatasetBuilder:
         mpp = slide_mpp_from_description(read_first_page_description(url))
         tiles = label_roi_tiles(mask, source.origin_px, (mpp, mpp), self.tile_um, self.code_names, self.space)
         summary = {
-            "slide_id": source.slide_id, "split": source.split, "file_id": source.file_id, "slide_mpp": mpp,
+            "slide_id": source.slide_id, "file_id": source.file_id, "slide_mpp": mpp,
             "mask_sha256": source.mask_sha256, "tiles_touched": len(tiles),
             "exclusions": {k: int(v) for k, v in tiles["exclusion"].value_counts().items() if k},
         }
@@ -173,7 +167,7 @@ class TileDatasetBuilder:
             reader.close()
         summary["tiles_sent"] = int(sent)
         labelled = labelled.assign(
-            slide_id=source.slide_id, patient_id=source.patient_id, file_id=source.file_id, split=source.split,
+            slide_id=source.slide_id, patient_id=source.patient_id, file_id=source.file_id,
             x_um=grid.x_um, y_um=grid.y_um, od_sum=od,
         )
         return labelled, np.stack(vectors).astype(np.float32), summary
@@ -217,14 +211,14 @@ def build(args) -> int:
     builder = TileDatasetBuilder(space, code_names, tile_um, embed_key, gateway, get_config_hash())
 
     excluded = frozenset(args.exclude or [])
-    sources = roi_sources(args.roi_bounds, args.masks, pd.read_parquet(args.dx), pd.read_parquet(args.splits), excluded)
+    sources = roi_sources(args.roi_bounds, args.masks, pd.read_parquet(args.dx), excluded)
     if args.limit:
         sources = sources[: args.limit]
     print(f"{len(sources)} ROIs; excluded {sorted(excluded)}", flush=True)
 
     def one(source):
         frame, emb, summary = builder.build_roi(source)
-        print(f"{source.slide_id} {source.split}: {summary['tiles_labelled']}/{summary['tiles_touched']} tiles", flush=True)
+        print(f"{source.slide_id}: {summary['tiles_labelled']}/{summary['tiles_touched']} tiles", flush=True)
         return frame, emb, summary
 
     with ThreadPoolExecutor(args.workers) as pool:
@@ -240,7 +234,6 @@ def build(args) -> int:
         "embedder": embed_key,
         "embedder_version": config.models.version_of(embed_key),
         "tile_um": tile_um,
-        "splits_file_sha256": sha256_file(args.splits),
         "excluded_slides": sorted(excluded),
         "rois": [r[2] for r in results],
     }
