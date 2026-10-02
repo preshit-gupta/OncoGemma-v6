@@ -20,7 +20,7 @@ from pipeline.hpf import (
     create_circular_disk_mask
 )
 from pipeline.tiles import extract_patch_from_pyramid
-from pipeline.probe import l2_normalize
+from pipeline.tumor_head import l2_normalize
 from app.core.config import settings
 from app.core.gcs import (
     generate_signed_upload_url,
@@ -250,16 +250,16 @@ def test_probe_runner_dimension_assertion():
         l2_normalize(np.zeros((384,), dtype=np.float32))
     assert "Embeddings must be a 2D array" in str(exc1.value)
 
-    entry = get_pipeline_config().models.models["triage_probe"]
+    entry = get_pipeline_config().models.models["tumor_head"]
     adapter = LocalSklearnAdapter()
 
     # Wrong feature dimension (512 instead of 384)
     with pytest.raises(CallRejected) as exc2:
-        adapter.call(entry, AdapterRequest("triage_probe", features=np.zeros((10, 512), dtype=np.float32)), 5.0)
+        adapter.call(entry, AdapterRequest("tumor_head", features=np.zeros((10, 512), dtype=np.float32)), 5.0)
     assert "expects 384 features, got 512" in str(exc2.value)
 
     # Correct dimension (384)
-    raw = adapter.call(entry, AdapterRequest("triage_probe", features=l2_normalize(np.ones((5, 384), dtype=np.float32))), 5.0)
+    raw = adapter.call(entry, AdapterRequest("tumor_head", features=l2_normalize(np.ones((5, 384), dtype=np.float32))), 5.0)
     probas = raw.data["probabilities"]
     assert len(probas) == 5
     assert all(0.0 <= p <= 1.0 for row in probas for p in row)

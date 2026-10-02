@@ -6,7 +6,6 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 import pytest
-
 from training.tumor_head.dataset import (
     SlideMppMissingError,
     roi_sources,

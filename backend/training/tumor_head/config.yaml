@@ -36,7 +36,7 @@ tile_rule:
 
 # Model selection (SPEC-05 §4.2).
 model:
-  c_grid: [0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0]
+  c_grid: [0.0003, 0.001, 0.003, 0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0] # wide enough that the CV optimum is inside it
   cv_folds: 5 # GroupKFold on patients within train
   max_iter: 5000
   tol: 1.0e-10 # tight, so the same data and seed give the same coefficients (AC7)
@@ -44,3 +44,7 @@ model:
   smoothing_sigma_tiles: [null, 1.0] # spatial smoothing ablation on the tile grid
   bootstrap_resamples: 2000
   seed: 20260928
+  # The head is fitted on the classes with at least this many train tiles (owner decision 2026-10-02:
+  # BCSS gives 0 benign-epithelium and 1 in-situ tile at 224 µm). The others stay negatives for the
+  # invasive-tumour objective and are listed in the model card.
+  min_train_tiles: 20

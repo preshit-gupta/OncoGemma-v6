@@ -5,7 +5,6 @@ import joblib
 import numpy as np
 import pandas as pd
 import pytest
-
 from pipeline.tumor_head import IsotonicCalibrator, TumorHeadModel
 from training.tumor_head.train import (
     FitSettings,
@@ -20,7 +19,8 @@ from training.tumor_head.train import (
 
 CLASSES = ("invasive_tumor", "in_situ", "benign_epithelium", "stroma", "inflammatory", "necrosis", "adipose_background")
 SETTINGS = FitSettings(c_grid=(0.1, 1.0), cv_folds=3, max_iter=5000, tol=1e-10, binary_weights=(0.0, 0.5),
-                       smoothing_sigma_tiles=(None, 1.0), bootstrap_resamples=200, seed=7)
+                       smoothing_sigma_tiles=(None, 1.0), bootstrap_resamples=200, seed=7,
+                       min_train_tiles=5)
 
 
 def synthetic(n_patients=18, tiles_per_patient=30, dim=24, seed=0, noise=2.0):
@@ -45,7 +45,7 @@ def fitted():
 
 
 def test_head_outputs_distributions_over_the_seven_classes(fitted):
-    frame, x, result = fitted
+    _, x, result = fitted
     p = result["model"].predict_proba(x)
     assert p.shape == (len(x), 7)
     np.testing.assert_allclose(p.sum(axis=1), 1.0, atol=1e-9)
@@ -85,10 +85,23 @@ def test_v5_fusion_row_is_reported_when_the_probe_is_given(tmp_path):
     assert {"tau", "val_f1", "delta_head_minus_v5", "head_beats_v5"} <= set(row)
 
 
-def test_missing_train_class_raises():
+def test_rare_classes_leave_the_head_but_stay_negatives():
     frame, x = synthetic()
-    keep = ~((frame["split"] == "train") & (frame["label"] == "necrosis")).to_numpy()
-    with pytest.raises(ValueError, match="no train tile"):
+    rare = (frame["split"] == "train") & (frame["label"] == "necrosis")
+    keep = ~rare.to_numpy() | ((rare.cumsum() == 1) & rare).to_numpy()  # one necrosis train tile survives
+    frame, x = frame[keep].reset_index(drop=True), x[keep]
+    result = train(frame, x, CLASSES, "invasive_tumor", SETTINGS)
+    report = result["report"]
+    assert "necrosis" not in report["head_classes"] and list(result["model"].classes_) == report["head_classes"]
+    assert report["classes_not_in_head"]["train_tiles"] == {"necrosis": 1}
+    va = (frame["split"] == "val").to_numpy()
+    assert report["val"]["n_tiles"] == int(va.sum())  # necrosis val tiles still scored, as negatives
+
+
+def test_the_positive_class_must_be_in_the_head():
+    frame, x = synthetic()
+    keep = ~((frame["split"] == "train") & (frame["label"] == "invasive_tumor")).to_numpy()
+    with pytest.raises(ValueError, match="positive class"):
         train(frame[keep].reset_index(drop=True), x[keep], CLASSES, "invasive_tumor", SETTINGS)
 
 

@@ -170,8 +170,9 @@ def test_triage_tiles_are_the_tissue_tiles_of_the_registered_mask(triage_db, mon
     mask = TissueMask(cells, 8.0)
     save_tissue_mask(stage.case_id, mask)
     cfg = get_pipeline_config().triage
-    expected = list(mask.tiles(cfg.patch_size_px * cfg.mpp_target, cfg.tissue_threshold_pct))
-    assert expected and len(expected) < len(list(TissueMask(np.ones_like(cells), 8.0).tiles(224.0, cfg.tissue_threshold_pct)))
+    min_fraction = get_pipeline_config().specimen_profiles.for_type(triage_db.get(Case, stage.case_id).specimen_type).triage.min_tissue_fraction
+    expected = list(mask.tiles(cfg.patch_size_px * cfg.mpp_target, min_fraction))
+    assert expected and len(expected) < len(list(TissueMask(np.ones_like(cells), 8.0).tiles(224.0, min_fraction)))
 
     pf = FakeAdapter(then=triage_t.embed)
     run_triage(stage, triage_db, make_runtime(stage, triage_t.adapters(pf=pf)))

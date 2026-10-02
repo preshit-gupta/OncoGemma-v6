@@ -1,2 +1,4 @@
 # Committed splits are hashed (SPLITS.lock, run records, model cards): never convert line endings.
 backend/eval/splits/** -text
+# Model artefacts are pinned by SHA-256 (configs/models.yaml, model cards).
+models/** -text

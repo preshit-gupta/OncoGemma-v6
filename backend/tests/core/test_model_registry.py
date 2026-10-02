@@ -22,10 +22,11 @@ def registry():
 def test_repo_registry_entries():
     reg = registry()
     assert set(reg.models) == {
-        "path_foundation", "triage_probe", "kongnet_det_midog_1", "gemini_referee", "gemini_labeler", "medgemma"
+        "path_foundation", "tumor_head", "tumor_head_calibrator", "kongnet_det_midog_1", "gemini_referee",
+        "gemini_labeler", "medgemma",
     }
     assert isinstance(reg.models["path_foundation"], VertexEndpointModel)
-    assert isinstance(reg.models["triage_probe"], LocalArtifactModel)
+    assert isinstance(reg.models["tumor_head"], LocalArtifactModel)
     assert isinstance(reg.models["gemini_referee"], VertexGenAIModel)
     assert set(reg.heuristics) == {"od_hyperchromatic_sweep", "morph_verifier"}
 
@@ -36,7 +37,8 @@ def test_input_contracts_match_the_models_the_pipeline_calls():
     det = reg.models["kongnet_det_midog_1"].input
     assert isinstance(pf, ImageInputContract) and (pf.mpp, pf.size_px) == (1.0, [224, 224])
     assert isinstance(det, ImageInputContract) and (det.mpp, det.size_px) == (0.25, [512, 512])
-    assert reg.models["triage_probe"].input == FeatureInputContract(features="path_foundation")
+    assert reg.models["tumor_head"].input == FeatureInputContract(features="path_foundation")
+    assert reg.models["tumor_head_calibrator"].input == FeatureInputContract(features="tumor_head")
 
 
 def test_versions_come_from_the_registry_and_its_variables():
@@ -62,22 +64,29 @@ def test_startup_registry_resolves_settings():
     assert reg.models["path_foundation"].endpoint_id == settings.VERTEX_PATH_FOUNDATION_ENDPOINT_ID
 
 
-def test_probe_sha256_matches_the_artifact():
+@pytest.mark.parametrize("key", ["tumor_head", "tumor_head_calibrator"])
+def test_tumor_head_sha256_matches_the_artifact_and_its_card(key):
     import hashlib
+    import json
 
-    entry = registry().models["triage_probe"]
+    entry = registry().models[key]
     artifact = REPO_CONFIGS.parent / entry.artifact_uri
     assert hashlib.sha256(artifact.read_bytes()).hexdigest() == entry.artifact_sha256
+    card = json.loads((artifact.parent / "card.json").read_text(encoding="utf-8"))
+    assert card["artifacts_sha256"][artifact.name] == entry.artifact_sha256
+    assert entry.trained_on.splits_lock_sha256 == card["splits_lock_sha256"]
+    assert entry.trained_on.snapshot_id == card["train_snapshot_id"]
 
 
 @pytest.mark.parametrize(
     "edit, message",
     [
         (lambda m: m["models"]["medgemma"].update(provider="openai"), "provider"),
-        (lambda m: m["models"]["triage_probe"].update(artifact_sha256="abc"), "artifact_sha256"),
+        (lambda m: m["models"]["tumor_head"].update(artifact_sha256="abc"), "artifact_sha256"),
         (lambda m: m["models"]["path_foundation"]["input"].update(size_px=[224]), "size_px"),
         (lambda m: m["models"]["path_foundation"]["input"].update(color="rgb"), "color"),
-        (lambda m: m["models"]["triage_probe"]["input"].update(features="medgemma"), "embedding model"),
+        (lambda m: m["models"]["tumor_head"]["input"].update(features="medgemma"), "embedding model"),
+        (lambda m: m["models"]["tumor_head_calibrator"]["input"].update(features="tumor_head_calibrator"), "another classifier"),
         (lambda m: m["models"]["gemini_referee"]["params"].update(temperature=3.0), "temperature"),
         (lambda m: m.update(schema_version=2), "schema_version"),
         (lambda m: m["heuristics"].update(medgemma={"version": "x", "module": "pipeline.detect"}), "both a model and a heuristic"),

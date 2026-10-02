@@ -32,7 +32,6 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
-
 from pipeline.tumor_head import (
     IsotonicCalibrator,
     TumorHeadModel,
@@ -59,6 +58,7 @@ class FitSettings:
     smoothing_sigma_tiles: tuple[float | None, ...]
     bootstrap_resamples: int
     seed: int
+    min_train_tiles: int
 
     @classmethod
     def from_config(cls, config: dict) -> FitSettings:
@@ -67,7 +67,7 @@ class FitSettings:
             c_grid=tuple(float(c) for c in m["c_grid"]), cv_folds=int(m["cv_folds"]), max_iter=int(m["max_iter"]),
             tol=float(m["tol"]), binary_weights=tuple(float(w) for w in m["binary_weights"]),
             smoothing_sigma_tiles=tuple(None if s is None else float(s) for s in m["smoothing_sigma_tiles"]),
-            bootstrap_resamples=int(m["bootstrap_resamples"]), seed=int(m["seed"]),
+            bootstrap_resamples=int(m["bootstrap_resamples"]), seed=int(m["seed"]), min_train_tiles=int(m["min_train_tiles"]),
         )
 
 
@@ -218,29 +218,41 @@ def train(
     *,
     probe=None,
 ) -> dict:
-    """Fit, select and calibrate on train/val. Returns the chosen artefacts and every number the card records."""
-    y_all = frame["label"].map({c: k for k, c in enumerate(classes)}).to_numpy()
-    if np.any(pd.isna(y_all)):
-        raise ValueError(f"labels outside the head classes: {sorted(set(frame['label']) - set(classes))}")
-    y_all = y_all.astype(np.int64)
-    k_pos = classes.index(positive_class)
+    """Fit, select and calibrate on train/val. Returns the chosen artefacts and every number the card records.
+
+    The head's classes are the label-space classes with at least ``min_train_tiles`` train tiles
+    (owner decision 2026-10-02: BCSS has almost no DCIS or normal-duct tiles at 224 µm). Tiles of
+    the other classes are left out of the multinomial fit only: they stay negatives for the
+    binary head, the calibration, τ and every F1.
+    """
+    unknown = sorted(set(frame["label"]) - set(classes))
+    if unknown:
+        raise ValueError(f"labels outside the label space: {unknown}")
     tr = (frame["split"] == "train").to_numpy()
     va = (frame["split"] == "val").to_numpy()
     if not tr.any() or not va.any():
         raise ValueError("training needs train and val tiles")
-    absent = [classes[k] for k in range(len(classes)) if not np.any(y_all[tr] == k)]
-    if absent:
-        raise ValueError(f"classes with no train tile: {absent}")
+    train_counts = frame.loc[tr, "label"].value_counts()
+    head_classes = tuple(c for c in classes if train_counts.get(c, 0) >= settings.min_train_tiles)
+    dropped = {c: int(train_counts.get(c, 0)) for c in classes if c not in head_classes}
+    if positive_class not in head_classes:
+        raise ValueError(f"the positive class {positive_class!r} has {dropped.get(positive_class)} train tiles")
+    if len(head_classes) < 2:
+        raise ValueError(f"fewer than two classes have {settings.min_train_tiles} train tiles")
+    y_all = frame["label"].map({c: k for k, c in enumerate(head_classes)}).fillna(-1).to_numpy(np.int64)
+    k_pos = head_classes.index(positive_class)
+    in_head = y_all >= 0
 
     x_l2 = l2_normalize(x)
     groups = frame["patient_id"].to_numpy()
-    c_multi, cv_multi = choose_c(x_l2[tr], y_all[tr], groups[tr], len(classes), settings)
+    fit_multi = tr & in_head
+    c_multi, cv_multi = choose_c(x_l2[fit_multi], y_all[fit_multi], groups[fit_multi], len(head_classes), settings)
     y_bin = y_all == k_pos
     c_bin, cv_bin = choose_c(x_l2[tr], y_bin[tr].astype(np.int64), groups[tr], 2, settings)
     mean, scale = standardiser(x_l2[tr])
-    z_tr = (x_l2[tr] - mean) / scale
-    multinomial = _fit_logreg(z_tr, y_all[tr], c_multi, settings)
-    binary = _fit_logreg(z_tr, y_bin[tr].astype(np.int64), c_bin, settings)
+    multinomial = _fit_logreg((x_l2[fit_multi] - mean) / scale, y_all[fit_multi], c_multi, settings)
+    binary = _fit_logreg((x_l2[tr] - mean) / scale, y_bin[tr].astype(np.int64), c_bin, settings)
+    classes = head_classes
 
     yv = y_bin[va]
     candidates = []
@@ -290,8 +302,11 @@ def train(
         delta = paired_bootstrap_delta(pooled_f1, patient_units(val_frame, yv, p_v5 >= tau_v5), head_units, B=B, seed=seed)
         report["ablations"]["od_fusion_v5"] = {"tau": tau_v5, "val_f1": f1_v5, "delta_head_minus_v5": vars(delta),
                                                 "head_beats_v5": delta.low > 0}
+    report["head_classes"] = list(head_classes)
+    report["classes_not_in_head"] = {"train_tiles": dropped, "min_train_tiles": settings.min_train_tiles,
+                                     "use": "negatives for the binary head, calibration, tau and F1"}
     report["class_counts"] = {
-        split: {c: int(np.sum((frame["split"] == split).to_numpy() & (y_all == k))) for k, c in enumerate(classes)}
+        split: {str(c): int(n) for c, n in frame.loc[frame["split"] == split, "label"].value_counts().sort_index().items()}
         for split in ("train", "val", "test")
     }
     report["patients"] = {split: int(frame.loc[frame["split"] == split, "patient_id"].nunique()) for split in ("train", "val", "test")}
@@ -340,6 +355,7 @@ def write_artifacts(out: Path, version: str, result: dict, meta: dict) -> dict:
         "name": "tumor_head",
         "version": version,
         "spec": "SPEC-05 §4",
+        "label_space": meta.get("config", {}).get("classes"),
         "classes": list(model.classes_),
         "positive_class": model.positive_class,
         "artifacts_sha256": hashes,
@@ -392,6 +408,8 @@ def run(args) -> int:
         "splits_lock_sha256": hashlib.sha256(Path(args.splits_lock).read_bytes()).hexdigest(),
         "splits_file_sha256": hashlib.sha256(Path(args.splits).read_bytes()).hexdigest(),
         "seed": settings.seed,
+        # The v5 probe of the od_fusion_v5 row (deleted from models/ by SPEC-05 §4.2; in git history).
+        "v5_probe_sha256": hashlib.sha256(Path(args.v5_probe).read_bytes()).hexdigest() if args.v5_probe else None,
         "config": config,
         "data": json.loads(Path(args.dataset_meta).read_text()) if args.dataset_meta else None,
     }

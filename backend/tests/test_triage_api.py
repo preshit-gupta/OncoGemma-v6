@@ -61,8 +61,9 @@ def test_triage_api_workflow(client_and_db):
 
     mock_output = {
         "heatmap_png_uri": "/artifacts/heatmap.png",
-        "prob_grid_uri": "/artifacts/probs.npy",
-        "grid": {"origin_um": [0, 0], "stride_um": 224, "nx": 10, "ny": 10},
+        "heatmap": {"tile_um": 224.0, "origin_um": [0.0, 0.0], "nx": 10, "ny": 10, "head_version": "tumor_head@1.0.0",
+                    "value": "p_tumor_cal"},
+        "tumor_threshold": 0.5,
         "hotspots": [
             {
                 "id": "hs_01",
@@ -86,6 +87,10 @@ def test_triage_api_workflow(client_and_db):
         data = res_get.json()
         assert data["case_id"] == case_id
         assert len(data["machine_hotspots"]) == 1
+        # contracts/triage_v6.md Heatmap: the tile grid geometry plus a URL the viewer can load
+        assert data["heatmap"]["nx"] == 10 and data["heatmap"]["tile_um"] == 224.0
+        assert data["heatmap"]["png_url"].endswith(f"/{case_id}/heatmap") or data["heatmap"]["png_url"].endswith("/heatmap.png")
+        assert data["tumor_threshold"] == 0.5
 
         # 2. POST edits (add user hotspot & exclude hs_01)
         edits = [

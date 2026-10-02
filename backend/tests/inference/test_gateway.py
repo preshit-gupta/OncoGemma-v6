@@ -290,9 +290,9 @@ def test_feature_models_take_features_from_their_declared_producer():
         (ModelInputs(features=np.zeros((0, 384)), features_producer="path_foundation"), "non-empty"),
     ]:
         with pytest.raises(InputContractError, match=message):
-            gateway.invoke(Task.TUMOR_HEAD, "triage_probe", inputs, decision_context(), batch, ClassProbabilities)
+            gateway.invoke(Task.TUMOR_HEAD, "tumor_head", inputs, decision_context(), batch, ClassProbabilities)
     result = gateway.invoke(
-        Task.TUMOR_HEAD, "triage_probe", ModelInputs(features=features, features_producer="path_foundation"),
+        Task.TUMOR_HEAD, "tumor_head", ModelInputs(features=features, features_producer="path_foundation"),
         decision_context(), batch, ClassProbabilities,
     )
     assert result.output.column(1).tolist() == pytest.approx([0.1, 0.9])
@@ -558,7 +558,7 @@ def test_batch_records_list_their_entities_in_a_sidecar():
 
     batch = EntityRef(EntityType.TILE_BATCH, "tb_0001", ids=("t_0001", "t_0002"))
     gateway.invoke(
-        Task.TUMOR_HEAD, "triage_probe",
+        Task.TUMOR_HEAD, "tumor_head",
         ModelInputs(features=np.ones((2, 384), dtype=np.float32), features_producer="path_foundation"),
         decision_context(stage="triage"), batch, ClassProbabilities,
     )

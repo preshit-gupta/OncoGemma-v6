@@ -1,8 +1,13 @@
 """BCSS masks on the 224 µm tile grid (SPEC-05 §4.1; WP-6.2)."""
 import numpy as np
 import pytest
-
-from training.tumor_head.labels import UnknownMaskCodeError, group_table, label_roi_tiles, label_space, load_config
+from training.tumor_head.labels import (
+    UnknownMaskCodeError,
+    group_table,
+    label_roi_tiles,
+    label_space,
+    load_config,
+)
 
 CODES = {0: "outside_roi", 1: "tumor", 2: "stroma", 3: "lymphocytic_infiltrate", 7: "exclude", 9: "fat",
          13: "normal_acinus_or_duct", 16: "nerve", 20: "dcis", 4: "necrosis_or_debris", 6: "blood",

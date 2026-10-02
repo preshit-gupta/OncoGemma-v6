@@ -199,6 +199,7 @@ def build(args) -> int:
     from app.inference.gateway import ModelGateway
     from app.inference.records import DecisionLog
     from eval.datasets.base import load_config as load_dataset_config
+
     from training.tumor_head.labels import label_space, load_config
 
     space = label_space(load_config())
@@ -216,8 +217,24 @@ def build(args) -> int:
         sources = sources[: args.limit]
     print(f"{len(sources)} ROIs; excluded {sorted(excluded)}", flush=True)
 
+    done_dir = args.out / "rois"
+    done_dir.mkdir(parents=True, exist_ok=True)
+
     def one(source):
+        # Each finished ROI is kept, so a failure elsewhere does not cost the slide reads again.
+        stem = done_dir / source.slide_id
+        if stem.with_suffix(".json").is_file():
+            summary = json.loads(stem.with_suffix(".json").read_text())
+            if summary["mask_sha256"] == source.mask_sha256 and summary["config_hash"] == builder.config_hash:
+                frame = pd.read_parquet(stem.with_suffix(".parquet"))
+                emb = np.load(stem.with_suffix(".npy"))
+                print(f"{source.slide_id}: kept from an earlier run", flush=True)
+                return frame, emb, summary
         frame, emb, summary = builder.build_roi(source)
+        summary["config_hash"] = builder.config_hash
+        frame.to_parquet(stem.with_suffix(".parquet"), index=False)
+        np.save(stem.with_suffix(".npy"), emb)
+        stem.with_suffix(".json").write_text(json.dumps(summary))
         print(f"{source.slide_id}: {summary['tiles_labelled']}/{summary['tiles_touched']} tiles", flush=True)
         return frame, emb, summary
 

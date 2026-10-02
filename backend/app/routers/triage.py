@@ -230,7 +230,10 @@ def get_triage_data(case_id: str, db: Session = Depends(get_db), user: CurrentUs
 
     heatmap_url = f"/api/v1/stages/triage/{case_id}/heatmap"
     if settings.CDN_BASE_URL:
-        heatmap_url = f"{settings.CDN_BASE_URL.rstrip('/')}/cases/{case_id}/triage/heatmap_triage.png"
+        heatmap_url = f"{settings.CDN_BASE_URL.rstrip('/')}/cases/{case_id}/triage/heatmap.png"
+    # Tile-resolution heatmap geometry (SPEC-05 §4.3, contracts/triage_v6.md Heatmap).
+    heatmap_meta = machine_output.get("heatmap")
+    heatmap = None if heatmap_meta is None else {**heatmap_meta, "png_url": heatmap_url}
 
     # Ensure all effective hotspots have accessible thumbnail_url
     for hs in effective_hotspots:
@@ -246,8 +249,8 @@ def get_triage_data(case_id: str, db: Session = Depends(get_db), user: CurrentUs
         "status": stage_exec.status,
         "heatmap_png_uri": machine_output.get("heatmap_png_uri"),
         "heatmap_direct_url": heatmap_url,
-        "prob_grid_uri": machine_output.get("prob_grid_uri"),
-        "grid": machine_output.get("grid"),
+        "heatmap": heatmap,
+        "tumor_threshold": machine_output.get("tumor_threshold"),
         "machine_hotspots": machine_hotspots,
         "effective_hotspots": effective_hotspots,
         "review_edits": edits,
@@ -257,13 +260,7 @@ def get_triage_data(case_id: str, db: Session = Depends(get_db), user: CurrentUs
 
 @router.get("/{case_id}/heatmap")
 def get_triage_heatmap_image(case_id: str, db: Session = Depends(get_db), user: CurrentUser = Depends(require("case:read"))):
-    """Returns the Viridis heatmap PNG overlay directly from GCS."""
-    try:
-        hm_bytes = download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_id}/triage/heatmap_triage.png")
-        return Response(content=hm_bytes, media_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
-    except Exception:
-        pass
-
+    """Returns the tile-resolution heatmap PNG (SPEC-05 §4.3) directly from GCS."""
     try:
         hm_bytes = download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_id}/triage/heatmap.png")
         return Response(content=hm_bytes, media_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
