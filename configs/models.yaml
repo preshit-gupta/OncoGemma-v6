@@ -28,7 +28,8 @@ models:
     region: ${VERTEX_PATH_FOUNDATION_LOCATION}
     version: "models/5848531596314935296@1@2026-09-22"   # google_path-foundation
     requires_image: true
-    input: {mpp: 1.0, mpp_tolerance: 0.02, size_px: [224, 224], color: raw, format: png}
+    # Tiles are stain-normalised with the slide's persisted profile (owner decision, WP-6.1).
+    input: {mpp: 1.0, mpp_tolerance: 0.02, size_px: [224, 224], color: normalized, format: png}
     output_schema: EmbeddingBatch       # (N, 384) float32
     # v5 sent at most 6 images and 1.25 MB of base64 per request. qps is not enforced yet (SPEC-02 §6.2).
     limits: {max_batch: 6, max_request_bytes: 1250000, qps: 8.0, deadline_s: 60.0, max_attempts: 4}

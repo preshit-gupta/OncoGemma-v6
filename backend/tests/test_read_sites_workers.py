@@ -99,8 +99,32 @@ def test_triage_review_thumbnails_are_the_raw_region_through_the_persisted_profi
     assert blob_exists(settings.GCS_ARTIFACTS_BUCKET, f"cases/{stage.case_id}/triage/patches/{output['hotspots'][0]['id']}_thumb.png")
 
 
-def test_a_degenerate_stain_fit_leaves_no_normalised_thumbnail_and_says_so(triage_db, monkeypatch):
+def raw_embedder_config():
+    config = get_pipeline_config()
+    entry = config.models.models["path_foundation"]
+    raw = entry.model_copy(update={"input": entry.input.model_copy(update={"color": "raw"})})
+    return config.model_copy(update={"models": config.models.model_copy(update={"models": {**config.models.models, "path_foundation": raw}})})
+
+
+def test_a_normalised_tile_embedder_cannot_run_on_a_degenerate_fit(triage_db, monkeypatch):
     stage, slide, runtime = run_seeded_triage(triage_db, monkeypatch)
+    make_degenerate(triage_db, slide_id_of(stage, triage_db))
+    with pytest.raises(DegenerateStainProfileError, match="tile embedder"):
+        run_triage(stage, triage_db, runtime)
+
+
+def test_triage_tiles_are_embedded_in_the_normalised_colour_of_the_persisted_profile(triage_db, monkeypatch):
+    stage, slide, runtime = run_seeded_triage(triage_db, monkeypatch)
+    log = DecisionLog()
+    run_triage(stage, triage_db, make_runtime(stage, triage_t.adapters(), log=log))
+    profile_id = str(latest_stain_profile(triage_db, slide_id_of(stage, triage_db)).id)
+    specs = [s for r in log.pending() if r["task"] == "pf_embed" for s in r["input_spec"]["images"]]
+    assert specs and all(s["color"] == "normalized" and s["stain_profile_id"] == profile_id for s in specs)
+
+
+def test_a_degenerate_stain_fit_leaves_no_normalised_thumbnail_and_says_so(triage_db, monkeypatch):
+    # With a raw-colour embedder and referee, a slide whose colour cannot be normalised can still be triaged.
+    stage, slide, runtime = run_seeded_triage(triage_db, monkeypatch, config=raw_embedder_config())
     make_degenerate(triage_db, slide_id_of(stage, triage_db))
     run_triage(stage, triage_db, runtime)  # the tumour referee sees raw colour, so the stage can run
     output = triage_t.output_json(stage)

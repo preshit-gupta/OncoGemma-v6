@@ -1,15 +1,21 @@
 """Embeddings of the Stage 3 tile grid, through the model gateway, with a per-slide cache (SPEC-05 §3).
 
-The cache is one Parquet file per slide, embedder version and grid version::
+Tiles are read in the colour the embedder's input contract names. For ``normalized`` colour,
+the slide's persisted stain transform maps them to the reference stain first, so the embedding
+also depends on that mapping. The cache is one Parquet file per slide, embedder version, stain
+mapping and grid version::
 
-    embeddings/<slide_sha256>/<embedder version>/<grid version>.parquet
+    embeddings/<slide_sha256>/<embedder version>/<grid version>.parquet               (raw)
+    embeddings/<slide_sha256>/<embedder version>/stain_<sha256>/<grid version>.parquet (normalized)
 
-with columns ``i:int32, j:int32, x_um:float32, y_um:float32, tissue_fraction:float32,
-emb:fixed_size_list<float32, D>``. A tile's embedding depends only on the slide's pixels, the
-grid and the embedder, so the key is the slide checksum (not a case or slide id), and a grid that
-grows (a new tissue mask) embeds only the tiles the cache lacks. A cache that does not match what
+``stain_<sha256>`` hashes the transform's exact parameters (source and target stain vectors and
+maxima, od_beta), so a refitted profile or a new reference stain gets a new cache. The columns
+are ``i:int32, j:int32, x_um:float32, y_um:float32, tissue_fraction:float32,
+emb:fixed_size_list<float32, D>``. The key is the slide checksum (not a case or slide id), and
+a grid that grows (a new tissue mask) embeds only the tiles the cache lacks. A cache that does not match what
 the run expects raises EmbeddingCacheError; it is never ignored or silently rebuilt.
 """
+import hashlib
 import io
 import json
 import re
@@ -26,6 +32,7 @@ from app.inference.batching import plan_batches
 from app.inference.gateway import EntityRef, ImageInput, InputSpec, ModelGateway, ModelInputs
 from app.inference.outputs import EmbeddingBatch
 from pipeline.slide_io import SlideReader, read_region_at_mpp
+from pipeline.stain import StainTransform
 from pipeline.tile_grid import TileGrid
 
 CACHE_FORMAT = "tile_embeddings_v1"
@@ -52,12 +59,24 @@ class GridEmbeddings:
     tiles_sent: int  # ... of which the gateway did not serve from its own output cache
 
 
-def embedding_cache_path(slide_sha256: str | None, producer_version: str, grid_version: str) -> str:
+def stain_fingerprint(stain: StainTransform) -> str:
+    """SHA-256 of the transform's exact parameters: equal fingerprints map every pixel the same way."""
+    parameters = np.concatenate(
+        [stain.w_src.ravel(), stain.maxc_src.ravel(), stain.w_tgt.ravel(), stain.maxc_tgt.ravel(), [stain.od_beta]]
+    )
+    return hashlib.sha256(parameters.astype("<f8").tobytes()).hexdigest()
+
+
+def embedding_cache_path(
+    slide_sha256: str | None, producer_version: str, grid_version: str, stain_sha256: str | None = None
+) -> str:
+    """The cache file of raw tiles, or of tiles normalised by the stain transform with ``stain_sha256``."""
     if not slide_sha256 or not SHA256_HEX.match(slide_sha256):
         raise MissingChecksumError(
             f"the slide's checksum {slide_sha256!r} is not a SHA-256, so its tile embeddings have no cache key (ingest records it)"
         )
-    return f"embeddings/{slide_sha256}/{UNSAFE_PATH_CHARS.sub('_', producer_version)}/{grid_version}.parquet"
+    colour = "" if stain_sha256 is None else f"stain_{stain_sha256}/"
+    return f"embeddings/{slide_sha256}/{UNSAFE_PATH_CHARS.sub('_', producer_version)}/{colour}{grid_version}.parquet"
 
 
 def _schema(dim: int, metadata: dict) -> pa.Schema:
@@ -132,11 +151,13 @@ def read_cache_bytes(data: bytes, metadata: dict, tile_um: float) -> CachedRows:
     return CachedRows(i, j, table.column("tissue_fraction").to_numpy(), embeddings)
 
 
-def _png_input(rgb: np.ndarray, target_mpp: float, color: str) -> ImageInput:
+def _png_input(region) -> ImageInput:
     buffer = io.BytesIO()
-    Image.fromarray(rgb).save(buffer, "PNG")
-    height_px, width_px = rgb.shape[:2]
-    return ImageInput(buffer.getvalue(), InputSpec(mpp=target_mpp, size_px=(width_px, height_px), color=color, format="png"))
+    Image.fromarray(region.rgb).save(buffer, "PNG")
+    height_px, width_px = region.rgb.shape[:2]
+    profile_id = None if region.stain_profile_id is None else str(region.stain_profile_id)
+    spec = InputSpec(mpp=region.target_mpp, size_px=(width_px, height_px), color=region.color, format="png", stain_profile_id=profile_id)
+    return ImageInput(buffer.getvalue(), spec)
 
 
 def embed_tile_grid(
@@ -147,9 +168,12 @@ def embed_tile_grid(
     producer_id: str,
     gateway: ModelGateway,
     ctx: DecisionContext,
+    stain: StainTransform | None = None,
 ) -> GridEmbeddings:
     """Embeddings of every tile of ``grid``: from the cache, and through the gateway for the rest.
 
+    ``stain`` is the slide's persisted stain transform; an embedder that takes ``normalized``
+    colour needs it, and one that takes ``raw`` colour must not be given one.
     Tiles are read at the embedder's input contract and sent in batches within its request
     limits, one DecisionRecord per batch. At most ``max_batch`` tiles are held in memory at a
     time. The merged cache is written only after every batch succeeded.
@@ -160,11 +184,10 @@ def embed_tile_grid(
     size_w, size_h = contract.size_px
     if size_w != size_h:
         raise ValueError(f"{producer_id} takes {contract.size_px} px images; the tile grid needs square tiles")
-    if contract.color != "raw":
-        raise ValueError(
-            f"{producer_id} takes {contract.color} colour; the tile embedding cache is keyed for raw pixels only "
-            "(normalised tiles would need the stain profile in the key)"
-        )
+    if contract.color == "normalized" and stain is None:
+        raise ValueError(f"{producer_id} takes normalized colour, which needs the slide's stain transform")
+    if contract.color == "raw" and stain is not None:
+        raise ValueError(f"{producer_id} takes raw colour; a stain transform was given")
     if contract.format != "png":
         raise ValueError(f"{producer_id} takes {contract.format}; tiles are sent as lossless PNG")
     target_mpp = grid.tile_um / size_w
@@ -179,8 +202,9 @@ def embed_tile_grid(
         "mpp": target_mpp,
         "size_px": size_w,
         "color": contract.color,
+        "stain_sha256": None if stain is None else stain_fingerprint(stain),
     }
-    path = embedding_cache_path(slide_sha256, producer_version, grid.version)
+    path = embedding_cache_path(slide_sha256, producer_version, grid.version, metadata["stain_sha256"])
     blobs = gateway.blobs
 
     rows: dict[tuple[int, int], tuple[float, np.ndarray]] = {}
@@ -199,9 +223,10 @@ def embed_tile_grid(
         chunk = missing[start : start + limits.max_batch]
         images = [
             _png_input(
-                read_region_at_mpp(reader, float(grid.x_um[k]), float(grid.y_um[k]), grid.tile_um, grid.tile_um, target_mpp, color="raw").rgb,
-                target_mpp,
-                contract.color,
+                read_region_at_mpp(
+                    reader, float(grid.x_um[k]), float(grid.y_um[k]), grid.tile_um, grid.tile_um, target_mpp,
+                    color=contract.color, stain=stain,
+                )
             )
             for k in chunk
         ]

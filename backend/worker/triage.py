@@ -215,10 +215,20 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
         tile_ids = grid.tile_ids()
         print(f"[Triage Worker] {grid.n_tiles} tissue tiles of {tile_um:g} µm on a {grid.n_cols}x{grid.n_rows} grid")
 
+        # The persisted stain transform; None when the slide's fit is degenerate. A model that must see
+        # normalised colour cannot be run without it.
+        stain = _stain_transform(session, slide_obj.id, od_beta)
+        embed_color = registry.models[embed_key].input.color
+        if embed_color == "normalized" and stain is None:
+            raise DegenerateStainProfileError(
+                f"the tile embedder is configured for normalized colour but slide {slide_obj.id}'s stain fit is degenerate"
+            )
+
         # 3. Embed them through the gateway, in batches within the embedder's request limits,
         # reusing the slide's embedding cache.
         grid_embeddings = embed_tile_grid(
-            reader, grid, slide_sha256=slide_obj.checksum_sha256, producer_id=embed_key, gateway=gateway, ctx=ctx
+            reader, grid, slide_sha256=slide_obj.checksum_sha256, producer_id=embed_key, gateway=gateway, ctx=ctx,
+            stain=stain if embed_color == "normalized" else None,
         )
         embeddings = grid_embeddings.embeddings
         tiles_sent = grid_embeddings.tiles_sent
@@ -287,9 +297,6 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
 
         # VLM check of each candidate (SPEC-05 §5.4 arm). A failure fails the stage unless
         # configs/fallbacks.yaml allows it in a clinical run; then the candidate is unverified.
-        # The persisted stain transform; None when the slide's fit is degenerate. A model that must see
-        # normalised colour cannot be run without it.
-        stain = _stain_transform(session, slide_obj.id, od_beta)
         if referee_cfg.color == "normalized" and stain is None:
             raise DegenerateStainProfileError(
                 f"the tumour referee is configured for normalized colour but slide {slide_obj.id}'s stain fit is degenerate"
