@@ -495,6 +495,18 @@ class SpecimenTriageConfig(StrictModel):
     min_tissue_fraction: Fraction
 
 
+class HotspotsConfig(StrictModel):
+    """Stage 3 hotspot extraction and selection settings (SPEC-05 §5)."""
+
+    window_um: PositiveFloat
+    lattice_step_um: PositiveFloat
+    min_tissue_fraction: Fraction
+    min_tumor_fraction: Fraction
+    gap_um: NonNegativeFloat
+    k_max: PositiveInt
+    ranking_arm: Literal["H1", "H2", "H3"] = "H1"
+
+
 class SpecimenProfile(StrictModel):
     tissue_mask: TissueMaskConfig
     stain_fit: StainFitConfig
@@ -502,6 +514,7 @@ class SpecimenProfile(StrictModel):
     norm_pyramid: NormPyramidConfig
     qc: SpecimenQcConfig
     triage: SpecimenTriageConfig
+    hotspots: HotspotsConfig
 
 
 class SpecimenProfilesConfig(StrictModel):
@@ -785,6 +798,22 @@ class PipelineConfig(StrictModel):
             triage.tumor_referee.prompt in self.prompts,
             f"triage.yaml tumor_referee.prompt {triage.tumor_referee.prompt!r} is not in configs/prompts",
         )
+
+    def hotspot_gap_um(self, specimen_type: str | None) -> float:
+        """The gap between active hotspots (SPEC-05 §5.5) for a case's specimen type.
+
+        A case without a known specimen type is checked with the gap every profile shares;
+        when the profiles disagree, its specimen type is required (SpecimenTypeRequired).
+        """
+        if specimen_type in self.specimen_profiles.profiles:
+            return self.specimen_profiles.for_type(specimen_type).hotspots.gap_um
+        gaps = {profile.hotspots.gap_um for profile in self.specimen_profiles.profiles.values()}
+        if len(gaps) != 1:
+            raise SpecimenTypeRequired(
+                f"the case's specimen type is {specimen_type!r} and the hotspot gap differs between specimen types; "
+                "set it to resection or core_biopsy"
+            )
+        return gaps.pop()
 
     def config_hash(self) -> str:
         return hashlib.sha256(canonical_json(self.model_dump(mode="json")).encode("utf-8")).hexdigest()

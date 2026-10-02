@@ -111,3 +111,33 @@ def test_triage_api_workflow(client_and_db):
     # Verify DB hotspots records
     db_hotspots = db.query(Hotspot).filter(Hotspot.case_id == case_id).all()
     assert len(db_hotspots) == 2
+
+
+def test_triage_api_failed_stage_does_not_502(client_and_db):
+    client, db = client_and_db
+    case_id = "test_case_api_failed_stage"
+    exec_id = "00000000-0000-0000-0000-000000000002"
+
+    c = Case(id=case_id, created_by="test_user", status="failed")
+    se = StageExecution(
+        id=exec_id,
+        case_id=case_id,
+        stage="triage",
+        attempt=1,
+        status="failed",
+        input_ref={},
+        output_ref=None,
+    )
+    db.add(c)
+    db.add(se)
+    db.commit()
+
+    res_get = client.get(f"/api/v1/stages/triage/{case_id}")
+    assert res_get.status_code == 200
+    data = res_get.json()
+    assert data["case_id"] == case_id
+    assert data["status"] == "failed"
+    assert data["machine_hotspots"] == []
+    assert data["effective_hotspots"] == []
+    assert data["heatmap_direct_url"] is None
+

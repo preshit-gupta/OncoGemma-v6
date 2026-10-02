@@ -4,6 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 if sys.platform == "win32":
@@ -17,6 +18,7 @@ from app.auth.idempotency import IdempotentReplay, replay_response
 from app.auth.rate_limit import RateLimitMiddleware
 from app.auth.service import check_auth_settings
 from app.core.config import settings
+from app.core.geometry import HotspotOverlapError, PolygonValidationError
 from app.core.migrations import upgrade_to_head
 from app.core.soft_delete import reject_soft_deleted_case
 from app.core.pipeline_config import init_pipeline_config
@@ -124,6 +126,23 @@ def create_app(env: str | None = None) -> FastAPI:
         allow_headers=["*"],
     )
     application.add_exception_handler(IdempotentReplay, replay_response)
+
+    # Hotspot geometry errors answer with the triage contract's bodies (docs/contracts/triage_v6.md),
+    # plus the human-readable ``detail`` every other error carries.
+    async def _hotspot_overlap_handler(request, exc: HotspotOverlapError):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": "hotspot_overlap", "ids": exc.ids, "detail": exc.detail},
+        )
+
+    async def _polygon_validation_handler(request, exc: PolygonValidationError):
+        content = {"error": "invalid_polygon", "reason": exc.reason, "detail": exc.detail}
+        if exc.polygon_id is not None:
+            content["id"] = exc.polygon_id
+        return JSONResponse(status_code=exc.status_code, content=content)
+
+    application.add_exception_handler(HotspotOverlapError, _hotspot_overlap_handler)
+    application.add_exception_handler(PolygonValidationError, _polygon_validation_handler)
 
     # Soft-deleted cases answer 404 on every case-scoped route; audit history stays readable.
     case_scoped = [Depends(reject_soft_deleted_case)]
