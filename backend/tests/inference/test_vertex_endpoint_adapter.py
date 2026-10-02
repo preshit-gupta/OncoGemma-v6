@@ -18,6 +18,7 @@ from app.inference.adapters.base import (
     TransientCallError,
     Unavailable,
 )
+from app.inference import schemas
 from app.inference.adapters.vertex_endpoint import VertexEndpointAdapter
 
 
@@ -192,6 +193,51 @@ def test_medgemma_answer_is_also_read_from_a_plain_chat_completion_dict():
 def test_medgemma_malformed_responses_are_rejected(predictions, message):
     adapter, _ = adapter_for(FakeEndpoint(predict=predictions))
     with pytest.raises(CallRejected, match=message):
+        adapter.call(entry("medgemma"), medgemma_request(), 120.0)
+
+
+def test_medgemma_request_keeps_special_tokens():
+    """vLLM's default skip_special_tokens drops the thought delimiters and every newline."""
+    endpoint = FakeEndpoint(predict=chat_completion("{}"))
+    adapter, _ = adapter_for(endpoint)
+    adapter.call(entry("medgemma"), medgemma_request(), 120.0)
+    (instance,), _ = endpoint.predict_calls[0]
+    assert instance["skip_special_tokens"] is False
+
+
+# The shape of the live answer on 2026-10-02 (thought span, then a fenced JSON answer).
+THOUGHT = "<unused94>thought\nThe user wants me to analyze the image.\n\n1.  **Format:** a JSON object.<unused95>"
+ANSWER = '```json\n{\n  "tumor_present": false,\n  "lesion_type": "benign_stroma",\n  "rationale": "Stroma."\n}\n```'
+
+
+def test_medgemma_thought_span_is_removed_before_parsing():
+    adapter, _ = adapter_for(FakeEndpoint(predict=chat_completion(THOUGHT + ANSWER)))
+    raw = adapter.call(entry("medgemma"), medgemma_request(), 120.0)
+    assert raw.text == ANSWER
+    verdict = schemas.parse_json_strict(schemas.TumorVerdict, raw.text)
+    assert verdict.tumor_present is False and verdict.lesion_type == "benign_stroma"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "<unused94>thought\nstill thinking",  # never closed
+        "prose <unused95>" + ANSWER,  # no opening delimiter
+        THOUGHT + ANSWER + "<unused95>",  # a second delimiter
+        THOUGHT + "<unused94>thought\nagain<unused95>" + ANSWER,
+    ],
+)
+def test_medgemma_malformed_thought_span_is_rejected(content):
+    adapter, _ = adapter_for(FakeEndpoint(predict=chat_completion(content)))
+    with pytest.raises(CallRejected, match="malformed thought span"):
+        adapter.call(entry("medgemma"), medgemma_request(), 120.0)
+
+
+def test_medgemma_answer_cut_off_at_max_tokens_is_rejected():
+    predictions = chat_completion("<unused94>thought\nlong")
+    predictions[0][0]["finish_reason"] = "length"
+    adapter, _ = adapter_for(FakeEndpoint(predict=predictions))
+    with pytest.raises(CallRejected, match="cut off at max_tokens"):
         adapter.call(entry("medgemma"), medgemma_request(), 120.0)
 
 

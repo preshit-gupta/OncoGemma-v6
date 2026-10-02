@@ -90,7 +90,14 @@ class MedGemmaChatV1(_NoParameters):
     Verified against the deployed MedGemma 1.5 4B endpoint on 2026-09-28: images go in as
     ``image_url`` data URLs. Through ``Endpoint.predict`` the chat completion arrives as
     the list of its field values, so the ``choices`` list is found by its shape.
+
+    MedGemma 1.5 may think before it answers: ``<unused94>thought\\n…<unused95>answer``. vLLM's
+    default ``skip_special_tokens`` drops those delimiters and also Gemma's whitespace tokens
+    (every newline), so the request keeps special tokens and the codec removes the delimited
+    thought span (verified 2026-10-02). Only the answer reaches the strict parser.
     """
+
+    THOUGHT_START, THOUGHT_END = "<unused94>", "<unused95>"
 
     def instances(self, entry, request: AdapterRequest) -> list[dict[str, Any]]:
         if request.prompt is None:
@@ -100,7 +107,11 @@ class MedGemmaChatV1(_NoParameters):
             {"type": "image_url", "image_url": {"url": f"data:{image.mime_type};base64,{_b64(image.data)}"}}
             for image in request.images
         ]
-        instance = {"@requestFormat": "chatCompletions", "messages": [{"role": "user", "content": content}]}
+        instance = {
+            "@requestFormat": "chatCompletions",
+            "messages": [{"role": "user", "content": content}],
+            "skip_special_tokens": False,
+        }
         generation = dict(request.generation)
         instance["temperature"] = generation.pop("temperature")
         if "max_output_tokens" in generation:
@@ -125,10 +136,24 @@ class MedGemmaChatV1(_NoParameters):
         candidates = [value for value in candidates if self._is_choices(value)]
         if len(candidates) != 1 or len(candidates[0]) != 1:
             raise CallRejected(f"expected exactly one chat completion choice, got {candidates!r:.300}")
-        content = candidates[0][0]["message"].get("content")
+        choice = candidates[0][0]
+        content = choice["message"].get("content")
         if not isinstance(content, str):
             raise CallRejected(f"chat completion content is {type(content).__name__}, not text")
-        return RawResponse(text=content)
+        if choice.get("finish_reason") == "length":
+            raise CallRejected(f"the answer was cut off at max_tokens: {content!r:.300}")
+        return RawResponse(text=self._answer(content))
+
+    @classmethod
+    def _answer(cls, content: str) -> str:
+        """The text after the thought span; the content itself when the model did not think."""
+        if cls.THOUGHT_START not in content and cls.THOUGHT_END not in content:
+            return content
+        thought, closed, answer = content.partition(cls.THOUGHT_END)
+        if (not closed or not thought.lstrip().startswith(cls.THOUGHT_START)
+                or cls.THOUGHT_START in answer or cls.THOUGHT_END in answer):
+            raise CallRejected(f"malformed thought span in the answer: {content!r:.300}")
+        return answer
 
 
 def _image_sizes(request: AdapterRequest) -> list[tuple[int, int]]:
