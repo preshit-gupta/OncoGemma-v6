@@ -230,6 +230,9 @@ def get_mitosis_stage_data(case_id: str, db: Session = Depends(get_db), user: Cu
         scoring=get_pipeline_config().mitosis.scoring,
         hpfs=hpfs
     )
+    _add_v6_candidate_fields(case_id, candidates, hpfs)
+    summary["n_equivocal"] = sum(1 for c in candidates if c["final_decision"] == "equivocal" and c["review_label"] is None)
+    summary["flags"] = []
 
     slide_stmt = select(Slide).where(Slide.case_id == case_id).limit(1)
     slide_obj = db.scalars(slide_stmt).first()
@@ -253,6 +256,36 @@ def get_mitosis_stage_data(case_id: str, db: Session = Depends(get_db), user: Cu
         "reviewed_at": stage_exec.reviewed_at.isoformat() if stage_exec.reviewed_at else None,
         "reviewed_by": stage_exec.reviewed_by
     }
+
+
+def _add_v6_candidate_fields(case_id: str, candidates: list, hpfs: list) -> None:
+    """Adds the mitosis_v6 contract fields the UI reads (p_a, p_b, final_decision, ...).
+
+    The stored rows are still v5 (det_conf/ver_conf/label); v5 keys are kept.
+    An "unreviewed" model candidate is shown as equivocal so it lands in the review queue.
+    """
+    for c in candidates:
+        label = c.get("label")
+        human = str(c.get("label_source") or "").startswith("pathologist")
+        reviewed = label in ("mitosis", "not_mitosis")
+        in_hpf = any(
+            (c["centroid_um"][0] - h["center_um"][0]) ** 2 + (c["centroid_um"][1] - h["center_um"][1]) ** 2
+            <= float(h["radius_um"]) ** 2
+            for h in hpfs
+        )
+        crop = f"/api/v1/stages/mitosis/{case_id}/candidates/{c['id']}/crop"
+        c.update({
+            "p_a": c.get("det_conf"),
+            "p_b": c.get("ver_conf"),
+            "vlm": None,
+            "in_tumor": True,
+            "final_decision": label if reviewed else "equivocal",
+            "decision_path": "human" if human else "A",
+            "review_label": label if (reviewed and human) else None,
+            "counted": label == "mitosis" and in_hpf,
+            "crop_url": f"{crop}?stain=norm",
+            "context_url": f"{crop}?stain=orig",
+        })
 
 
 def get_cached_slide_path(raw_bucket_name: str, blob_name: str) -> str:
