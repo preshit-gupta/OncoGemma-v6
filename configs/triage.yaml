@@ -1,8 +1,7 @@
 # v4.2 Hotspot Triage Configuration
 mpp_target: 1.0 # 10x magnification (~1.0 µm/px)
-patch_size_px: 224 # 224x224 patch grid
-tissue_threshold_pct: 0.25 # Keep patch if >= 25% tissue mask coverage
-max_sample_patches: 2048 # High-resolution Smart Scout tissue sampling for Path Foundation (non-overlapping)
+patch_size_px: 224 # 224x224 tiles: the global grid of 224 µm tiles from the slide origin (SPEC-05 §3)
+tissue_threshold_pct: 0.25 # An overview heatmap cell is tissue if >= 25% of it is (tiles: specimen_profiles.yaml triage)
 
 # Registry keys (configs/models.yaml), which also hold versions, request limits and artifacts.
 embedding_model: path_foundation # 224x224 tile embeddings at 1.0 µm/px

@@ -28,6 +28,9 @@ models:
     region: ${VERTEX_PATH_FOUNDATION_LOCATION}
     version: "models/5848531596314935296@1@2026-09-22"   # google_path-foundation
     requires_image: true
+    # Raw scanner colour: Path Foundation was trained on unnormalised H&E (owner decision 2026-10-02).
+    # `normalized` is supported (tiles through the slide's stain transform, own cache per stain mapping)
+    # and can be switched on once WP-6.2 shows it helps S3-F1 on val.
     input: {mpp: 1.0, mpp_tolerance: 0.02, size_px: [224, 224], color: raw, format: png}
     output_schema: EmbeddingBatch       # (N, 384) float32
     # v5 sent at most 6 images and 1.25 MB of base64 per request. qps is not enforced yet (SPEC-02 §6.2).

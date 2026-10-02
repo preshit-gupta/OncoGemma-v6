@@ -31,9 +31,8 @@ from app.core.gcs import (
 from app.core.stain_profiles import usable_stain_transform
 from app.core.tasks import EntityType, Task
 from app.core.tissue_mask_store import load_tissue_mask
-from app.inference.batching import plan_batches
 from app.inference.gateway import EntityRef, FallbackResult, ImageInput, InputSpec, ModelInputs
-from app.inference.outputs import ClassProbabilities, EmbeddingBatch
+from app.inference.outputs import ClassProbabilities
 from app.inference.schemas import TumorVerdict
 from app.models.case import Case
 from app.models.slide import Slide
@@ -44,6 +43,8 @@ from pipeline.hotspots import extract_hotspots
 from pipeline.probe import l2_normalize
 from pipeline.slide_io import SlideReader, centered_origin_um, normalize_region, read_region_at_mpp, require_mpp
 from pipeline.stain import StainTransform
+from pipeline.tile_embeddings import embed_tile_grid
+from pipeline.tile_grid import tissue_tile_grid
 from worker.runtime import StageRuntime
 
 # Class label of "tumour" in the tumour classifier's predict_proba columns.
@@ -116,7 +117,7 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
     Triage stage worker handler execution:
     1. Loads the registered tissue mask and the slide's persisted stain profile.
     2. Downloads raw slide to transient temp file for high-res patch sampling.
-    3. Embeds tissue tiles and scores them with the tumour classifier (gateway).
+    3. Embeds every tissue tile of the global grid (cached per slide) and scores them with the tumour classifier (gateway).
     4. Has the configured VLM check hotspot candidates (gateway).
     5. Renders Viridis heatmap & extracts hotspot thumbnails.
     6. Uploads all triage outputs directly to GCS artifacts bucket.
@@ -154,7 +155,8 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
     height_px = int(slide_obj.height_px)
     width_um = width_px * float(slide_obj.mpp_x)
     height_um = height_px * float(slide_obj.mpp_y)
-    od_beta = config.specimen_profiles.for_type(session.get(Case, case_id).specimen_type).stain_fit.od_beta
+    profile = config.specimen_profiles.for_type(session.get(Case, case_id).specimen_type)
+    od_beta = profile.stain_fit.od_beta
     tissue = load_tissue_mask(case_id)
 
     # Issue #86: Define triage overview grid dimensions matching slide aspect ratio
@@ -206,80 +208,30 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
         p90 = float(np.percentile(stain_vals, 90))
         norm_cellularity = np.clip((stain_map - p10) / max(p90 - p10, 1e-4), 0.0, 1.0)
 
-        # 2. Smart Scout: High-resolution, cellularity-guided non-overlapping patch sampling
-        max_sample_patches = triage_cfg.max_sample_patches
+        # 2. Every tissue tile of the global grid from the slide origin (SPEC-05 §3). There is no
+        # sample cap, so every tissue tile gets a probability.
         tile_um = triage_cfg.patch_size_px * triage_cfg.mpp_target
+        grid = tissue_tile_grid(tissue, (width_um, height_um), tile_um, profile.triage.min_tissue_fraction)
+        tile_ids = grid.tile_ids()
+        print(f"[Triage Worker] {grid.n_tiles} tissue tiles of {tile_um:g} µm on a {grid.n_cols}x{grid.n_rows} grid")
 
-        # Strictly non-overlapping tiles of the registered grid that are tissue enough (exact mask area)
-        candidate_slots = []
-        for tile in tissue.tiles(tile_um, triage_cfg.tissue_threshold_pct):
-            cx_um = tile.x_um + tile_um / 2
-            cy_um = tile.y_um + tile_um / 2
-            ix = min(nx - 1, max(0, int(cx_um / stride_x_um)))
-            iy = min(ny - 1, max(0, int(cy_um / stride_y_um)))
-            candidate_slots.append({
-                "c": tile.col,
-                "r": tile.row,
-                "x_um": tile.x_um,
-                "y_um": tile.y_um,
-                "ix": ix,
-                "iy": iy,
-                "score": float(stain_map[iy, ix])
-            })
-
-        # Smart Scout Selection: Prioritize high-cellularity tumor nests while maintaining slide coverage
-        if len(candidate_slots) <= max_sample_patches:
-            selected_slots = candidate_slots
-        else:
-            candidate_slots.sort(key=lambda s: s["score"], reverse=True)
-            # 80% budget for highest cellularity (dense tumor/epithelial regions)
-            n_cellular = int(round(0.80 * max_sample_patches))
-            dense_slots = candidate_slots[:n_cellular]
-            dense_keys = set((s["c"], s["r"]) for s in dense_slots)
-
-            # 20% budget spread evenly across remaining tissue (stroma/margins/background)
-            remaining_slots = [s for s in candidate_slots if (s["c"], s["r"]) not in dense_keys]
-            n_context = max_sample_patches - len(dense_slots)
-            if remaining_slots and n_context > 0:
-                step_ctx = max(1, len(remaining_slots) // n_context)
-                context_slots = remaining_slots[::step_ctx][:n_context]
-            else:
-                context_slots = []
-
-            selected_slots = dense_slots + context_slots
-
-        if not selected_slots:
-            raise ValueError(f"No {tile_um:g} µm tissue tiles fit on slide {slide_obj.id}; nothing to embed.")
-        print(f"[Triage Smart Scout] Selected {len(selected_slots)} non-overlapping patches (from {len(candidate_slots)} tissue slots, max budget {max_sample_patches})")
-
-        # Extract strictly non-overlapping tiles
-        tile_ids = [f"t_{s['c']}_{s['r']}" for s in selected_slots]
-        sampled_cells = [(s["ix"], s["iy"]) for s in selected_slots]
-        tiles = [
-            _image_input(read_region_at_mpp(reader, s["x_um"], s["y_um"], tile_um, tile_um, triage_cfg.mpp_target))
-            for s in selected_slots
-        ]
-
-        # 3. Embed the tiles in batches within the embedding model's request limits
-        limits = registry.models[embed_key].limits
-        embeddings = []
-        tiles_sent = 0
-        for n_batch, batch in enumerate(plan_batches([len(t.data) for t in tiles], limits.max_batch, limits.max_request_bytes)):
-            result = gateway.invoke(
-                Task.PF_EMBED,
-                embed_key,
-                ModelInputs(images=tuple(tiles[i] for i in batch)),
-                ctx,
-                EntityRef(EntityType.TILE_BATCH, f"tb_{n_batch:04d}", ids=tuple(tile_ids[i] for i in batch)),
-                EmbeddingBatch,
+        # The persisted stain transform; None when the slide's fit is degenerate. A model that must see
+        # normalised colour cannot be run without it.
+        stain = _stain_transform(session, slide_obj.id, od_beta)
+        embed_color = registry.models[embed_key].input.color
+        if embed_color == "normalized" and stain is None:
+            raise DegenerateStainProfileError(
+                f"the tile embedder is configured for normalized colour but slide {slide_obj.id}'s stain fit is degenerate"
             )
-            batch_embeddings = result.output.as_array()
-            if batch_embeddings.shape[0] != len(batch):
-                raise ValueError(f"{embed_key} returned {batch_embeddings.shape[0]} embeddings for {len(batch)} tiles")
-            embeddings.append(batch_embeddings)
-            if not result.cache_hit:
-                tiles_sent += len(batch)
-        embeddings = np.vstack(embeddings)
+
+        # 3. Embed them through the gateway, in batches within the embedder's request limits,
+        # reusing the slide's embedding cache.
+        grid_embeddings = embed_tile_grid(
+            reader, grid, slide_sha256=slide_obj.checksum_sha256, producer_id=embed_key, gateway=gateway, ctx=ctx,
+            stain=stain if embed_color == "normalized" else None,
+        )
+        embeddings = grid_embeddings.embeddings
+        tiles_sent = grid_embeddings.tiles_sent
 
         # 4. Predict tumour probabilities with the registry's classifier over the embeddings
         scores = gateway.invoke(
@@ -293,11 +245,22 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
         raw_probs = scores.output.column(TUMOR_CLASS)
         print(f"[Triage Worker] Embeddings shape: {embeddings.shape}, Mean Tumor Prob: {float(np.mean(raw_probs)):.3f}")
 
+        # Each overview cell takes the mean probability of the tiles centred in it.
+        cell_ix = np.clip(((grid.x_um + tile_um / 2) / stride_x_um).astype(np.int64), 0, nx - 1)
+        cell_iy = np.clip(((grid.y_um + tile_um / 2) / stride_y_um).astype(np.int64), 0, ny - 1)
+        prob_sums = np.zeros((ny, nx))
+        tile_counts = np.zeros((ny, nx))
+        np.add.at(prob_sums, (cell_iy, cell_ix), raw_probs)
+        np.add.at(tile_counts, (cell_iy, cell_ix), 1)
+        sampled_iy, sampled_ix = np.nonzero(tile_counts)
+        sampled_cells = list(zip(sampled_ix.tolist(), sampled_iy.tolist()))
+        cell_probs = prob_sums[sampled_iy, sampled_ix] / tile_counts[sampled_iy, sampled_ix]
+
         # 5. Build 2D probability grid [ny, nx] by fusing probe predictions with cellularity and margin depth
         prob_grid = np.full((ny, nx), np.nan, dtype=np.float32)
 
         for k, (ix, iy) in enumerate(sampled_cells):
-            base_prob = float(raw_probs[k])
+            base_prob = float(cell_probs[k])
             cell_score = float(norm_cellularity[iy, ix])
             m_factor = float(margin_factor[iy, ix])
             fused_prob = (0.35 * base_prob + 0.65 * cell_score) * (0.40 + 0.60 * m_factor) * 1.25
@@ -315,7 +278,7 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
             weights = 1.0 / np.maximum(dists, 1.0)
             weights /= np.sum(weights, axis=1, keepdims=True)
             for idx, (ux, uy) in enumerate(unsampled_tissue):
-                interp_p = float(np.sum(weights[idx] * raw_probs[nn_indices[idx]]))
+                interp_p = float(np.sum(weights[idx] * cell_probs[nn_indices[idx]]))
                 cell_score = float(norm_cellularity[uy, ux])
                 m_factor = float(margin_factor[uy, ux])
                 fused_interp = (0.35 * interp_p + 0.65 * cell_score) * (0.40 + 0.60 * m_factor) * 1.25
@@ -334,9 +297,6 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
 
         # VLM check of each candidate (SPEC-05 §5.4 arm). A failure fails the stage unless
         # configs/fallbacks.yaml allows it in a clinical run; then the candidate is unverified.
-        # The persisted stain transform; None when the slide's fit is degenerate. A model that must see
-        # normalised colour cannot be run without it.
-        stain = _stain_transform(session, slide_obj.id, od_beta)
         if referee_cfg.color == "normalized" and stain is None:
             raise DegenerateStainProfileError(
                 f"the tumour referee is configured for normalized colour but slide {slide_obj.id}'s stain fit is degenerate"
@@ -479,6 +439,18 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
                 "stride_um": [float(stride_x_um), float(stride_y_um)],
                 "nx": nx,
                 "ny": ny
+            },
+            "tile_grid": {
+                "version": grid.version,
+                "tile_um": grid.tile_um,
+                "n_cols": grid.n_cols,
+                "n_rows": grid.n_rows,
+                "n_tiles": grid.n_tiles
+            },
+            "embedding_cache": {
+                "uri": f"gs://{settings.GCS_ARTIFACTS_BUCKET}/{grid_embeddings.cache_path}",
+                "tiles_cached": grid_embeddings.tiles_cached,
+                "tiles_embedded": grid_embeddings.tiles_embedded
             },
             "hotspots": hotspots,
             "stain_normalization": "unavailable" if stain is None else "available",

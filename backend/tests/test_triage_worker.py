@@ -47,6 +47,7 @@ def seed(db_session, **slide_overrides):
     slide_values = {
         "id": slide_id, "case_id": case_id, "gcs_uri_original": raw_uri,
         "mpp_x": MPP, "mpp_y": MPP, "width_px": WIDTH_PX, "height_px": HEIGHT_PX,
+        "checksum_sha256": hashlib.sha256(str(slide_id).encode()).hexdigest(),  # ingest records it
     }
     slide_values.update(slide_overrides)
     stage = StageExecution(
@@ -155,6 +156,9 @@ def test_second_run_is_served_from_the_gateway_cache(db_session, monkeypatch):
     pf, blobs = FakeAdapter(then=embed), InMemoryBlobStore()
     run_triage(stage, db_session, make_runtime(stage, adapters(pf=pf), blobs=blobs))
     calls_after_first = len(pf.calls)
+    # Without the tile-embedding cache, the tiles go back to the gateway, which answers from its own cache.
+    for path in [p for p in blobs.blobs if p.startswith("embeddings/")]:
+        del blobs.blobs[path]
 
     stage.status = "running"
     log = DecisionLog()
@@ -164,6 +168,48 @@ def test_second_run_is_served_from_the_gateway_cache(db_session, monkeypatch):
     embeds = [r for r in log.pending() if r["task"] == "pf_embed"]
     assert embeds and all(r["cache_hit"] for r in embeds)
     assert output_json(stage)["audit"]["endpoint_calls_made"] == 0
+
+
+def test_every_tissue_tile_is_embedded_and_a_rerun_reads_the_slide_embedding_cache(db_session, monkeypatch):
+    """SPEC-05 §3: the whole tissue grid, no cap; the cache is keyed by slide checksum, embedder and grid."""
+    stage, raw_uri = seed(db_session)
+    install_fake_slide(monkeypatch, FakeOpenSlide(WIDTH_PX, HEIGHT_PX), raw_uri)
+    pf, blobs = FakeAdapter(then=embed), InMemoryBlobStore()
+    run_triage(stage, db_session, make_runtime(stage, adapters(pf=pf), blobs=blobs))
+    first = output_json(stage)
+    n_tiles = first["tile_grid"]["n_tiles"]
+    sha = db_session.get(Slide, slide_id_of(stage)).checksum_sha256
+
+    assert first["tile_grid"]["version"] == "grid224_v1" and first["tile_grid"]["tile_um"] == 224.0
+    assert sum(len(request.images) for _, request, _ in pf.calls) == n_tiles
+    assert first["embedding_cache"]["tiles_embedded"] == n_tiles and first["embedding_cache"]["tiles_cached"] == 0
+    assert first["embedding_cache"]["uri"].endswith(f"embeddings/{sha}/models_5848531596314935296@1@2026-09-22/grid224_v1.parquet")
+
+    stage.status = "running"
+    log, calls_after_first = DecisionLog(), len(pf.calls)
+    run_triage(stage, db_session, make_runtime(stage, adapters(pf=pf), blobs=blobs, log=log))
+    second = output_json(stage)
+    assert len(pf.calls) == calls_after_first
+    assert not [r for r in log.pending() if r["task"] == "pf_embed"]
+    assert second["embedding_cache"]["tiles_cached"] == n_tiles and second["embedding_cache"]["tiles_embedded"] == 0
+    assert second["audit"]["endpoint_calls_made"] == 0
+    (head,) = [r for r in log.pending() if r["task"] == "tumor_head"]
+    assert head["input_spec"]["features"]["shape"] == [n_tiles, EMBEDDING_DIM]
+
+
+def test_a_slide_without_a_checksum_cannot_be_triaged(db_session, monkeypatch):
+    from pipeline.tile_embeddings import MissingChecksumError
+
+    stage, raw_uri = seed(db_session, checksum_sha256=None)
+    install_fake_slide(monkeypatch, FakeOpenSlide(WIDTH_PX, HEIGHT_PX), raw_uri)
+    pf = FakeAdapter(then=embed)
+    with pytest.raises(MissingChecksumError):
+        run_triage(stage, db_session, make_runtime(stage, adapters(pf=pf)))
+    assert pf.calls == []
+
+
+def slide_id_of(stage) -> str:
+    return stage.input_ref["slide_id"]
 
 
 def test_unreadable_slide_fails_instead_of_synthesising_tissue(db_session, monkeypatch):
