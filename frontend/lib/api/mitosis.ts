@@ -1,4 +1,4 @@
-import { apiFetch } from "@/lib/api/auth";
+import { apiFetch, idempotencyHeaders } from "@/lib/api/auth";
 import mockMitosisData from "@/lib/mock/mitosis.json";
 
 export interface VlmVerdict {
@@ -286,7 +286,7 @@ export async function confirmMitosis(
 
   const res = await apiFetch(`/api/v1/stages/mitosis/confirm`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { ...idempotencyHeaders(), "Content-Type": "application/json" },
     body: JSON.stringify({ case_id: caseId }),
   });
 

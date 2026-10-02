@@ -70,6 +70,11 @@ export function getAuthErrorMessage(errorCode: string | null | undefined): strin
   }
 }
 
+// Confirm and approve routes require an Idempotency-Key header (SPEC-03 §5.3.3); one fresh key per user action.
+export function idempotencyHeaders(): Record<string, string> {
+  return { "Idempotency-Key": crypto.randomUUID() };
+}
+
 export async function apiFetch(
   input: RequestInfo | URL,
   init?: RequestInit

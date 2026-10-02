@@ -107,7 +107,7 @@ models:
     region: ${VERTEX_MEDGEMMA_LOCATION}
     version: "models/885564806952648704@1@2026-09-22"    # google_medgemma-1_5-4b-it-l4
     requires_image: true
-    params: {temperature: 0.0, max_output_tokens: 512}
+    params: {temperature: 0.0, max_output_tokens: 1024}  # room for MedGemma 1.5's thought span (~400 tokens seen) and the answer
 
 # Non-learned v5 producers, kept only for ablation replays (SPEC-06 §6.2 A0). No stage calls them.
 heuristics:

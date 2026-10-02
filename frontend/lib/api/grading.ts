@@ -1,4 +1,4 @@
-import { apiFetch } from "@/lib/api/auth";
+import { apiFetch, idempotencyHeaders } from "@/lib/api/auth";
 import mockGradingData from "@/lib/mock/grading.json";
 
 export interface TubuleSample {
@@ -358,7 +358,7 @@ export async function confirmHistotype(payload: {
 
   const res = await apiFetch(`/api/v1/stages/grading/histotype/confirm`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { ...idempotencyHeaders(), "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
 
@@ -411,7 +411,7 @@ export async function confirmGrading(payload: {
 
   const res = await apiFetch(`/api/v1/stages/grading/confirm`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { ...idempotencyHeaders(), "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
 
