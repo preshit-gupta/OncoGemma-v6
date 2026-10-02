@@ -1,0 +1,2 @@
+# Committed splits are hashed (SPLITS.lock, run records, model cards): never convert line endings.
+backend/eval/splits/** -text
