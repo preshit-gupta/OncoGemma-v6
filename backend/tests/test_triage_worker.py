@@ -21,6 +21,7 @@ from app.inference.adapters.local_sklearn import LocalSklearnAdapter
 from app.inference.errors import ModelUnavailableError, SchemaInvalidError
 from app.inference.records import DecisionLog
 from app.models import Case, Slide, StageExecution
+from app.models.decision_record import DecisionRecord
 from pipeline.errors import SlideReadError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -363,3 +364,52 @@ def test_allowed_referee_outage_leaves_candidates_unverified(db_session, monkeyp
     assert hotspots and all(h["referee"]["tumor_present"] is None and h["referee"]["needs_human"] for h in hotspots)
     fallbacks = [r for r in log.pending() if r["producer_kind"] == "fallback"]
     assert fallbacks and {r["task"] for r in fallbacks} == {"tumor_referee"}
+
+
+def test_hotspots_are_ranked_lattice_windows_of_confirmed_candidates(db_session, monkeypatch):
+    """SPEC-05 §5.1-5.3 (WP-6.3): valid lattice windows the referee confirmed, ranked, flagged, recorded."""
+    stage, raw_uri = seed(db_session)
+    install_fake_slide(monkeypatch, FakeOpenSlide(WIDTH_PX, HEIGHT_PX), raw_uri)
+
+    run_triage(stage, db_session, make_runtime(stage, adapters()))
+
+    output = output_json(stage)
+    hotspots = output["hotspots"]
+    profile = get_pipeline_config().specimen_profiles.for_type(db_session.get(Case, stage.case_id).specimen_type)
+    w = profile.hotspots.window_um
+    assert hotspots and all(h["referee"]["tumor_present"] is True for h in hotspots)
+    assert [h["id"] for h in hotspots] == [f"hs_{n:02d}" for n in range(1, len(hotspots) + 1)]
+    assert [h["rank"] for h in hotspots] == list(range(1, len(hotspots) + 1))
+    scores = [h["rank_score"] for h in hotspots]
+    assert scores == sorted(scores, reverse=True)
+    for h in hotspots:
+        xs, ys = [p[0] for p in h["polygon_um"]], [p[1] for p in h["polygon_um"]]
+        assert h["polygon_um"][0] == h["polygon_um"][-1]
+        assert max(xs) - min(xs) == pytest.approx(w) and max(ys) - min(ys) == pytest.approx(w)
+        assert min(xs) >= 0.0 and min(ys) >= 0.0 and max(xs) <= WIDTH_PX * MPP and max(ys) <= HEIGHT_PX * MPP
+        assert h["window_um"] == w and h["score_kind"] == "mean_p_tumor" and h["rank_score"] == h["prob_mean"]
+        assert h["tumor_fraction"] >= profile.hotspots.min_tumor_fraction
+    centres = [((h["polygon_um"][0][0] + w / 2), (h["polygon_um"][0][1] + w / 2)) for h in hotspots]
+    assert all(max(abs(a[0] - b[0]), abs(a[1] - b[1])) >= w + profile.hotspots.gap_um
+               for n, a in enumerate(centres) for b in centres[n + 1:])
+    assert output["flags"] == ([] if len(hotspots) == profile.hotspots.k_max else ["hotspots_limited_by_tissue"])
+
+    record = db_session.query(DecisionRecord).filter_by(task="hotspot_select").one()
+    assert record.producer_kind == "heuristic"
+    assert record.output["hotspot_ids"] == [h["id"] for h in hotspots]
+    checked = record.input_spec["checked"]
+    assert 0 < len(checked) <= get_pipeline_config().triage.tumor_referee.candidates
+    assert [c["tumor_present"] for c in checked].count(True) == len(hotspots)
+
+
+def test_rejected_windows_are_never_selected(db_session, monkeypatch):
+    """SPEC-05 §5.3, §5.4 (WP-6.3): no padding with rejected windows; K = 0 is flagged."""
+    stage, raw_uri = seed(db_session)
+    install_fake_slide(monkeypatch, FakeOpenSlide(WIDTH_PX, HEIGHT_PX), raw_uri)
+    referee = FakeAdapter(then=json_text({"tumor_present": False, "lesion_type": "benign_stroma", "rationale": "fake"}))
+
+    run_triage(stage, db_session, make_runtime(stage, adapters(referee=referee)))
+
+    output = output_json(stage)
+    assert output["hotspots"] == []
+    assert output["flags"] == ["no_invasive_tumor_detected"]

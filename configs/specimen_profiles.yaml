@@ -36,6 +36,14 @@ profiles:
       focus_warn_ratio: 0.10
     triage:
       min_tissue_fraction: 0.25 # a 224 µm grid tile is embedded when at least this fraction of it is tissue (SPEC-05 §3)
+    hotspots:
+      window_um: 600.0 # side of axis-aligned square window (SPEC-05 §5.1)
+      lattice_step_um: 150.0 # lattice step w/4 over bounding box of tumour mask
+      min_tissue_fraction: 0.70 # HPF tissue rule
+      min_tumor_fraction: 0.50 # area-weighted tumour tile share
+      gap_um: 0.0 # Chebyshev gap
+      k_max: 10 # top hotspots count
+      ranking_arm: H1 # mean p_tumor_cal in the window
 
   core_biopsy:
     tissue_mask:
@@ -70,3 +78,11 @@ profiles:
       focus_warn_ratio: 0.10
     triage:
       min_tissue_fraction: 0.25
+    hotspots:
+      window_um: 600.0 # side of axis-aligned square window (SPEC-05 §5.1)
+      lattice_step_um: 150.0 # lattice step w/4 over bounding box of tumour mask
+      min_tissue_fraction: 0.70 # HPF tissue rule
+      min_tumor_fraction: 0.50 # area-weighted tumour tile share
+      gap_um: 0.0 # Chebyshev gap
+      k_max: 10 # top hotspots count
+      ranking_arm: H1 # mean p_tumor_cal in the window

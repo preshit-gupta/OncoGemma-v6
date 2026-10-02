@@ -14,11 +14,13 @@ stage (SlideReadError); nothing is synthesised in its place (SPEC-01 §3.9). Tis
 the registered mask and colour from the slide's persisted stain profile (SPEC-04).
 """
 import os
+import hashlib
 import io
 import json
 import time
 import tempfile
 import shutil
+import uuid
 import numpy as np
 import matplotlib
 import pyarrow as pa
@@ -34,17 +36,19 @@ from app.core.gcs import (
     get_gcs_artifact_direct_url,
     resolve_slide_raw_uri
 )
+from app.core.pipeline_config import canonical_json
 from app.core.stain_profiles import usable_stain_transform
-from app.core.tasks import EntityType, Task
+from app.core.tasks import DecisionStatus, EntityType, ProducerKind, Task
 from app.core.tissue_mask_store import load_tissue_mask
 from app.inference.gateway import EntityRef, FallbackResult, ImageInput, InputSpec, ModelInputs
 from app.inference.schemas import TumorVerdict
 from app.models.case import Case
+from app.models.decision_record import DecisionRecord
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
 from app.models.audit import AuditEvent
+from pipeline.hotspots_v6 import HotspotWindow, score_lattice_windows, select_verified_hotspots
 from pipeline.errors import DegenerateStainProfileError, SlideReadError
-from pipeline.hotspots import extract_hotspots
 from pipeline.slide_io import SlideReader, centered_origin_um, normalize_region, read_region_at_mpp, require_mpp
 from pipeline.stain import StainTransform
 from pipeline.tile_embeddings import embed_tile_grid
@@ -111,6 +115,14 @@ def _centered_region(reader: SlideReader, cx_um: float, cy_um: float, field_um: 
     return read_region_at_mpp(reader, x_um, y_um, field_um, field_um, field_um / size_px)
 
 
+def _window_max(p_raster: np.ndarray, tile_um: float, window: HotspotWindow) -> float:
+    """The highest ``p_tumor_cal`` of the tissue tiles a window overlaps."""
+    half = window.window_um / 2.0
+    c0, c1 = int(np.floor((window.cx - half) / tile_um)), int(np.ceil((window.cx + half) / tile_um))
+    r0, r1 = int(np.floor((window.cy - half) / tile_um)), int(np.ceil((window.cy + half) / tile_um))
+    return float(np.nanmax(p_raster[max(r0, 0):r1, max(c0, 0):c1]))
+
+
 def _stain_transform(session: Session, slide_id, od_beta: float) -> StainTransform | None:
     """The slide's persisted stain transform, or None when its fit is degenerate (colour cannot be normalised)."""
     return usable_stain_transform(session, slide_id, od_beta=od_beta)  # StainProfileMissingError: run preprocess again
@@ -123,7 +135,7 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
     2. Downloads raw slide to transient temp file for high-res patch sampling.
     3. Embeds every tissue tile of the global grid (cached per slide), scores every tile with the
        tumour head and its calibrator (gateway) and thresholds it into the tumour mask.
-    4. Has the configured VLM check hotspot candidates (gateway).
+    4. Selects hotspot windows on the lattice over the tumour mask, checked by the configured VLM (gateway).
     5. Writes tiles.parquet, the heatmap, the tumour mask and the hotspot thumbnails.
     6. Uploads all triage outputs directly to GCS artifacts bucket.
     7. Purges all temporary scratch files.
@@ -218,27 +230,23 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
         is_tumor = is_tumor_raster[grid.j, grid.i]
         print(f"[Triage Worker] {int(is_tumor.sum())} of {grid.n_tiles} tiles are invasive tumour at τ {head_cfg.threshold:g} ({head_version})")
 
-        # Hotspot candidates on the tile grid (the window lattice of SPEC-05 §5 replaces this).
-        candidate_cfg = triage_cfg.hotspot_extraction.model_dump()
-        candidate_cfg["max_hotspots"] = referee_cfg.candidates
-        raw_candidates = extract_hotspots(
-            prob_grid=p_raster.astype(np.float32),
-            grid_origin_um=(0.0, 0.0),
-            stride_um=(grid.tile_um, grid.tile_um),
-            cfg=candidate_cfg,
-            slide_dimensions_um=(width_um, height_um)
-        )
+        # Candidate windows on the lattice over the tumour mask, ranked by mean p_tumor_cal
+        # (SPEC-05 §5.1, §5.2 arm H1).
+        hs_cfg = profile.hotspots
+        windows = score_lattice_windows(p_raster, is_tumor_raster, grid.tile_um, tissue, (width_um, height_um), hs_cfg)
+        print(f"[Triage Worker] {len(windows)} valid {hs_cfg.window_um:g} µm hotspot windows")
 
-        # VLM check of each candidate (SPEC-05 §5.4 arm). A failure fails the stage unless
-        # configs/fallbacks.yaml allows it in a clinical run; then the candidate is unverified.
+        # VLM check down the ranked list (SPEC-05 §5.4 arm), at most tumor_referee.candidates
+        # windows. A failure fails the stage unless configs/fallbacks.yaml allows it in a clinical
+        # run; then the window is unverified (needs_human).
         if referee_cfg.color == "normalized" and stain is None:
             raise DegenerateStainProfileError(
                 f"the tumour referee is configured for normalized colour but slide {slide_obj.id}'s stain fit is degenerate"
             )
-        verified_candidates = []
-        for n_cand, cand in enumerate(raw_candidates):
-            poly = np.array(cand["polygon_um"])
-            crop = _centered_region(reader, float(poly[:, 0].mean()), float(poly[:, 1].mean()), referee_cfg.field_um, referee_cfg.size_px)
+        referee_by_window: dict[str, dict] = {}
+
+        def verify(window: HotspotWindow) -> bool | None:
+            crop = _centered_region(reader, window.cx, window.cy, referee_cfg.field_um, referee_cfg.size_px)
             if referee_cfg.color == "normalized":
                 crop = normalize_region(crop, stain)
             result = gateway.invoke_or_fallback(
@@ -246,12 +254,11 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
                 referee_cfg.producer,
                 ModelInputs(images=(_image_input(crop),), prompt_id=referee_cfg.prompt),
                 ctx,
-                EntityRef(EntityType.HOTSPOT, f"cand_{n_cand + 1:02d}"),
+                EntityRef(EntityType.HOTSPOT, window.id),
                 TumorVerdict,
             )
-            cand_copy = dict(cand)
             if isinstance(result, FallbackResult):
-                cand_copy["referee"] = {
+                referee_by_window[window.id] = {
                     "producer_id": referee_cfg.producer,
                     "record_id": str(result.record_id),
                     "tumor_present": None,
@@ -259,7 +266,7 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
                     "error_class": type(result.error).__name__,
                 }
             else:
-                cand_copy["referee"] = {
+                referee_by_window[window.id] = {
                     "producer_id": result.producer_id,
                     "record_id": str(result.record_id),
                     "tumor_present": result.output.tumor_present,
@@ -267,27 +274,73 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
                     "rationale": result.output.rationale,
                     "needs_human": False,
                 }
-            verified_candidates.append(cand_copy)
+            return referee_by_window[window.id]["tumor_present"]
 
-        # Prioritize confirmed tumor regions, ranking by prob_mean descending
-        confirmed_tumors = [c for c in verified_candidates if c["referee"]["tumor_present"] is True]
-        confirmed_tumors.sort(key=lambda c: c["prob_mean"], reverse=True)
+        # Greedy selection with hard Chebyshev non-overlap; rejected windows are removed and never
+        # padded back, so fewer than k_max hotspots (or none) is a result (SPEC-05 §5.3).
+        k_max = hs_cfg.k_max
+        selected, checked = select_verified_hotspots(
+            windows, k_max=k_max, w=hs_cfg.window_um, gap=hs_cfg.gap_um, verify=verify, max_checks=referee_cfg.candidates,
+        )
+        flags = []
+        if not selected:
+            flags.append("no_invasive_tumor_detected")
+        elif len(selected) < k_max:
+            flags.append("hotspots_limited_by_tissue")
 
-        unconfirmed = [c for c in verified_candidates if c["referee"]["tumor_present"] is not True]
-        unconfirmed.sort(key=lambda c: c["prob_mean"], reverse=True)
-
-        max_hotspots = triage_cfg.hotspot_extraction.max_hotspots
-        selected = confirmed_tumors[:max_hotspots]
-        if len(selected) < max_hotspots and unconfirmed:
-            needed = max_hotspots - len(selected)
-            selected.extend(unconfirmed[:needed])
-
-        # Finalize top hotspots with clean IDs
         hotspots = []
-        for idx, item in enumerate(selected):
-            item_copy = dict(item)
-            item_copy["id"] = f"hs_{idx + 1:02d}"
-            hotspots.append(item_copy)
+        for window in selected:
+            hotspot = window.to_dict()
+            hotspot["prob_mean"] = window.rank_score
+            hotspot["prob_max"] = _window_max(p_raster, grid.tile_um, window)
+            hotspot["referee"] = referee_by_window[window.candidate_id]
+            hotspots.append(hotspot)
+
+        # The selection itself is a decision (SPEC-01 §3.3), committed with the stage's outputs.
+        selection_input = {
+            "candidates_sha256": hashlib.sha256(canonical_json(
+                [[c.cx, c.cy, c.rank_score, c.tumor_fraction] for c in windows]
+            ).encode("utf-8")).hexdigest(),
+            "n_candidates": len(windows),
+            "checked": [{"id": c.id, "cx": c.cx, "cy": c.cy, "rank_score": c.rank_score,
+                         "tumor_fraction": c.tumor_fraction, "tumor_present": verdict} for c, verdict in checked],
+            "k_max": k_max,
+            "window_um": hs_cfg.window_um,
+            "gap_um": hs_cfg.gap_um,
+        }
+        session.add(DecisionRecord(**{
+            "id": uuid.uuid4(),
+            "case_id": ctx.case_id,
+            "stage_execution_id": ctx.stage_execution_id,
+            "run_id": ctx.run_id,
+            "stage": ctx.stage,
+            "task": Task.HOTSPOT_SELECT.value,
+            "entity_type": EntityType.HOTSPOT.value,
+            "entity_id": "hotspots",
+            "entity_ids_uri": None,
+            "producer_kind": ProducerKind.HEURISTIC.value,
+            "producer_id": "hotspot_select",
+            # The selection rule is part of the configuration, so its version is the config hash.
+            "producer_version": ctx.config_hash,
+            "endpoint": None,
+            "prompt_id": None,
+            "prompt_sha256": None,
+            "input_sha256": hashlib.sha256(canonical_json(selection_input).encode("utf-8")).hexdigest(),
+            "input_spec": selection_input,
+            "params": {"ranking_arm": hs_cfg.ranking_arm, "lattice_step_um": hs_cfg.lattice_step_um,
+                       "min_tissue_fraction": hs_cfg.min_tissue_fraction, "min_tumor_fraction": hs_cfg.min_tumor_fraction},
+            "output": {"hotspot_ids": [h["id"] for h in hotspots], "flags": flags},
+            "raw_output_uri": None,
+            "status": DecisionStatus.OK.value,
+            "error_class": None,
+            "error_detail": None,
+            "latency_ms": 0,
+            "cost_usd": None,
+            "cache_hit": False,
+            "run_mode": ctx.run_mode.value,
+            "config_hash": ctx.config_hash,
+            "supersedes_id": None,
+        }))
 
         # SPEC-05 §4.3 outputs: every tile's scores, the tile-resolution heatmap and the tumour mask.
         triage_prefix = f"cases/{case_id}/triage"
@@ -384,6 +437,7 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
                 "tiles_embedded": grid_embeddings.tiles_embedded
             },
             "hotspots": hotspots,
+            "flags": flags,
             "stain_normalization": "unavailable" if stain is None else "available",
             "model_versions": model_versions,
             "audit": {
