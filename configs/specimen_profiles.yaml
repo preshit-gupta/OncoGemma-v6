@@ -34,6 +34,8 @@ profiles:
       focus_vol_threshold: 45.0 # variance of the Laplacian below this: blurry tile
       focus_fail_ratio: 0.30 # more blurry tissue tiles than this fails QC
       focus_warn_ratio: 0.10
+    triage:
+      min_tissue_fraction: 0.25 # a 224 µm grid tile is embedded when at least this fraction of it is tissue (SPEC-05 §3)
 
   core_biopsy:
     tissue_mask:
@@ -66,3 +68,5 @@ profiles:
       focus_vol_threshold: 45.0
       focus_fail_ratio: 0.30
       focus_warn_ratio: 0.10
+    triage:
+      min_tissue_fraction: 0.25

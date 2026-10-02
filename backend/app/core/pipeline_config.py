@@ -371,10 +371,11 @@ class HotspotExtractionConfig(StrictModel):
 
 
 class TriageConfig(StrictModel):
+    # The tile grid: patch_size_px square tiles read at mpp_target, the embedder's input contract.
     mpp_target: Mpp
     patch_size_px: PositiveInt
+    # Overview heatmap cells with less tissue than this stay empty (until SPEC-05 §4.3 replaces the overview grid).
     tissue_threshold_pct: Fraction
-    max_sample_patches: PositiveInt
     # Registry keys: the tile embedder and the classifier over its embeddings.
     embedding_model: RegistryKey
     tumor_model: RegistryKey
@@ -474,12 +475,20 @@ class NormPyramidConfig(StrictModel):
     max_tiles: PositiveInt
 
 
+class SpecimenTriageConfig(StrictModel):
+    """Stage 3 settings that depend on the specimen type (SPEC-05 §3)."""
+
+    # A grid tile is embedded when at least this fraction of it is tissue.
+    min_tissue_fraction: Fraction
+
+
 class SpecimenProfile(StrictModel):
     tissue_mask: TissueMaskConfig
     stain_fit: StainFitConfig
     stain_target: StainTargetConfig
     norm_pyramid: NormPyramidConfig
     qc: SpecimenQcConfig
+    triage: SpecimenTriageConfig
 
 
 class SpecimenProfilesConfig(StrictModel):
@@ -725,6 +734,19 @@ class PipelineConfig(StrictModel):
         _require(
             embedder is not None and embedder.kind == "embedding",
             f"triage.yaml embedding_model {triage.embedding_model!r} must be an embedding model in models.yaml",
+        )
+        contract = getattr(embedder, "input", None)
+        _require(
+            contract is not None and hasattr(contract, "size_px"),
+            f"triage.yaml embedding_model {triage.embedding_model!r} must have an image input contract",
+        )
+        _require(
+            contract.size_px == [triage.patch_size_px, triage.patch_size_px],
+            f"triage.yaml patch_size_px must equal the embedder's {contract.size_px} input",
+        )
+        _require(
+            abs(triage.mpp_target - contract.mpp) <= contract.mpp_tolerance,
+            f"triage.yaml mpp_target {triage.mpp_target} must be within {contract.mpp_tolerance} of the embedder's input mpp {contract.mpp}",
         )
         classifier = models.get(triage.tumor_model)
         _require(
