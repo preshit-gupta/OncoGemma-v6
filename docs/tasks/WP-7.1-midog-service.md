@@ -1,5 +1,7 @@
 # WP-7.1 — MIDOG detector service: v2 contract (separate repo)
 
+> **Status: done (2026-09-29/30).** MIDOG-microservice `c67ccf3`, follow-ups #1 (real weights hash, `min_prob`) and #2 (image coordinates; tiatoolbox 2.0.1 returned x/y transposed). Deployed as Vertex model 831662348912558080 (`v2-d788edf`, T4); positive control F1 0.851 (v2). **Deviation:** `input_mpp` is 0.25 µm/px by measurement, not the 0.5 µm/px of the TIAToolbox IO config (F1 0.87 vs 0.27; D17). The SPEC-06 §4 wording "verify from the IO config" needs an owner amendment. See `docs/IMPLEMENTATION_PLAN.md` §2.2.
+
 | Owner | Size | Spec | Depends on | Lane |
 |---|---|---|---|---|
 | Delegate | S | SPEC-06 §4 | — | E (repo `D:\Projects\MIDOG`, remote `preshit-gupta/MIDOG-microservice`) |
