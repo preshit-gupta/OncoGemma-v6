@@ -183,8 +183,7 @@ def test_every_tissue_tile_is_embedded_and_a_rerun_reads_the_slide_embedding_cac
     assert first["tile_grid"]["version"] == "grid224_v1" and first["tile_grid"]["tile_um"] == 224.0
     assert sum(len(request.images) for _, request, _ in pf.calls) == n_tiles
     assert first["embedding_cache"]["tiles_embedded"] == n_tiles and first["embedding_cache"]["tiles_cached"] == 0
-    uri = first["embedding_cache"]["uri"]
-    assert f"/embeddings/{sha}/models_5848531596314935296@1@2026-09-22/stain_" in uri and uri.endswith("/grid224_v1.parquet")
+    assert first["embedding_cache"]["uri"].endswith(f"embeddings/{sha}/models_5848531596314935296@1@2026-09-22/grid224_v1.parquet")
 
     stage.status = "running"
     log, calls_after_first = DecisionLog(), len(pf.calls)

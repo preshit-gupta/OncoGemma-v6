@@ -24,7 +24,7 @@ This WP replaces the v5 "Smart Scout" sampler (2,048-patch budget, 80% by thumbn
 - `backend/worker/triage.py`.
 - `backend/app/core/pipeline_config.py` (triage and specimen-profile models only).
 - `configs/triage.yaml`, `configs/specimen_profiles.yaml`, `configs/models.yaml` (`path_foundation.input.color`).
-- Tests: create `backend/tests/pipeline/test_tile_grid.py`, `backend/tests/pipeline/test_tile_embeddings.py`. Edit `backend/tests/test_triage_worker.py`, the triage tests in `backend/tests/test_read_sites_workers.py`, the `path_foundation` test images in `backend/tests/inference/test_gateway.py` (now normalised), and the triage seed helpers of other tests only to give seeded slides a checksum and to clear the embedding cache where a test is about the gateway cache. Delete `backend/tests/test_batch10_triage_hybrid.py`, which re-implements the deleted sampler inline and imports no production code.
+- Tests: create `backend/tests/pipeline/test_tile_grid.py`, `backend/tests/pipeline/test_tile_embeddings.py`. Edit `backend/tests/test_triage_worker.py`, the triage tests in `backend/tests/test_read_sites_workers.py`, and the triage seed helpers of other tests only to give seeded slides a checksum and to clear the embedding cache where a test is about the gateway cache. Delete `backend/tests/test_batch10_triage_hybrid.py`, which re-implements the deleted sampler inline and imports no production code.
 - `docs/tasks/WP-6.1-tile-grid-embeddings.md` (this card), `docs/STATUS.md`.
 
 ## Tasks
@@ -35,10 +35,10 @@ This WP replaces the v5 "Smart Scout" sampler (2,048-patch budget, 80% by thumbn
    - A tile is included iff `TissueMask.fractions_of_boxes_um(tile) ≥ profile.triage.min_tissue_fraction`. **No cap.** Zero included tiles raises.
    - The grid version is `grid<t>_v1` (`grid224_v1`).
 2. **Embedding cache** (`pipeline/tile_embeddings.py`).
-   - **Path Foundation sees stain-normalised tiles** (owner decision, 2026-10-02). `configs/models.yaml` sets `path_foundation.input.color: normalized`, and each tile goes through the slide's persisted `StainTransform`.
-   - The cache lives in the gateway's blob store (the artifacts bucket in the worker), at `embeddings/<slide_sha256>/<pf_version>/stain_<sha256>/<grid_version>.parquet`.
-     - `stain_<sha256>` hashes the transform's exact parameters (source and target stain vectors and maxima, `od_beta`). A refitted profile or a new reference stain therefore gets its own cache.
-     - A raw-colour embedder would use `embeddings/<slide_sha256>/<pf_version>/<grid_version>.parquet`, the SPEC-05 path.
+   - **Path Foundation sees raw scanner colour** (owner decision, 2026-10-02): it was trained on unnormalised H&E, so `configs/models.yaml` keeps `path_foundation.input.color: raw`.
+     - Normalised tiles are supported but off. Setting `color: normalized` sends each tile through the slide's persisted `StainTransform` and gives it its own cache. Switch it on only if WP-6.2 shows a paired S3-F1 gain on val.
+   - The cache lives in the gateway's blob store (the artifacts bucket in the worker), at `embeddings/<slide_sha256>/<pf_version>/<grid_version>.parquet`, the SPEC-05 path.
+     - A normalised embedder writes to `embeddings/<slide_sha256>/<pf_version>/stain_<sha256>/<grid_version>.parquet` instead. `stain_<sha256>` hashes the transform's exact parameters (source and target stain vectors and maxima, `od_beta`), so a refitted profile or a new reference stain gets its own cache.
      - `<pf_version>` is the registry version with every character outside `[A-Za-z0-9@._-]` replaced by `_`.
    - Columns, exactly: `i:int32, j:int32, x_um:float32, y_um:float32, tissue_fraction:float32, emb:fixed_size_list<float32, D>`. `D` is the embedder's output width (384).
    - The Parquet key-value metadata records `slide_sha256`, `producer`, `producer_version`, `grid_version`, `tile_um`, `mpp`, `size_px`, `color` and `stain_sha256`.
@@ -51,7 +51,7 @@ This WP replaces the v5 "Smart Scout" sampler (2,048-patch budget, 80% by thumbn
    - Writes the merged cache (the old rows plus the new ones), then returns the embeddings in grid order, with counts of cached, embedded and sent tiles.
    - A gateway error propagates, and no cache is written for that call.
 4. **Worker** (`worker/triage.py`).
-   - Load the stain transform before embedding. A degenerate fit with a normalised embedder raises `DegenerateStainProfileError`: such a slide cannot be triaged until its stain fit is fixed.
+   - Load the stain transform before embedding. With a normalised embedder, a degenerate fit raises `DegenerateStainProfileError`. With the raw default, such a slide is triaged as before.
    - Delete the Smart Scout sampler and its use of the thumbnail stain map for sampling.
    - Embed the full grid through `embed_tile_grid`.
    - Each tile probability enters its overview cell as the **mean** of the tiles whose centre falls in that cell (v5's "last write wins" goes, SPEC-05 §1.2). The fusion and IDW stay until WP-6.2.
@@ -108,7 +108,7 @@ python tools/lint_literals.py   # findings must be identical to main's (main alr
 The new tests must show:
 - The grid equals a brute-force `fraction_in_box_um` per tile, partial edge tiles included, on a thin diagonal band (the CNB case in SPEC-05 §1.2). The band keeps every tile that has enough tissue, so S3-COV is 1.0 by construction.
 - There is no cap: a fully tissue mask gives `ceil(W/t)·ceil(H/t)` tiles, more than the old budget of 2,048.
-- The embedder receives exactly `StainTransform.apply` of the raw tile. Another stain mapping gets its own cache. A degenerate fit fails the stage.
+- The registry embedder reads raw tiles under the SPEC-05 path. With the normalised option, the embedder receives exactly `StainTransform.apply` of the raw tile, another stain mapping gets its own cache, and a degenerate fit fails the stage.
 - A cache round trip is bit-exact, with the schema and metadata exactly as specified.
 - A second run makes zero embedder calls. A grown grid embeds only the new tiles.
 - A tampered or mismatched cache raises.

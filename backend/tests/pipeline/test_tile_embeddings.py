@@ -79,7 +79,9 @@ def grid_of(tissue: TissueMask, min_fraction: float = 0.25):
 
 class Setup:
     def __init__(self, blobs=None, adapter=None, config=None, stain="default"):
-        self.config = config or get_pipeline_config()
+        # The registry embeds raw tiles (owner decision 2026-10-02). Most tests here exercise the
+        # normalised option, which stays supported; the raw default has its own test below.
+        self.config = config or with_embedder_color("normalized")
         self.stain = STAIN if stain == "default" else stain
         self.adapter = adapter or FakeAdapter(then=embed)
         self.blobs = blobs if blobs is not None else InMemoryBlobStore()
@@ -311,8 +313,9 @@ def test_a_normalised_embedder_needs_the_stain_transform(reader):
     assert setup.adapter.calls == []
 
 
-def test_a_raw_embedder_reads_raw_tiles_under_the_spec_path_and_refuses_a_transform(reader):
-    config = with_embedder_color("raw")
+def test_the_registry_embedder_reads_raw_tiles_under_the_spec_path_and_refuses_a_transform(reader):
+    config = get_pipeline_config()
+    assert config.models.models[PRODUCER].input.color == "raw"
     refused = Setup(config=config)
     with pytest.raises(ValueError, match="raw colour"):
         refused.run(reader, grid_of(mask()))
