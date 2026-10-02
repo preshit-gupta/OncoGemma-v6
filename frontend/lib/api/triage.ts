@@ -1,4 +1,4 @@
-import { apiFetch } from "@/lib/api/auth";
+import { apiFetch, idempotencyHeaders } from "@/lib/api/auth";
 import mockTriageData from "@/lib/mock/triage.json";
 
 export interface SlideGeom {
@@ -212,7 +212,7 @@ export async function confirmTriage(
 
   const res = await apiFetch(`/api/v1/stages/triage/confirm`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { ...idempotencyHeaders(), "Content-Type": "application/json" },
     body: JSON.stringify({
       case_id: caseId,
       no_invasive_tumor: noInvasiveTumor,

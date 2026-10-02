@@ -1,4 +1,4 @@
-import { apiFetch, getCookie } from "./api/auth";
+import { apiFetch, getCookie, idempotencyHeaders } from "./api/auth";
 
 export const API_BASE = "";
 
@@ -305,7 +305,8 @@ export async function retryStage(caseId: string, stageName: string) {
 export async function approveStage(caseId: string, stageName: string, payload?: { override_justification?: string }) {
   const res = await apiFetch(`${API_BASE}/api/v1/cases/${caseId}/stages/${stageName}/approve`, {
     method: "POST",
-    headers: { 
+    headers: {
+      ...idempotencyHeaders(),
       "Content-Type": "application/json",
     },
     body: JSON.stringify(payload || {}),
@@ -321,6 +322,7 @@ export async function confirmTriageStage(caseId: string, noInvasiveTumor: boolea
   const res = await apiFetch(`${API_BASE}/api/v1/stages/triage/confirm`, {
     method: "POST",
     headers: {
+      ...idempotencyHeaders(),
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -513,6 +515,7 @@ export async function confirmMitosisStage(
   const res = await apiFetch(`${API_BASE}/api/v1/stages/mitosis/confirm`, {
     method: "POST",
     headers: {
+      ...idempotencyHeaders(),
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
