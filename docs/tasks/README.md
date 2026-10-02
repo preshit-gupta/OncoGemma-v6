@@ -19,8 +19,21 @@ Each card is a bounded, self-contained unit of delegated work. Start by reading 
 | [WP-7.7 Mitosis viewer](WP-7.7-mitosis-viewer.md) | B | after 9.3 | Contract: `contracts/mitosis_v6.md` |
 | [WP-8.5 Grading workspace](WP-8.5-grading-workspace.md) | B | after 9.3 | Contract: `contracts/grading_v6.md` |
 | [WP-9.2 Research UI](WP-9.2-research-ui.md) | B | after 9.3 | Contract: `contracts/research_v1.md` |
+| [WP-7.7b Mitosis client clean-up](WP-7.7b-mitosis-client-cleanup.md) | B | after WP-7.6a merges | Small; follows the contract changes in 7.6a |
 
-**Frontend lane order.** Run the frontend cards one after another, in the order listed, to avoid conflicts in shared files (`lib/api.ts`, `app/cases/[id]/page.tsx`). Cards 6.4, 7.7, 8.5 and 9.2 touch different components and may run in parallel **only** if each keeps its `api.ts` changes in a separate file (`lib/api/<area>.ts`), as their cards instruct.
+WP-7.1 and WP-7.7 are done (status banners in their cards).
+
+## WP-7 cards owned by Claude (baseline first, D19; plan §2.2)
+
+They are not for delegates, but follow the same template so each is one bounded session.
+
+| Card | Can start | Notes |
+|---|---|---|
+| [WP-7.6a Detections and `mitosis_v6` API](WP-7.6a-detections-and-contract.md) | now | The production Stage 4 review screen fails until this lands |
+| [WP-7.8 Baseline validation](WP-7.8-baseline-validation.md) | now | Fixed settings on MIDOG++ breast; no tuning, no training |
+| [WP-7.6b Tumour-cell gate](WP-7.6b-tumour-gate.md) | after WP-6.2 | — |
+
+Deferred to the next iteration (D19): attribution study, classifier B, referee v2, calibration.
 
 ## Card template
 

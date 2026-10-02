@@ -1,5 +1,7 @@
 # WP-7.7 — Mitosis viewer and gallery: decision chain, equivocal-first review
 
+> **Status: done (merged with the frontend lane, #9).** It works in mock mode only, until the backend serves `mitosis_v6` (WP-7.6a). Follow-up: [WP-7.7b](WP-7.7b-mitosis-client-cleanup.md) (remove the v5 client in `lib/api.ts`, show the contract's new nullable fields).
+
 | Owner | Size | Spec | Depends on | Lane |
 |---|---|---|---|---|
 | Delegate | M | SPEC-06 §5.6, §9 | WP-9.3 merged | B |
