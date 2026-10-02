@@ -370,14 +370,28 @@ class HotspotExtractionConfig(StrictModel):
     simplify_tolerance_um: NonNegativeFloat
 
 
+class TumorHeadConfig(StrictModel):
+    """The tumour head and how its calibrated probability becomes the tumour mask (SPEC-05 §4.2)."""
+
+    # Registry keys: the classifier over the tile embeddings, and the calibrator over its output.
+    model: RegistryKey
+    calibrator: RegistryKey
+    # The head class that is invasive tumour (S3-F1's positive class).
+    positive_class: NonEmptyStr
+    # τ_tumor: a tile is tumour when its calibrated probability (smoothed, if set) reaches it.
+    # Chosen on val (argmax F1) and recorded in the head's model card.
+    threshold: Fraction
+    # Gaussian smoothing of the calibrated probability on the tile grid before thresholding; null = none.
+    smoothing_sigma_tiles: PositiveFloat | None
+
+
 class TriageConfig(StrictModel):
+    # The tile grid: patch_size_px square tiles read at mpp_target, the embedder's input contract.
     mpp_target: Mpp
     patch_size_px: PositiveInt
-    tissue_threshold_pct: Fraction
-    max_sample_patches: PositiveInt
-    # Registry keys: the tile embedder and the classifier over its embeddings.
+    # Registry key of the tile embedder.
     embedding_model: RegistryKey
-    tumor_model: RegistryKey
+    tumor_head: TumorHeadConfig
     tumor_referee: TumorRefereeConfig
     hotspot_extraction: HotspotExtractionConfig
 
@@ -474,12 +488,33 @@ class NormPyramidConfig(StrictModel):
     max_tiles: PositiveInt
 
 
+class SpecimenTriageConfig(StrictModel):
+    """Stage 3 settings that depend on the specimen type (SPEC-05 §3)."""
+
+    # A grid tile is embedded when at least this fraction of it is tissue.
+    min_tissue_fraction: Fraction
+
+
+class HotspotsConfig(StrictModel):
+    """Stage 3 hotspot extraction and selection settings (SPEC-05 §5)."""
+
+    window_um: PositiveFloat
+    lattice_step_um: PositiveFloat
+    min_tissue_fraction: Fraction
+    min_tumor_fraction: Fraction
+    gap_um: NonNegativeFloat
+    k_max: PositiveInt
+    ranking_arm: Literal["H1", "H2", "H3"] = "H1"
+
+
 class SpecimenProfile(StrictModel):
     tissue_mask: TissueMaskConfig
     stain_fit: StainFitConfig
     stain_target: StainTargetConfig
     norm_pyramid: NormPyramidConfig
     qc: SpecimenQcConfig
+    triage: SpecimenTriageConfig
+    hotspots: HotspotsConfig
 
 
 class SpecimenProfilesConfig(StrictModel):
@@ -726,12 +761,33 @@ class PipelineConfig(StrictModel):
             embedder is not None and embedder.kind == "embedding",
             f"triage.yaml embedding_model {triage.embedding_model!r} must be an embedding model in models.yaml",
         )
-        classifier = models.get(triage.tumor_model)
+        contract = getattr(embedder, "input", None)
+        _require(
+            contract is not None and hasattr(contract, "size_px"),
+            f"triage.yaml embedding_model {triage.embedding_model!r} must have an image input contract",
+        )
+        _require(
+            contract.size_px == [triage.patch_size_px, triage.patch_size_px],
+            f"triage.yaml patch_size_px must equal the embedder's {contract.size_px} input",
+        )
+        _require(
+            abs(triage.mpp_target - contract.mpp) <= contract.mpp_tolerance,
+            f"triage.yaml mpp_target {triage.mpp_target} must be within {contract.mpp_tolerance} of the embedder's input mpp {contract.mpp}",
+        )
+        head = triage.tumor_head
+        classifier = models.get(head.model)
         _require(
             classifier is not None
             and classifier.kind == "classifier"
             and getattr(getattr(classifier, "input", None), "features", None) == triage.embedding_model,
-            f"triage.yaml tumor_model {triage.tumor_model!r} must be a classifier over {triage.embedding_model}",
+            f"triage.yaml tumor_head.model {head.model!r} must be a classifier over {triage.embedding_model}",
+        )
+        calibrator = models.get(head.calibrator)
+        _require(
+            calibrator is not None
+            and calibrator.kind == "classifier"
+            and getattr(getattr(calibrator, "input", None), "features", None) == head.model,
+            f"triage.yaml tumor_head.calibrator {head.calibrator!r} must be a classifier over {head.model}",
         )
         referee = models.get(triage.tumor_referee.producer)
         _require(
@@ -742,6 +798,22 @@ class PipelineConfig(StrictModel):
             triage.tumor_referee.prompt in self.prompts,
             f"triage.yaml tumor_referee.prompt {triage.tumor_referee.prompt!r} is not in configs/prompts",
         )
+
+    def hotspot_gap_um(self, specimen_type: str | None) -> float:
+        """The gap between active hotspots (SPEC-05 §5.5) for a case's specimen type.
+
+        A case without a known specimen type is checked with the gap every profile shares;
+        when the profiles disagree, its specimen type is required (SpecimenTypeRequired).
+        """
+        if specimen_type in self.specimen_profiles.profiles:
+            return self.specimen_profiles.for_type(specimen_type).hotspots.gap_um
+        gaps = {profile.hotspots.gap_um for profile in self.specimen_profiles.profiles.values()}
+        if len(gaps) != 1:
+            raise SpecimenTypeRequired(
+                f"the case's specimen type is {specimen_type!r} and the hotspot gap differs between specimen types; "
+                "set it to resection or core_biopsy"
+            )
+        return gaps.pop()
 
     def config_hash(self) -> str:
         return hashlib.sha256(canonical_json(self.model_dump(mode="json")).encode("utf-8")).hexdigest()

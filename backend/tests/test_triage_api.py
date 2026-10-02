@@ -61,8 +61,9 @@ def test_triage_api_workflow(client_and_db):
 
     mock_output = {
         "heatmap_png_uri": "/artifacts/heatmap.png",
-        "prob_grid_uri": "/artifacts/probs.npy",
-        "grid": {"origin_um": [0, 0], "stride_um": 224, "nx": 10, "ny": 10},
+        "heatmap": {"tile_um": 224.0, "origin_um": [0.0, 0.0], "nx": 10, "ny": 10, "head_version": "tumor_head@1.0.0",
+                    "value": "p_tumor_cal"},
+        "tumor_threshold": 0.5,
         "hotspots": [
             {
                 "id": "hs_01",
@@ -86,6 +87,10 @@ def test_triage_api_workflow(client_and_db):
         data = res_get.json()
         assert data["case_id"] == case_id
         assert len(data["machine_hotspots"]) == 1
+        # contracts/triage_v6.md Heatmap: the tile grid geometry plus a URL the viewer can load
+        assert data["heatmap"]["nx"] == 10 and data["heatmap"]["tile_um"] == 224.0
+        assert data["heatmap"]["png_url"].endswith(f"/{case_id}/heatmap") or data["heatmap"]["png_url"].endswith("/heatmap.png")
+        assert data["tumor_threshold"] == 0.5
 
         # 2. POST edits (add user hotspot & exclude hs_01)
         edits = [
@@ -106,3 +111,33 @@ def test_triage_api_workflow(client_and_db):
     # Verify DB hotspots records
     db_hotspots = db.query(Hotspot).filter(Hotspot.case_id == case_id).all()
     assert len(db_hotspots) == 2
+
+
+def test_triage_api_failed_stage_does_not_502(client_and_db):
+    client, db = client_and_db
+    case_id = "test_case_api_failed_stage"
+    exec_id = "00000000-0000-0000-0000-000000000002"
+
+    c = Case(id=case_id, created_by="test_user", status="failed")
+    se = StageExecution(
+        id=exec_id,
+        case_id=case_id,
+        stage="triage",
+        attempt=1,
+        status="failed",
+        input_ref={},
+        output_ref=None,
+    )
+    db.add(c)
+    db.add(se)
+    db.commit()
+
+    res_get = client.get(f"/api/v1/stages/triage/{case_id}")
+    assert res_get.status_code == 200
+    data = res_get.json()
+    assert data["case_id"] == case_id
+    assert data["status"] == "failed"
+    assert data["machine_hotspots"] == []
+    assert data["effective_hotspots"] == []
+    assert data["heatmap_direct_url"] is None
+

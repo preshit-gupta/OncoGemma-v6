@@ -28,13 +28,13 @@ KongNet is pretrained. The labelled images are used only to score its prediction
 ## Files you may touch
 
 - `backend/eval/mitosis_baseline.py` (extend it to a list of images and pooled metrics), `backend/eval/cli.py`
-- `backend/eval/datasets/midogpp.py`, `backend/eval/datasets/registry.yaml`, `backend/eval/splits.py`
+- `backend/eval/datasets/midogpp.py`, `backend/eval/datasets/registry.yaml`, `backend/eval/splits.py`, `backend/eval/splits/` (add the MIDOG++ split and its lock entry only)
 - Tests under `backend/tests/eval/`
 - **Create** `reports/mitosis/baseline_midogpp_breast.md`
 
 ## Tasks
 
-1. **Split.** Make a case-level val/test split of the MIDOG++ breast images with `eval/splits.py` and lock it. The next iteration tunes on val only and needs a test set it has never seen. Report val now. Report test once, for the validated baseline, after the owner approves.
+1. **Split.** `backend/eval/splits/SPLITS.lock` (WP-6.2) covers TCGA-BRCA and BCSS only. Add a case-level val/test split of the MIDOG++ breast images with `eval.make_splits` (same seed policy) and record it in the lock. The existing TCGA/BCSS entries must not change (a test checks their hashes). The next iteration tunes on val only and needs a test set it has never seen. Report val now. Report test once, for the validated baseline, after the owner approves.
 2. **Ground-truth check** (§3.1). Establish from the MIDOG++ paper or labelling protocol whether a dividing cell is labelled once or twice. Cite the source in `registry.yaml`.
    - If twice, merge pairs closer than the documented distance to their midpoint before matching, and report how many were merged.
    - Otherwise record "no harmonisation" with the source.

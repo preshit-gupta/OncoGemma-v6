@@ -22,7 +22,7 @@ Split from WP-7.6 (plan §2.2). The tumour-cell gate is WP-7.6b. Classifier B, t
 
 ## Files you may touch
 
-- `backend/alembic/versions/0015_detections_v6.py` (create), `backend/app/models/detection.py`
+- `backend/alembic/versions/0016_detections_v6.py` (create), `backend/app/models/detection.py`
 - `backend/worker/mitosis.py`, `backend/pipeline/detect.py`, `backend/pipeline/hpf.py`, `backend/pipeline/scoring.py`
 - `backend/app/routers/mitosis.py`, `backend/app/routers/grading.py`, `backend/app/services/stages.py`, `backend/app/core/rehydrate.py`
 - `backend/app/core/pipeline_config.py` and `configs/mitosis.yaml`: the `mitosis` section only
@@ -32,7 +32,7 @@ Split from WP-7.6 (plan §2.2). The tumour-cell gate is WP-7.6b. Classifier B, t
 
 ## Tasks
 
-1. **Migration `0015`** (SPEC-06 §5.6). Add `p_a`, `p_b`, `vlm` (JSON, the full `VlmVerdict` or null), `rule_override` (the contract has them; `p_b`, `vlm` and `rule_override` stay null/false in this iteration), `in_tumor` (nullable, see the contract changes), `final_decision`, `decision_path`, `review_label`, `record_ids` (JSON: the DecisionRecord ids of the chain) and `counted`.
+1. **Migration `0016`** (SPEC-06 §5.6; `0015` is WP-6.3's hotspot columns). Add `p_a`, `p_b`, `vlm` (JSON, the full `VlmVerdict` or null), `rule_override` (the contract has them; `p_b`, `vlm` and `rule_override` stay null/false in this iteration), `in_tumor` (nullable, see the contract changes), `final_decision`, `decision_path`, `review_label`, `record_ids` (JSON: the DecisionRecord ids of the chain) and `counted`.
    - `counted` is a generated column: `COALESCE(review_label = 'mitosis', final_decision = 'mitosis' AND COALESCE(in_tumor, TRUE))`. `in_tumor` is NULL only while `mitosis.tumor_gate` is off. It must work on Postgres 16 and on the SQLite used by tests.
    - Map existing rows deterministically:
      - `det_conf` → `p_a`;
@@ -91,7 +91,7 @@ Detections written before 2026-09-29 came from the transposed-coordinate detecto
 
 ## Done checklist
 
-- [ ] `0015` migrates and maps existing rows; the v5 columns are gone
+- [ ] `0016` migrates and maps existing rows; the v5 columns are gone
 - [ ] The worker persists v6 columns for the baseline; contract crops are written
 - [ ] One NMS by `p_b ?? p_a`; dividing-cell test
 - [ ] HPF density from `counted`, no overlap (property test), `hpf_count_lt_10`

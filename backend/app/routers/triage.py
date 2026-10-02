@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import uuid
@@ -21,15 +22,18 @@ from app.auth.deps import CurrentUser, require
 from app.auth.idempotency import IdempotencyContext, IdempotentRoute, idempotent
 from app.core.geometry import validate_polygon_geometry, validate_hotspots_non_overlapping
 from app.core.slide_access import PRECONDITION_ERRORS, open_case_slide, slide_stain_transform
+from app.core.pipeline_config import canonical_json, get_pipeline_config
+from app.core.tasks import Task, EntityType, ProducerKind, DecisionStatus
 from app.models.case import Case
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
 from app.models.hotspot import Hotspot
 from app.models.audit import AuditEvent
+from app.models.decision_record import DecisionRecord
 from app.core.rehydrate import rehydrate_case_from_gcs
 from app.services import stages as stage_service
 from google.api_core.exceptions import NotFound
-from pipeline.errors import SlideReadError
+from pipeline.errors import SlideReadError, SpecimenTypeRequired
 from pipeline.slide_io import centered_origin_um, read_region_at_mpp
 
 # Edge of the hotspot review patches, in pixels.
@@ -173,6 +177,81 @@ def apply_edit_ops(machine_hotspots: list[dict], edits: list[Any]) -> list[dict]
     return list(hotspots_dict.values())
 
 
+def triage_view(
+    db: Session,
+    case_id: str,
+    stage_exec: StageExecution,
+    machine_output: dict,
+    machine_hotspots: list[dict],
+    effective_hotspots: list[dict],
+    edits: list,
+) -> dict:
+    """The triage stage as docs/contracts/triage_v6.md ``TriageStageV6``, plus the v5 fields
+    existing clients still read. ``heatmap``, ``tumor_threshold`` and ``flags`` are null when
+    no machine output carries them.
+    """
+    slide_row = db.scalars(select(Slide).where(Slide.case_id == to_uuid(case_id))).first()
+    slide = None
+    if slide_row is not None and slide_row.width_px and slide_row.height_px and slide_row.mpp_x and slide_row.mpp_y:
+        slide = {
+            "width_px": int(slide_row.width_px),
+            "height_px": int(slide_row.height_px),
+            "mpp_x": float(slide_row.mpp_x),
+            "mpp_y": float(slide_row.mpp_y),
+        }
+
+    heatmap_url = None
+    if stage_exec.status not in ("queued", "running", "failed"):
+        heatmap_url = f"/api/v1/stages/triage/{case_id}/heatmap"
+        if settings.CDN_BASE_URL:
+            heatmap_url = f"{settings.CDN_BASE_URL.rstrip('/')}/cases/{case_id}/triage/heatmap.png"
+    # Tile-resolution heatmap geometry (SPEC-05 §4.3, contracts/triage_v6.md Heatmap).
+    heatmap_meta = machine_output.get("heatmap")
+    heatmap = None if heatmap_meta is None else {**heatmap_meta, "png_url": heatmap_url}
+
+    # Ensure all effective hotspots have accessible thumbnail_url
+    for hs in effective_hotspots:
+        hs_id = hs.get("id")
+        if settings.CDN_BASE_URL:
+            hs["thumbnail_url"] = f"{settings.CDN_BASE_URL.rstrip('/')}/cases/{case_id}/triage/patches/{hs_id}_thumb.png"
+        else:
+            hs["thumbnail_url"] = f"/api/v1/stages/triage/{case_id}/hotspots/{hs_id}/thumbnail?mag=10x"
+
+    return {
+        "case_id": case_id,
+        "stage_execution_id": str(stage_exec.id),
+        "status": stage_exec.status,
+        "slide": slide,
+        "heatmap": heatmap,
+        "tumor_threshold": machine_output.get("tumor_threshold"),
+        "hotspots": effective_hotspots,
+        "machine_hotspots": machine_hotspots,
+        "flags": machine_output.get("flags"),
+        "provenance": {
+            "stage": "triage",
+            "model_versions": stage_exec.model_versions,
+            "config_hash": stage_exec.config_hash,
+            "run_mode": stage_exec.run_mode,
+        },
+        "effective_hotspots": effective_hotspots,
+        "review_edits": edits,
+        "heatmap_png_uri": machine_output.get("heatmap_png_uri"),
+        "heatmap_direct_url": heatmap_url,
+        "model_versions": stage_exec.model_versions,
+    }
+
+
+def _hotspot_gap_um(db: Session, case_id: str) -> float:
+    """The case's hotspot gap (SPEC-05 §5.5); 409 when its specimen type is needed and unset."""
+    case = db.get(Case, to_uuid(case_id))
+    if case is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Case {case_id} not found")
+    try:
+        return get_pipeline_config().hotspot_gap_um(case.specimen_type)
+    except SpecimenTypeRequired as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
 @router.get("/{case_id}")
 def get_triage_data(case_id: str, db: Session = Depends(get_db), user: CurrentUser = Depends(require("case:read"))):
     """
@@ -203,8 +282,9 @@ def get_triage_data(case_id: str, db: Session = Depends(get_db), user: CurrentUs
     output_ref = stage_exec.output_ref or ""
     machine_output = {}
 
-    if stage_exec.status in ("queued", "running"):
+    if stage_exec.status in ("queued", "running", "failed"):
         # Attempt isolation: do not read stale outputs from previous attempts (#568)
+        # On failure, machine output was not produced; return empty structures instead of 502
         machine_hotspots = []
         effective_hotspots = []
         edits = stage_exec.review_edits or []
@@ -228,42 +308,12 @@ def get_triage_data(case_id: str, db: Session = Depends(get_db), user: CurrentUs
         machine_hotspots = machine_output.get("hotspots", [])
         effective_hotspots = apply_edit_ops(machine_hotspots, edits)
 
-    heatmap_url = f"/api/v1/stages/triage/{case_id}/heatmap"
-    if settings.CDN_BASE_URL:
-        heatmap_url = f"{settings.CDN_BASE_URL.rstrip('/')}/cases/{case_id}/triage/heatmap_triage.png"
-
-    # Ensure all effective hotspots have accessible thumbnail_url
-    for hs in effective_hotspots:
-        hs_id = hs.get("id")
-        if settings.CDN_BASE_URL:
-            hs["thumbnail_url"] = f"{settings.CDN_BASE_URL.rstrip('/')}/cases/{case_id}/triage/patches/{hs_id}_thumb.png"
-        else:
-            hs["thumbnail_url"] = f"/api/v1/stages/triage/{case_id}/hotspots/{hs_id}/thumbnail?mag=10x"
-
-    return {
-        "case_id": case_id,
-        "stage_execution_id": str(stage_exec.id),
-        "status": stage_exec.status,
-        "heatmap_png_uri": machine_output.get("heatmap_png_uri"),
-        "heatmap_direct_url": heatmap_url,
-        "prob_grid_uri": machine_output.get("prob_grid_uri"),
-        "grid": machine_output.get("grid"),
-        "machine_hotspots": machine_hotspots,
-        "effective_hotspots": effective_hotspots,
-        "review_edits": edits,
-        "model_versions": stage_exec.model_versions
-    }
+    return triage_view(db, case_id, stage_exec, machine_output, machine_hotspots, effective_hotspots, edits)
 
 
 @router.get("/{case_id}/heatmap")
 def get_triage_heatmap_image(case_id: str, db: Session = Depends(get_db), user: CurrentUser = Depends(require("case:read"))):
-    """Returns the Viridis heatmap PNG overlay directly from GCS."""
-    try:
-        hm_bytes = download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_id}/triage/heatmap_triage.png")
-        return Response(content=hm_bytes, media_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
-    except Exception:
-        pass
-
+    """Returns the tile-resolution heatmap PNG (SPEC-05 §4.3) directly from GCS."""
     try:
         hm_bytes = download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_id}/triage/heatmap.png")
         return Response(content=hm_bytes, media_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
@@ -480,11 +530,13 @@ def save_triage_edits(payload: TriageEditsPayload, db: Session = Depends(get_db)
     validate_edit_geometry(edits_dict, slide_bounds_um(db, payload.case_id))
 
     try:
-        machine_hotspots = stage_service.machine_triage_hotspots(stage_exec)
+        machine_output = stage_service.machine_triage_output(stage_exec)
     except stage_service.StageServiceError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    machine_hotspots = machine_output.get("hotspots", [])
     effective_hotspots = apply_edit_ops(machine_hotspots, edits_dict)
-    validate_hotspots_non_overlapping(effective_hotspots)
+    gap_um = _hotspot_gap_um(db, payload.case_id)
+    validate_hotspots_non_overlapping(effective_hotspots, gap_um=gap_um)
 
     stage_exec.review_edits = edits_dict
     
@@ -496,9 +548,43 @@ def save_triage_edits(payload: TriageEditsPayload, db: Session = Depends(get_db)
         payload={"edit_count": len(payload.edits)}
     )
     db.add(audit)
+
+    # Record DecisionRecord for human review edit (SPEC-05 §5.5, SPEC-01 §3.3)
+    model_dr = db.scalars(
+        select(DecisionRecord).where(
+            DecisionRecord.case_id == to_uuid(payload.case_id),
+            DecisionRecord.stage == "triage",
+            DecisionRecord.task == Task.HOTSPOT_SELECT.value,
+        ).order_by(DecisionRecord.created_at.desc())
+    ).first()
+
+    human_dr = DecisionRecord(
+        case_id=to_uuid(payload.case_id),
+        stage_execution_id=stage_exec.id,
+        stage="triage",
+        task=Task.HUMAN_EDIT.value,
+        entity_type=EntityType.HOTSPOT.value,
+        entity_id=str(stage_exec.id),
+        producer_kind=ProducerKind.HUMAN.value,
+        producer_id=user.id,
+        producer_version="human_review@1.0",
+        input_sha256=hashlib.sha256(canonical_json(edits_dict).encode("utf-8")).hexdigest(),
+        input_spec={"edits": edits_dict},
+        params={"gap_um": gap_um},
+        output={"effective_hotspots_count": len(effective_hotspots)},
+        status=DecisionStatus.OK.value,
+        latency_ms=0,
+        run_mode=stage_exec.run_mode,
+        # The edit is checked under the current configuration (the gap), so that is its config hash.
+        config_hash=get_pipeline_config().config_hash(),
+        supersedes_id=model_dr.id if model_dr else None,
+    )
+    db.add(human_dr)
     db.commit()
 
-    return {"status": "success", "edits_count": len(payload.edits)}
+    view = triage_view(db, payload.case_id, stage_exec, machine_output, machine_hotspots, effective_hotspots, edits_dict)
+    view["edits_count"] = len(payload.edits)
+    return view
 
 
 @router.post("/confirm")

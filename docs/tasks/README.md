@@ -31,7 +31,7 @@ They are not for delegates, but follow the same template so each is one bounded 
 |---|---|---|
 | [WP-7.6a Detections and `mitosis_v6` API](WP-7.6a-detections-and-contract.md) | now | The production Stage 4 review screen fails until this lands |
 | [WP-7.8 Baseline validation](WP-7.8-baseline-validation.md) | now | Fixed settings on MIDOG++ breast; no tuning, no training |
-| [WP-7.6b Tumour-cell gate](WP-7.6b-tumour-gate.md) | after WP-6.2 | — |
+| [WP-7.6b Tumour-cell gate](WP-7.6b-tumour-gate.md) | after WP-7.6a | WP-6.2 and 6.3 are merged |
 
 Deferred to the next iteration (D19): attribution study, classifier B, referee v2, calibration.
 

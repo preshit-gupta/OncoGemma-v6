@@ -28,19 +28,40 @@ models:
     region: ${VERTEX_PATH_FOUNDATION_LOCATION}
     version: "models/5848531596314935296@1@2026-09-22"   # google_path-foundation
     requires_image: true
+    # Raw scanner colour: Path Foundation was trained on unnormalised H&E (owner decision 2026-10-02).
+    # `normalized` is supported (tiles through the slide's stain transform, own cache per stain mapping)
+    # and can be switched on once WP-6.2 shows it helps S3-F1 on val.
     input: {mpp: 1.0, mpp_tolerance: 0.02, size_px: [224, 224], color: raw, format: png}
     output_schema: EmbeddingBatch       # (N, 384) float32
     # v5 sent at most 6 images and 1.25 MB of base64 per request. qps is not enforced yet (SPEC-02 §6.2).
     limits: {max_batch: 6, max_request_bytes: 1250000, qps: 8.0, deadline_s: 60.0, max_attempts: 4}
 
-  triage_probe:                         # v5 synthetic development probe; replaced by tumor_head (SPEC-05)
+  # The Stage 3 tumour head (SPEC-05 §4; WP-6.2): trained on BCSS tiles of TCGA-BRCA (decision D20),
+  # model card models/tumor_head/1.0.0/card.json (val F1 0.866, 95% CI 0.807-0.908; beats od_fusion_v5).
+  tumor_head:
     kind: classifier
     provider: local_sklearn
-    artifact_uri: models/probe/probe_v1.joblib
-    artifact_sha256: 3093ac4158633a05b8c570f479c2d448d0bf25beeb2fce77b90641ac75409734
-    version: "probe_v1"
+    artifact_uri: models/tumor_head/1.0.0/model.joblib
+    artifact_sha256: e783be94cd5a75e4fdc1fabcded996d2d173fe9ebb3be578160f85546325e533
+    version: "tumor_head@1.0.0"
     input: {features: path_foundation}
-    output_schema: ClassProbabilities
+    output_schema: ClassProbabilities   # invasive_tumor, stroma, inflammatory, necrosis (see the card)
+    trained_on:
+      snapshot_id: "bcss_tiles@ff1550eb6944"
+      splits_lock_sha256: b51ef23a6477e1ec5ba02ca8b231e8a2e1ffdc345e11c649611622f48f869b0a
+
+  # Isotonic calibration of the head's invasive_tumor probability, fitted on val (same card).
+  tumor_head_calibrator:
+    kind: classifier
+    provider: local_sklearn
+    artifact_uri: models/tumor_head/1.0.0/calibrator.joblib
+    artifact_sha256: 55aa335600f5418e6b97b46ebfeb2b5cd4e0f1135e04615640b02852c31e298d
+    version: "tumor_head_calibrator@1.0.0"
+    input: {features: tumor_head}
+    output_schema: ClassProbabilities   # [1 - p_tumor_cal, p_tumor_cal]
+    trained_on:
+      snapshot_id: "bcss_tiles@ff1550eb6944"
+      splits_lock_sha256: b51ef23a6477e1ec5ba02ca8b231e8a2e1ffdc345e11c649611622f48f869b0a
 
   kongnet_det_midog_1:
     kind: detector

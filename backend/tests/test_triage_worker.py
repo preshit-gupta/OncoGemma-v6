@@ -1,17 +1,17 @@
 """Triage stage on the model gateway (SPEC-01 §3.4, §3.9; WP-2.3b).
 
-Path Foundation and the referee are fakes; the tumour classifier is the real local
-artifact (models/probe/probe_v1.joblib) through LocalSklearnAdapter.
+Path Foundation and the referee are fakes; the tumour head and its calibrator are the real
+local artifacts (models/tumor_head/1.0.0) through LocalSklearnAdapter.
 """
+import functools
 import hashlib
 import json
 import uuid
+from pathlib import Path
 
+import joblib
 import numpy as np
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
 from app.core.config import settings
 from app.core.db import Base
 from app.core.gcs import download_blob_as_bytes
@@ -21,13 +21,18 @@ from app.inference.adapters.local_sklearn import LocalSklearnAdapter
 from app.inference.errors import ModelUnavailableError, SchemaInvalidError
 from app.inference.records import DecisionLog
 from app.models import Case, Slide, StageExecution
+from app.models.decision_record import DecisionRecord
 from pipeline.errors import SlideReadError
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from worker.triage import run_triage
+
 from tests.fakes.gateway import FakeAdapter, InMemoryBlobStore, json_text
 from tests.fakes.runtime import make_runtime
 from tests.fakes.slide import FakeOpenSlide, install_fake_slide
 from tests.fakes.stage2 import seed_stage2
-from worker.triage import run_triage
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
 WIDTH_PX, HEIGHT_PX, MPP = 2400, 1800, 0.5
 EMBEDDING_DIM = 384
 
@@ -47,6 +52,7 @@ def seed(db_session, **slide_overrides):
     slide_values = {
         "id": slide_id, "case_id": case_id, "gcs_uri_original": raw_uri,
         "mpp_x": MPP, "mpp_y": MPP, "width_px": WIDTH_PX, "height_px": HEIGHT_PX,
+        "checksum_sha256": hashlib.sha256(str(slide_id).encode()).hexdigest(),  # ingest records it
     }
     slide_values.update(slide_overrides)
     stage = StageExecution(
@@ -59,12 +65,29 @@ def seed(db_session, **slide_overrides):
     return stage, raw_uri
 
 
+@functools.lru_cache(maxsize=1)
+def tumor_like_embedding() -> np.ndarray:
+    """A 384-d vector the real head (models/tumor_head) scores as invasive tumour.
+
+    Random vectors are not tumour to a trained head, so a fake Path Foundation answering noise
+    would leave no tumour and no hotspot to referee. This points along the head's tumour direction
+    in its z-scored feature space, mapped back to an (L2-normalised) embedding.
+    """
+    model = joblib.load(REPO_ROOT / get_pipeline_config().models.models["tumor_head"].artifact_uri)
+    coef = model.multinomial.coef_
+    k = model.positive_index
+    direction = coef[k] - np.delete(coef, k, axis=0).mean(axis=0)
+    return model.mean_ + model.scale_ * direction / np.linalg.norm(direction) * 3.0
+
+
 def embed(request):
-    """Deterministic 384-d vectors derived from each tile's bytes."""
+    """Deterministic 384-d tumour-like vectors, each with a little noise derived from its tile's bytes."""
     rows = []
+    base = tumor_like_embedding()
     for image in request.images:
         seed_value = int(hashlib.sha256(image.data).hexdigest()[:8], 16)
-        rows.append(np.random.default_rng(seed_value).standard_normal(EMBEDDING_DIM).tolist())
+        noise = np.random.default_rng(seed_value).standard_normal(EMBEDDING_DIM) * np.linalg.norm(base) * 0.01
+        rows.append((base + noise).tolist())
     return RawResponse(data={"embeddings": rows})
 
 
@@ -110,7 +133,8 @@ def test_triage_runs_on_the_gateway_and_records_every_decision(db_session, monke
     assert stage.status == "awaiting_review"
     assert model_versions == {
         "path_foundation": registry.version_of("path_foundation"),
-        "triage_probe": registry.version_of("triage_probe"),
+        "tumor_head": registry.version_of("tumor_head"),
+        "tumor_head_calibrator": registry.version_of("tumor_head_calibrator"),
         "medgemma": registry.version_of("medgemma"),
     }
     assert slide.closed
@@ -128,9 +152,11 @@ def test_triage_runs_on_the_gateway_and_records_every_decision(db_session, monke
     tile_specs = [spec for r in by_task["pf_embed"] for spec in r["input_spec"]["images"]]
     assert all(abs(s["mpp"] - 1.0) <= 0.02 and s["size_px"] == [224, 224] for s in tile_specs)
 
-    # One classifier record over every tile.
-    (head,) = by_task["tumor_head"]
-    assert head["producer_id"] == "triage_probe" and head["input_spec"]["features"]["shape"] == [sum(sent), 384]
+    # One head record and one calibrator record over every tile.
+    head, calibrator = by_task["tumor_head"]
+    assert head["producer_id"] == "tumor_head" and head["input_spec"]["features"]["shape"] == [sum(sent), 384]
+    assert calibrator["producer_id"] == "tumor_head_calibrator"
+    assert calibrator["input_spec"]["features"] == {**calibrator["input_spec"]["features"], "producer": "tumor_head", "shape": [sum(sent), 1]}
 
     # Every candidate was refereed, and each hotspot links to its referee record.
     output = output_json(stage)
@@ -149,12 +175,58 @@ def test_triage_runs_on_the_gateway_and_records_every_decision(db_session, monke
     assert output["audit"]["endpoint_calls_made"] == sum(sent)
 
 
+def test_triage_writes_tile_scores_heatmap_and_tumor_mask_on_one_grid(db_session, monkeypatch):
+    """SPEC-05 §4.3: every tissue tile scored (S3-COV = 1), 1 px per tile, alpha 0 only off tissue."""
+    import io
+
+    import pyarrow.parquet as pq
+    from PIL import Image
+
+    stage, raw_uri = seed(db_session)
+    install_fake_slide(monkeypatch, FakeOpenSlide(WIDTH_PX, HEIGHT_PX), raw_uri)
+    run_triage(stage, db_session, make_runtime(stage, adapters()))
+
+    head_cfg = get_pipeline_config().triage.tumor_head
+    output = output_json(stage)
+    prefix = f"cases/{stage.case_id}/triage"
+    blob = lambda name: download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"{prefix}/{name}")
+    grid = output["tile_grid"]
+
+    tiles = pq.read_table(io.BytesIO(blob("tiles.parquet")))
+    meta = json.loads(tiles.schema.metadata[b"oncogemma.triage_tiles"])
+    frame = tiles.to_pandas()
+    assert len(frame) == grid["n_tiles"]  # every tissue tile has a probability
+    assert meta["classes"][0] == head_cfg.positive_class and meta["head_version"] == "tumor_head@1.0.0"
+    p = np.stack(frame["p"].to_numpy())
+    np.testing.assert_allclose(p.sum(axis=1), 1.0, atol=1e-5)
+    assert ((frame["p_tumor_cal"] >= 0) & (frame["p_tumor_cal"] <= 1)).all()
+    assert (frame["is_tumor"] == (frame["p_tumor_cal"] >= head_cfg.threshold)).all()  # no smoothing configured
+
+    heatmap = np.asarray(Image.open(io.BytesIO(blob("heatmap.png"))))
+    assert heatmap.shape == (grid["n_rows"], grid["n_cols"], 4)
+    tissue = np.zeros((grid["n_rows"], grid["n_cols"]), dtype=bool)
+    tissue[frame["j"], frame["i"]] = True
+    assert (heatmap[..., 3][tissue] > 0).all() and (heatmap[..., 3][~tissue] == 0).all()
+    heatmap_json = json.loads(blob("heatmap.json"))
+    assert heatmap_json == output["heatmap"]
+    assert heatmap_json == {"tile_um": 224.0, "origin_um": [0.0, 0.0], "nx": grid["n_cols"], "ny": grid["n_rows"],
+                            "head_version": "tumor_head@1.0.0", "value": "p_tumor_cal"}
+
+    mask = np.asarray(Image.open(io.BytesIO(blob("tumor_mask.png"))))
+    assert mask.shape == (grid["n_rows"], grid["n_cols"])
+    assert int((mask == 255).sum()) == int(frame["is_tumor"].sum()) == json.loads(blob("tumor_mask.json"))["n_tumor_tiles"]
+    assert output["tumor_threshold"] == head_cfg.threshold
+
+
 def test_second_run_is_served_from_the_gateway_cache(db_session, monkeypatch):
     stage, raw_uri = seed(db_session)
     install_fake_slide(monkeypatch, FakeOpenSlide(WIDTH_PX, HEIGHT_PX), raw_uri)
     pf, blobs = FakeAdapter(then=embed), InMemoryBlobStore()
     run_triage(stage, db_session, make_runtime(stage, adapters(pf=pf), blobs=blobs))
     calls_after_first = len(pf.calls)
+    # Without the tile-embedding cache, the tiles go back to the gateway, which answers from its own cache.
+    for path in [p for p in blobs.blobs if p.startswith("embeddings/")]:
+        del blobs.blobs[path]
 
     stage.status = "running"
     log = DecisionLog()
@@ -164,6 +236,49 @@ def test_second_run_is_served_from_the_gateway_cache(db_session, monkeypatch):
     embeds = [r for r in log.pending() if r["task"] == "pf_embed"]
     assert embeds and all(r["cache_hit"] for r in embeds)
     assert output_json(stage)["audit"]["endpoint_calls_made"] == 0
+
+
+def test_every_tissue_tile_is_embedded_and_a_rerun_reads_the_slide_embedding_cache(db_session, monkeypatch):
+    """SPEC-05 §3: the whole tissue grid, no cap; the cache is keyed by slide checksum, embedder and grid."""
+    stage, raw_uri = seed(db_session)
+    install_fake_slide(monkeypatch, FakeOpenSlide(WIDTH_PX, HEIGHT_PX), raw_uri)
+    pf, blobs = FakeAdapter(then=embed), InMemoryBlobStore()
+    run_triage(stage, db_session, make_runtime(stage, adapters(pf=pf), blobs=blobs))
+    first = output_json(stage)
+    n_tiles = first["tile_grid"]["n_tiles"]
+    sha = db_session.get(Slide, slide_id_of(stage)).checksum_sha256
+
+    assert first["tile_grid"]["version"] == "grid224_v1" and first["tile_grid"]["tile_um"] == 224.0
+    assert sum(len(request.images) for _, request, _ in pf.calls) == n_tiles
+    assert first["embedding_cache"]["tiles_embedded"] == n_tiles and first["embedding_cache"]["tiles_cached"] == 0
+    assert first["embedding_cache"]["uri"].endswith(f"embeddings/{sha}/models_5848531596314935296@1@2026-09-22/grid224_v1.parquet")
+
+    stage.status = "running"
+    log, calls_after_first = DecisionLog(), len(pf.calls)
+    run_triage(stage, db_session, make_runtime(stage, adapters(pf=pf), blobs=blobs, log=log))
+    second = output_json(stage)
+    assert len(pf.calls) == calls_after_first
+    assert not [r for r in log.pending() if r["task"] == "pf_embed"]
+    assert second["embedding_cache"]["tiles_cached"] == n_tiles and second["embedding_cache"]["tiles_embedded"] == 0
+    assert second["audit"]["endpoint_calls_made"] == 0
+    head, calibrator = [r for r in log.pending() if r["task"] == "tumor_head"]
+    assert head["input_spec"]["features"]["shape"] == [n_tiles, EMBEDDING_DIM]
+    assert calibrator["input_spec"]["features"]["shape"] == [n_tiles, 1]
+
+
+def test_a_slide_without_a_checksum_cannot_be_triaged(db_session, monkeypatch):
+    from pipeline.tile_embeddings import MissingChecksumError
+
+    stage, raw_uri = seed(db_session, checksum_sha256=None)
+    install_fake_slide(monkeypatch, FakeOpenSlide(WIDTH_PX, HEIGHT_PX), raw_uri)
+    pf = FakeAdapter(then=embed)
+    with pytest.raises(MissingChecksumError):
+        run_triage(stage, db_session, make_runtime(stage, adapters(pf=pf)))
+    assert pf.calls == []
+
+
+def slide_id_of(stage) -> str:
+    return stage.input_ref["slide_id"]
 
 
 def test_unreadable_slide_fails_instead_of_synthesising_tissue(db_session, monkeypatch):
@@ -249,3 +364,52 @@ def test_allowed_referee_outage_leaves_candidates_unverified(db_session, monkeyp
     assert hotspots and all(h["referee"]["tumor_present"] is None and h["referee"]["needs_human"] for h in hotspots)
     fallbacks = [r for r in log.pending() if r["producer_kind"] == "fallback"]
     assert fallbacks and {r["task"] for r in fallbacks} == {"tumor_referee"}
+
+
+def test_hotspots_are_ranked_lattice_windows_of_confirmed_candidates(db_session, monkeypatch):
+    """SPEC-05 §5.1-5.3 (WP-6.3): valid lattice windows the referee confirmed, ranked, flagged, recorded."""
+    stage, raw_uri = seed(db_session)
+    install_fake_slide(monkeypatch, FakeOpenSlide(WIDTH_PX, HEIGHT_PX), raw_uri)
+
+    run_triage(stage, db_session, make_runtime(stage, adapters()))
+
+    output = output_json(stage)
+    hotspots = output["hotspots"]
+    profile = get_pipeline_config().specimen_profiles.for_type(db_session.get(Case, stage.case_id).specimen_type)
+    w = profile.hotspots.window_um
+    assert hotspots and all(h["referee"]["tumor_present"] is True for h in hotspots)
+    assert [h["id"] for h in hotspots] == [f"hs_{n:02d}" for n in range(1, len(hotspots) + 1)]
+    assert [h["rank"] for h in hotspots] == list(range(1, len(hotspots) + 1))
+    scores = [h["rank_score"] for h in hotspots]
+    assert scores == sorted(scores, reverse=True)
+    for h in hotspots:
+        xs, ys = [p[0] for p in h["polygon_um"]], [p[1] for p in h["polygon_um"]]
+        assert h["polygon_um"][0] == h["polygon_um"][-1]
+        assert max(xs) - min(xs) == pytest.approx(w) and max(ys) - min(ys) == pytest.approx(w)
+        assert min(xs) >= 0.0 and min(ys) >= 0.0 and max(xs) <= WIDTH_PX * MPP and max(ys) <= HEIGHT_PX * MPP
+        assert h["window_um"] == w and h["score_kind"] == "mean_p_tumor" and h["rank_score"] == h["prob_mean"]
+        assert h["tumor_fraction"] >= profile.hotspots.min_tumor_fraction
+    centres = [((h["polygon_um"][0][0] + w / 2), (h["polygon_um"][0][1] + w / 2)) for h in hotspots]
+    assert all(max(abs(a[0] - b[0]), abs(a[1] - b[1])) >= w + profile.hotspots.gap_um
+               for n, a in enumerate(centres) for b in centres[n + 1:])
+    assert output["flags"] == ([] if len(hotspots) == profile.hotspots.k_max else ["hotspots_limited_by_tissue"])
+
+    record = db_session.query(DecisionRecord).filter_by(task="hotspot_select").one()
+    assert record.producer_kind == "heuristic"
+    assert record.output["hotspot_ids"] == [h["id"] for h in hotspots]
+    checked = record.input_spec["checked"]
+    assert 0 < len(checked) <= get_pipeline_config().triage.tumor_referee.candidates
+    assert [c["tumor_present"] for c in checked].count(True) == len(hotspots)
+
+
+def test_rejected_windows_are_never_selected(db_session, monkeypatch):
+    """SPEC-05 §5.3, §5.4 (WP-6.3): no padding with rejected windows; K = 0 is flagged."""
+    stage, raw_uri = seed(db_session)
+    install_fake_slide(monkeypatch, FakeOpenSlide(WIDTH_PX, HEIGHT_PX), raw_uri)
+    referee = FakeAdapter(then=json_text({"tumor_present": False, "lesion_type": "benign_stroma", "rationale": "fake"}))
+
+    run_triage(stage, db_session, make_runtime(stage, adapters(referee=referee)))
+
+    output = output_json(stage)
+    assert output["hotspots"] == []
+    assert output["flags"] == ["no_invasive_tumor_detected"]

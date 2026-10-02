@@ -3,7 +3,7 @@ SQLAlchemy ORM model for Hotspots (v4.2 Hotspot Triage).
 """
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Float, Boolean, Text, DateTime, ForeignKey, JSON
+from sqlalchemy import Column, String, Float, Integer, Boolean, Text, DateTime, ForeignKey, JSON
 from sqlalchemy.orm import declarative_base
 
 from app.core.db import Base
@@ -23,4 +23,10 @@ class Hotspot(Base):
     source = Column(String, nullable=False, default="model") # model | pathologist_added | pathologist_modified
     excluded = Column(Boolean, nullable=False, default=False)
     exclude_reason = Column(Text, nullable=True)
+    rank = Column(Integer, nullable=True)
+    rank_score = Column(Float, nullable=True)
+    score_kind = Column(Text, nullable=True)
+    tumor_fraction = Column(Float, nullable=True)
+    prescan_expected = Column(Float, nullable=True)
+    window_um = Column(Float, nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

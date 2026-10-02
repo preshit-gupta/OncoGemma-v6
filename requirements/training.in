@@ -4,3 +4,5 @@
 torch>=2.2.0
 timm>=0.9.16
 tiatoolbox>=1.5.0
+tiffslide>=2.4.0  # training.tumor_head: BCSS ROIs read from GDC by range requests (WP-6.2)
+imagecodecs>=2024.1.1

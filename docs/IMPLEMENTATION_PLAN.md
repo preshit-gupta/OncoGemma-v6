@@ -50,9 +50,9 @@ The card column links the delegate task cards.
 | 5.3 | Splits, lock, disjointness checks | 02 §5.2 | S | D | — | [WP-5.3](tasks/WP-5.3-splits.md) (tests pre-written) |
 | 5.4 | TCGA report label extraction | 02 §4 | M | C | 5.2 | — |
 | 5.5 | Harness controller, runs/items, stage service, CLI, one-shot, batch API | 02 §5–6 | L | C | 2.3, 5.1 | — |
-| 6.1 | Tile grid and embedding cache via the gateway | 05 §3 | M | C | 3.x | — |
-| 6.2 | Tumour-head training and model card | 05 §4 | M | C | 5.2, 5.3, 6.1 | — |
-| 6.3 | Hotspot windows, Chebyshev selection, edit validation | 05 §5 | M | D+R | 6.1 | later |
+| 6.1 | Tile grid and embedding cache via the gateway | 05 §3 | M | C | 3.x | [WP-6.1](tasks/WP-6.1-tile-grid-embeddings.md) **done** (#39) |
+| 6.2 | Tumour-head training and model card | 05 §4 | M | C | 5.2, 5.3, 6.1 | **done** (#41) |
+| 6.3 | Hotspot windows, Chebyshev selection, edit validation | 05 §5 | M | D+R | 6.1 | **done** (#42) |
 | 6.4 | Heatmap overlay and TriageViewer | 05 §4.3 | M | D | contract | [WP-6.4](tasks/WP-6.4-triage-viewer.md) |
 | 7.1 | MIDOG service v2 contract (separate repo) | 06 §4 | S | D | — | [WP-7.1](tasks/WP-7.1-midog-service.md) **done** (MIDOG-microservice #1, #2; deployed) |
 | 7.2 | Tiling with ownership, detector client, NMS, raw Stage A | 06 §5.1–5.2, 5.7 | M | C | 3.1, 7.1 | **done** (#20) |
@@ -60,7 +60,7 @@ The card column links the delegate task cards.
 | 7.7 | MitosisViewer / Gallery UI | 06 §9 | M | D | contract | [WP-7.7](tasks/WP-7.7-mitosis-viewer.md) **done** (#9) |
 | 7.7b | Remove the v5 mitosis client; show an ungated `in_tumor` | 06 §9 | S | D | 7.6a | [WP-7.7b](tasks/WP-7.7b-mitosis-client-cleanup.md) |
 | 7.8 | Validate the baseline on MIDOG++ breast (fixed settings, no tuning) | 02 §5, 06 §3.1, 6.1 | M | C | 5.5 | [WP-7.8](tasks/WP-7.8-baseline-validation.md) |
-| 7.6b | Tumour-cell gate and HPF tumour constraints | 06 §5.5, 5.8 | M | C | 6.2, 7.6a | [WP-7.6b](tasks/WP-7.6b-tumour-gate.md) |
+| 7.6b | Tumour-cell gate and HPF tumour constraints | 06 §5.5, 5.8 | M | C | 6.2 (merged), 6.3 (merged), 7.6a | [WP-7.6b](tasks/WP-7.6b-tumour-gate.md) |
 | 7.3, 7.4, 7.5 | Attribution study, classifier B, referee v2, definition file | 06 §3, 5.3–5.4, 6.2 | — | — | — | **deferred to the next iteration** (D19) |
 | 8.1 | Tumour-mask sampling, aggregation, bias removal | 07 §4–5.2 | M | C | 6.x | — |
 | 8.2 | VLM estimators (Gemini, MedGemma with images) | 07 §5.3, 6.4 | M | C | 2.3 | — |
@@ -109,7 +109,7 @@ The program owner set the scope on 2026-10-02: **this iteration establishes and 
 
 1. **WP-7.6a** ships the baseline end to end. The WP-7.7 viewer calls `mitosis_v6` routes the backend does not serve yet, so the deployed Stage 4 review screen fails outside mock mode.
 2. **WP-7.8** validates the baseline, with its settings fixed, on MIDOG++ breast beyond one image. No calibration, threshold tuning or new arms.
-3. **WP-7.7b** (lane B) follows 7.6a. **WP-7.6b** (tumour-cell gate) waits for the WP-6.2 tumour mask.
+3. **WP-7.7b** (lane B) and **WP-7.6b** (tumour-cell gate) follow 7.6a. The tumour mask (WP-6.2) and the hotspot windows (WP-6.3) are merged; Stage 4 tests pass on that `main` (51 passed, 2026-10-02).
 
 **Deferred to the next iteration** (hypotheses, tested against the validated baseline): the attribution study (7.3), classifier B and all training code (7.4), referee v2 with the definition file, prompt and post-rule (7.5), `p_A` calibration and `τ_A`, the Stage-A cache, and the research `/curves/mitosis` and `/errors/mitosis` endpoints. SPEC-06 §6.2–6.3 and AC1/AC4/AC7/AC8 (referee and classifier parts) apply then.
 
@@ -159,3 +159,4 @@ Notes for the next iteration:
 | D17 | 2026-09-30 | KongNet is served at native **0.25 µm/px**, not the 0.5 µm/px of its TIAToolbox IO config (measured F1 0.87 vs 0.27). Production arm is **A1** (τ 0.75, NMS 7.5 µm) with the **referee off**, until an arm beats it under SPEC-06 §6.3 | `configs/mitosis.yaml`, `reports/baseline/mitosis_midogpp_094.md` |
 | D18 | 2026-10-02 | WP-7 re-planned from the measurements: 7.6 split into 7.6a/7.6b, 7.8 added | this file §2.2 |
 | D19 | 2026-10-02 | **Baseline first.** This iteration validates the baseline (KongNet, τ 0.75, NMS 7.5 µm, referee off). The attribution study, classifier B and training code, referee v2, and calibration are deferred to the next iteration | this file §2.2 |
+| D20 | 2026-10-02 | **This version is built for TCGA-BRCA only** (narrows D1). BCNB is deferred, with its core-biopsy checks (SPEC-05 AC8, per-profile `τ_tumor` from BCNB val, the BCNB binary loss term); the `core_biopsy` profile stays in code. BCSS counts as TCGA-BRCA: its expert ROI masks on TCGA-BRCA slides are the tumour-head tile labels, read in raw colour from the GDC slides by HTTP range requests (the BCSS release has only colour-normalised RGBs). MIDOG++ stays as the mitosis detector's validation set | SPEC-05 §4, WP-6.2 |

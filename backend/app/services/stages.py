@@ -29,6 +29,7 @@ from app.models.hotspot import Hotspot
 from app.models.hpf_site import HpfSite
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
+from pipeline.errors import SpecimenTypeRequired
 
 # Minimum length of the justification for approving a slide that failed QC.
 MIN_JUSTIFICATION_CHARS = 10
@@ -261,19 +262,24 @@ def _confirm_slide(
     return ConfirmResult(str(case_id), stage, "triage", next_execution, {})
 
 
-def machine_triage_hotspots(execution: StageExecution) -> list[dict]:
-    """The machine hotspots of a triage execution, as the triage stage wrote them."""
+def machine_triage_output(execution: StageExecution) -> dict:
+    """The machine output (output.json) of a triage execution, as the triage stage wrote it."""
     output_ref = execution.output_ref or ""
     try:
         if output_ref.startswith("gs://"):
             bucket, blob = parse_gcs_uri(output_ref)
         else:
             bucket, blob = settings.GCS_ARTIFACTS_BUCKET, f"cases/{execution.case_id}/triage/output.json"
-        return json.loads(download_blob_as_bytes(bucket, blob).decode("utf-8")).get("hotspots", [])
+        return json.loads(download_blob_as_bytes(bucket, blob).decode("utf-8"))
     except (NotFound, FileNotFoundError, ValueError) as exc:
         raise StageOutputUnavailable(
             f"Failed to load triage machine output from storage: {exc}. Confirmation aborted."
         ) from exc
+
+
+def machine_triage_hotspots(execution: StageExecution) -> list[dict]:
+    """The machine hotspots of a triage execution, as the triage stage wrote them."""
+    return machine_triage_output(execution).get("hotspots", [])
 
 
 def effective_triage_hotspots(execution: StageExecution) -> list[dict]:
@@ -301,7 +307,11 @@ def _confirm_triage(session: Session, case_id: uuid.UUID, actor: str, no_invasiv
     # Server-side geometry checks on the reviewer's polygons and the effective set (SPEC-03 §5.3.2).
     validate_edit_geometry(execution.review_edits or [], slide_bounds_um(session, case_id))
     hotspots = effective_triage_hotspots(execution)
-    validate_hotspots_non_overlapping(hotspots)
+    try:
+        gap_um = get_pipeline_config().hotspot_gap_um(case.specimen_type)
+    except SpecimenTypeRequired as exc:
+        raise StageConflict(str(exc)) from exc
+    validate_hotspots_non_overlapping(hotspots, gap_um=gap_um, status_code=409)
     active = [h for h in hotspots if not h.get("excluded", False)]
     if no_invasive_tumor and active:
         raise ReviewGateError(
@@ -329,6 +339,12 @@ def _confirm_triage(session: Session, case_id: uuid.UUID, actor: str, no_invasiv
             source=hs.get("source", "model"),
             excluded=hs.get("excluded", False),
             exclude_reason=hs.get("exclude_reason"),
+            rank=hs.get("rank"),
+            rank_score=hs.get("rank_score"),
+            score_kind=hs.get("score_kind"),
+            tumor_fraction=hs.get("tumor_fraction"),
+            prescan_expected=hs.get("prescan_expected"),
+            window_um=hs.get("window_um"),
         ))
     _mark_confirmed(execution, actor, datetime.now(timezone.utc))
 

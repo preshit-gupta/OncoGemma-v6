@@ -113,8 +113,11 @@ class SlideReader:
     is opened at construction, so an unreadable file fails here and not on the first region.
     """
 
-    def __init__(self, path: str, mpp_x: float, mpp_y: float, source_format: str | None):
+    def __init__(self, path: str, mpp_x: float, mpp_y: float, source_format: str | None, *, opener=None):
+        # ``opener(path)`` returns a handle with OpenSlide's interface; the default is OpenSlide.
+        # Evaluation code reads remote slides through it (eval.datasets.remote_slide).
         self.path = path
+        self._opener = opener
         self.mpp_x = _finite_positive(mpp_x, "mpp_x")
         self.mpp_y = _finite_positive(mpp_y, "mpp_y")
         self.source_format = source_format
@@ -148,7 +151,7 @@ class SlideReader:
         if self._closed:
             raise SlideReadError(f"the reader for {self.path} is closed")
         try:
-            handle = openslide.OpenSlide(self.path)
+            handle = openslide.OpenSlide(self.path) if self._opener is None else self._opener(self.path)
         except (openslide.OpenSlideError, OSError) as exc:
             raise SlideReadError(f"could not open slide {self.path}: {exc}") from exc
         self._local.handle = handle
