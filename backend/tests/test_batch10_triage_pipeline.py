@@ -8,7 +8,7 @@ Covers:
   - #81 [HIGH]: extract_hotspots zero-tumor path returns [] (no fabricated hotspots)
   - #74 [HIGH]: OpenSlide thumbnail shape mismatch resized to (nx, ny) without IndexError
   - #452 [HIGH]: Parquet embedding cache read/write with ix, iy, emb columns
-  - #73 [HIGH]: probe_v1 synthetic_dev provenance and exact sha256 checksum in triage.yaml
+  - #73 [HIGH]: the tumour head has real-data provenance (model card) and the registry pins its sha256 (SPEC-05 §4.2)
   - #448 [CRITICAL]: apply_edit_ops delete operation drops hotspot from effective and DB set
   - #450 [HIGH]: Multi-vertex custom polygon area calculation via Shoelace formula
 """
@@ -185,33 +185,25 @@ def test_issue_74_thumbnail_shape_mismatch_resizing():
     assert arr.shape == (ny, nx, 3)
 
 
-# --- #73: Probe metadata honest provenance & real SHA256 ---
-def test_issue_73_probe_provenance_and_sha256():
-    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-    probe_joblib_path = os.path.join(repo_root, "models/probe/probe_v1.joblib")
-    probe_json_path = os.path.join(repo_root, "models/probe/probe_v1.json")
-
-    assert os.path.exists(probe_joblib_path)
-    assert os.path.exists(probe_json_path)
-
-    # Compute real SHA256 of probe weights
-    with open(probe_joblib_path, "rb") as f:
-        real_sha256 = hashlib.sha256(f.read()).hexdigest()
-
-    # Verify JSON metadata
-    with open(probe_json_path, "r", encoding="utf-8") as f:
-        meta = json.load(f)
-
-    assert meta["dataset"] == "synthetic_dev", "Probe dataset must be labeled synthetic_dev"
-    assert "train_auc" not in meta, "Fabricated train_auc must be removed"
-    assert meta["weights_sha256"] == real_sha256
-
-    # The registry pins the same bytes; LocalSklearnAdapter refuses any other file.
+# --- #73: the tumour head is trained on real labels, and the registry pins the bytes ---
+def test_issue_73_tumor_head_provenance_and_sha256():
     from app.core.pipeline_config import get_pipeline_config
 
-    probe_entry = get_pipeline_config().models.models[get_pipeline_config().triage.tumor_model]
-    assert probe_entry.artifact_uri == "models/probe/probe_v1.joblib"
-    assert probe_entry.artifact_sha256 == real_sha256
+    config = get_pipeline_config()
+    entry = config.models.models[config.triage.tumor_head.model]
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+    artifact = os.path.join(repo_root, entry.artifact_uri)
+    with open(artifact, "rb") as f:
+        real_sha256 = hashlib.sha256(f.read()).hexdigest()
+    with open(os.path.join(os.path.dirname(artifact), "card.json"), "r", encoding="utf-8") as f:
+        card = json.load(f)
+
+    assert entry.artifact_sha256 == real_sha256  # LocalSklearnAdapter refuses any other file
+    assert card["artifacts_sha256"]["model.joblib"] == real_sha256
+    assert card["train_snapshot_id"].startswith("bcss_tiles@"), "the v5 probe was fitted to random vectors"
+    assert card["positive_class"] == config.triage.tumor_head.positive_class
+    assert card["tau"] == config.triage.tumor_head.threshold
+    assert not os.path.exists(os.path.join(repo_root, "models/probe/probe_v1.joblib")), "the synthetic probe is deleted"
 
 
 # --- #448: apply_edit_ops processes delete operation ---

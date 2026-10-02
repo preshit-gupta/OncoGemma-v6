@@ -11,3 +11,5 @@ pip-audit>=2.7.2
 types-PyYAML>=6.0.12
 types-requests>=2.31.0
 pypdf>=5.0.0  # eval.labels.tcga_reports: report PDF text layer (SPEC-02 §4)
+tiffslide>=2.4.0  # eval.datasets.remote_slide: TCGA slides read by HTTP range requests (WP-6.2, D20)
+imagecodecs>=2024.1.1  # ... decodes their JPEG / JPEG 2000 tiles

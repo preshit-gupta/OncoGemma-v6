@@ -160,6 +160,77 @@ def _png_input(region) -> ImageInput:
     return ImageInput(buffer.getvalue(), spec)
 
 
+def _tile_mpp(grid: TileGrid, producer_id: str, contract, stain: StainTransform | None) -> float:
+    """The resolution the embedder's input contract gives the grid's tiles; refuses a contract tiles cannot meet."""
+    size_w, size_h = contract.size_px
+    if size_w != size_h:
+        raise ValueError(f"{producer_id} takes {contract.size_px} px images; the tile grid needs square tiles")
+    if contract.color == "normalized" and stain is None:
+        raise ValueError(f"{producer_id} takes normalized colour, which needs the slide's stain transform")
+    if contract.color == "raw" and stain is not None:
+        raise ValueError(f"{producer_id} takes raw colour; a stain transform was given")
+    if contract.format != "png":
+        raise ValueError(f"{producer_id} takes {contract.format}; tiles are sent as lossless PNG")
+    return grid.tile_um / size_w
+
+
+def embed_tiles(
+    reader: SlideReader,
+    grid: TileGrid,
+    indices: list[int],
+    *,
+    producer_id: str,
+    gateway: ModelGateway,
+    ctx: DecisionContext,
+    stain: StainTransform | None = None,
+) -> tuple[list[np.ndarray], int]:
+    """Embeddings of the grid tiles at ``indices`` through the gateway, with no slide cache.
+
+    Tiles are read at the embedder's input contract and sent in batches within its request
+    limits, one DecisionRecord per batch; at most ``max_batch`` tiles are held in memory.
+    Returns the vectors in ``indices`` order and how many tiles the gateway did not serve
+    from its own output cache.
+    """
+    entry = gateway.registry.models[producer_id]
+    contract = entry.input
+    target_mpp = _tile_mpp(grid, producer_id, contract, stain)
+    tile_ids = grid.tile_ids()
+    limits = entry.limits
+    vectors: list[np.ndarray] = []
+    tiles_sent, n_batch = 0, 0
+    for start in range(0, len(indices), limits.max_batch):
+        chunk = indices[start : start + limits.max_batch]
+        images = [
+            _png_input(
+                read_region_at_mpp(
+                    reader, float(grid.x_um[k]), float(grid.y_um[k]), grid.tile_um, grid.tile_um, target_mpp,
+                    color=contract.color, stain=stain,
+                )
+            )
+            for k in chunk
+        ]
+        out: dict[int, np.ndarray] = {}
+        for batch in plan_batches([len(image.data) for image in images], limits.max_batch, limits.max_request_bytes):
+            result = gateway.invoke(
+                Task.PF_EMBED,
+                producer_id,
+                ModelInputs(images=tuple(images[b] for b in batch)),
+                ctx,
+                EntityRef(EntityType.TILE_BATCH, f"tb_{n_batch:05d}", ids=tuple(tile_ids[chunk[b]] for b in batch)),
+                EmbeddingBatch,
+            )
+            n_batch += 1
+            batch_vectors = result.output.as_array()
+            if batch_vectors.shape[0] != len(batch):
+                raise ValueError(f"{producer_id} returned {batch_vectors.shape[0]} embeddings for {len(batch)} tiles")
+            for b, vector in zip(batch, batch_vectors):
+                out[b] = vector
+            if not result.cache_hit:
+                tiles_sent += len(batch)
+        vectors.extend(out[b] for b in range(len(chunk)))
+    return vectors, tiles_sent
+
+
 def embed_tile_grid(
     reader: SlideReader,
     grid: TileGrid,
@@ -179,18 +250,8 @@ def embed_tile_grid(
     time. The merged cache is written only after every batch succeeded.
     """
     registry = gateway.registry
-    entry = registry.models[producer_id]
-    contract = entry.input
-    size_w, size_h = contract.size_px
-    if size_w != size_h:
-        raise ValueError(f"{producer_id} takes {contract.size_px} px images; the tile grid needs square tiles")
-    if contract.color == "normalized" and stain is None:
-        raise ValueError(f"{producer_id} takes normalized colour, which needs the slide's stain transform")
-    if contract.color == "raw" and stain is not None:
-        raise ValueError(f"{producer_id} takes raw colour; a stain transform was given")
-    if contract.format != "png":
-        raise ValueError(f"{producer_id} takes {contract.format}; tiles are sent as lossless PNG")
-    target_mpp = grid.tile_um / size_w
+    contract = registry.models[producer_id].input
+    target_mpp = _tile_mpp(grid, producer_id, contract, stain)
     producer_version = registry.version_of(producer_id)
     metadata = {
         "format": CACHE_FORMAT,
@@ -200,7 +261,7 @@ def embed_tile_grid(
         "grid_version": grid.version,
         "tile_um": grid.tile_um,
         "mpp": target_mpp,
-        "size_px": size_w,
+        "size_px": contract.size_px[0],
         "color": contract.color,
         "stain_sha256": None if stain is None else stain_fingerprint(stain),
     }
@@ -215,39 +276,10 @@ def embed_tile_grid(
             rows[(int(cached.i[k]), int(cached.j[k]))] = (float(cached.tissue_fraction[k]), cached.embeddings[k])
 
     keys = list(zip(grid.i.tolist(), grid.j.tolist()))
-    tile_ids = grid.tile_ids()
     missing = [k for k, key in enumerate(keys) if key not in rows]
-    limits = entry.limits
-    tiles_sent, n_batch = 0, 0
-    for start in range(0, len(missing), limits.max_batch):
-        chunk = missing[start : start + limits.max_batch]
-        images = [
-            _png_input(
-                read_region_at_mpp(
-                    reader, float(grid.x_um[k]), float(grid.y_um[k]), grid.tile_um, grid.tile_um, target_mpp,
-                    color=contract.color, stain=stain,
-                )
-            )
-            for k in chunk
-        ]
-        for batch in plan_batches([len(image.data) for image in images], limits.max_batch, limits.max_request_bytes):
-            result = gateway.invoke(
-                Task.PF_EMBED,
-                producer_id,
-                ModelInputs(images=tuple(images[b] for b in batch)),
-                ctx,
-                EntityRef(EntityType.TILE_BATCH, f"tb_{n_batch:05d}", ids=tuple(tile_ids[chunk[b]] for b in batch)),
-                EmbeddingBatch,
-            )
-            n_batch += 1
-            vectors = result.output.as_array()
-            if vectors.shape[0] != len(batch):
-                raise ValueError(f"{producer_id} returned {vectors.shape[0]} embeddings for {len(batch)} tiles")
-            for b, vector in zip(batch, vectors):
-                k = chunk[b]
-                rows[keys[k]] = (float(grid.tissue_fraction[k]), vector)
-            if not result.cache_hit:
-                tiles_sent += len(batch)
+    vectors, tiles_sent = embed_tiles(reader, grid, missing, producer_id=producer_id, gateway=gateway, ctx=ctx, stain=stain)
+    for k, vector in zip(missing, vectors):
+        rows[keys[k]] = (float(grid.tissue_fraction[k]), vector)
 
     dims = {vector.shape[0] for _, vector in rows.values()}
     if len(dims) != 1:

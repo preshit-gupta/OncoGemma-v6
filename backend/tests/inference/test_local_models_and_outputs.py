@@ -15,7 +15,7 @@ from app.inference.outputs import ClassProbabilities, EmbeddingBatch
 
 
 def probe_entry(**changes):
-    return get_pipeline_config().models.models["triage_probe"].model_copy(update=changes)
+    return get_pipeline_config().models.models["tumor_head"].model_copy(update=changes)
 
 
 def features(n=3):
@@ -26,44 +26,44 @@ def features(n=3):
 # --- LocalSklearnAdapter ----------------------------------------------------------------
 
 
-def test_repo_probe_predicts_class_probabilities():
-    raw = LocalSklearnAdapter().call(probe_entry(), AdapterRequest("triage_probe", features=features()), 5.0)
+def test_repo_tumor_head_predicts_class_probabilities():
+    raw = LocalSklearnAdapter().call(probe_entry(), AdapterRequest("tumor_head", features=features()), 5.0)
     output = ClassProbabilities.model_validate(raw.data)
-    assert output.classes == [0, 1]
-    assert output.column(1).shape == (3,)
+    assert output.classes == ["invasive_tumor", "stroma", "inflammatory", "necrosis"]  # models/tumor_head/1.0.0/card.json
+    assert output.column("invasive_tumor").shape == (3,)
 
 
 def test_artifact_is_loaded_once(tmp_path):
     root = tmp_path / "repo"
-    (root / "models" / "probe").mkdir(parents=True)
-    shutil.copy(REPO_ROOT / "models" / "probe" / "probe_v1.joblib", root / "models" / "probe" / "probe_v1.joblib")
+    (root / "models" / "tumor_head" / "1.0.0").mkdir(parents=True)
+    shutil.copy(REPO_ROOT / "models" / "tumor_head" / "1.0.0" / "model.joblib", root / "models" / "tumor_head" / "1.0.0" / "model.joblib")
     adapter = LocalSklearnAdapter(root=root)
-    adapter.call(probe_entry(), AdapterRequest("triage_probe", features=features()), 5.0)
-    (root / "models" / "probe" / "probe_v1.joblib").unlink()
-    adapter.call(probe_entry(), AdapterRequest("triage_probe", features=features()), 5.0)
+    adapter.call(probe_entry(), AdapterRequest("tumor_head", features=features()), 5.0)
+    (root / "models" / "tumor_head" / "1.0.0" / "model.joblib").unlink()
+    adapter.call(probe_entry(), AdapterRequest("tumor_head", features=features()), 5.0)
 
 
 def test_missing_artifact_is_unavailable(tmp_path):
     with pytest.raises(Unavailable, match="does not exist"):
-        LocalSklearnAdapter(root=tmp_path).call(probe_entry(), AdapterRequest("triage_probe", features=features()), 5.0)
+        LocalSklearnAdapter(root=tmp_path).call(probe_entry(), AdapterRequest("tumor_head", features=features()), 5.0)
 
 
 def test_artifact_must_match_the_pinned_sha256(tmp_path):
-    (tmp_path / "models" / "probe").mkdir(parents=True)
-    (tmp_path / "models" / "probe" / "probe_v1.joblib").write_bytes(b"retrained elsewhere")
+    (tmp_path / "models" / "tumor_head" / "1.0.0").mkdir(parents=True)
+    (tmp_path / "models" / "tumor_head" / "1.0.0" / "model.joblib").write_bytes(b"retrained elsewhere")
     with pytest.raises(CallRejected, match="the registry pins"):
-        LocalSklearnAdapter(root=tmp_path).call(probe_entry(), AdapterRequest("triage_probe", features=features()), 5.0)
+        LocalSklearnAdapter(root=tmp_path).call(probe_entry(), AdapterRequest("tumor_head", features=features()), 5.0)
 
 
 def test_remote_artifacts_are_not_fetched():
-    entry = probe_entry(artifact_uri="gs://models/probe_v1.joblib")
+    entry = probe_entry(artifact_uri="gs://models/tumor_head/1.0.0/model.joblib")
     with pytest.raises(CallRejected, match="only repository artifacts"):
-        LocalSklearnAdapter().call(entry, AdapterRequest("triage_probe", features=features()), 5.0)
+        LocalSklearnAdapter().call(entry, AdapterRequest("tumor_head", features=features()), 5.0)
 
 
 def test_features_are_required():
     with pytest.raises(CallRejected, match="needs features"):
-        LocalSklearnAdapter().call(probe_entry(), AdapterRequest("triage_probe"), 5.0)
+        LocalSklearnAdapter().call(probe_entry(), AdapterRequest("tumor_head"), 5.0)
 
 
 # --- output models --------------------------------------------------------------------

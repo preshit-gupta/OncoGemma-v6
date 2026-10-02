@@ -370,15 +370,28 @@ class HotspotExtractionConfig(StrictModel):
     simplify_tolerance_um: NonNegativeFloat
 
 
+class TumorHeadConfig(StrictModel):
+    """The tumour head and how its calibrated probability becomes the tumour mask (SPEC-05 §4.2)."""
+
+    # Registry keys: the classifier over the tile embeddings, and the calibrator over its output.
+    model: RegistryKey
+    calibrator: RegistryKey
+    # The head class that is invasive tumour (S3-F1's positive class).
+    positive_class: NonEmptyStr
+    # τ_tumor: a tile is tumour when its calibrated probability (smoothed, if set) reaches it.
+    # Chosen on val (argmax F1) and recorded in the head's model card.
+    threshold: Fraction
+    # Gaussian smoothing of the calibrated probability on the tile grid before thresholding; null = none.
+    smoothing_sigma_tiles: PositiveFloat | None
+
+
 class TriageConfig(StrictModel):
     # The tile grid: patch_size_px square tiles read at mpp_target, the embedder's input contract.
     mpp_target: Mpp
     patch_size_px: PositiveInt
-    # Overview heatmap cells with less tissue than this stay empty (until SPEC-05 §4.3 replaces the overview grid).
-    tissue_threshold_pct: Fraction
-    # Registry keys: the tile embedder and the classifier over its embeddings.
+    # Registry key of the tile embedder.
     embedding_model: RegistryKey
-    tumor_model: RegistryKey
+    tumor_head: TumorHeadConfig
     tumor_referee: TumorRefereeConfig
     hotspot_extraction: HotspotExtractionConfig
 
@@ -748,12 +761,20 @@ class PipelineConfig(StrictModel):
             abs(triage.mpp_target - contract.mpp) <= contract.mpp_tolerance,
             f"triage.yaml mpp_target {triage.mpp_target} must be within {contract.mpp_tolerance} of the embedder's input mpp {contract.mpp}",
         )
-        classifier = models.get(triage.tumor_model)
+        head = triage.tumor_head
+        classifier = models.get(head.model)
         _require(
             classifier is not None
             and classifier.kind == "classifier"
             and getattr(getattr(classifier, "input", None), "features", None) == triage.embedding_model,
-            f"triage.yaml tumor_model {triage.tumor_model!r} must be a classifier over {triage.embedding_model}",
+            f"triage.yaml tumor_head.model {head.model!r} must be a classifier over {triage.embedding_model}",
+        )
+        calibrator = models.get(head.calibrator)
+        _require(
+            calibrator is not None
+            and calibrator.kind == "classifier"
+            and getattr(getattr(calibrator, "input", None), "features", None) == head.model,
+            f"triage.yaml tumor_head.calibrator {head.calibrator!r} must be a classifier over {head.model}",
         )
         referee = models.get(triage.tumor_referee.producer)
         _require(

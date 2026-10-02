@@ -83,7 +83,7 @@ def test_hash_changes_when_a_prompt_is_added(tmp_path):
 
 def test_hash_covers_the_model_registry(tmp_path):
     configs = copy_configs(tmp_path)
-    edit_yaml(configs / "models.yaml", lambda d: d["models"]["triage_probe"].update(version="probe_v2"))
+    edit_yaml(configs / "models.yaml", lambda d: d["models"]["tumor_head"].update(version="tumor_head@9.9.9"))
     assert load(configs).config_hash() != load(REPO_CONFIGS).config_hash()
 
 
@@ -156,8 +156,10 @@ def test_files_that_disagree_are_rejected(tmp_path):
     [
         (lambda d: d.update(embedding_model="medgemma"), "embedding_model 'medgemma' must be an embedding model"),
         (lambda d: d.update(embedding_model="missing"), "embedding_model 'missing'"),
-        (lambda d: d.update(tumor_model="path_foundation"), "tumor_model 'path_foundation' must be a classifier"),
-        (lambda d: d["tumor_referee"].update(producer="triage_probe"), "must be a VLM"),
+        (lambda d: d["tumor_head"].update(model="path_foundation"), "tumor_head.model 'path_foundation' must be a classifier"),
+        (lambda d: d["tumor_head"].update(calibrator="tumor_head"), "tumor_head.calibrator 'tumor_head' must be a classifier over tumor_head"),
+        (lambda d: d["tumor_head"].update(threshold=1.5), "threshold"),
+        (lambda d: d["tumor_referee"].update(producer="tumor_head"), "must be a VLM"),
         (lambda d: d["tumor_referee"].update(prompt="tumor_verification@v9.md"), "is not in configs/prompts"),
         (lambda d: d["tumor_referee"].update(candidates=5), "at least hotspot_extraction.max_hotspots"),
         (lambda d: d.update(vertex_ai={"batch_size": 64}), "vertex_ai"),
@@ -193,7 +195,7 @@ def test_mitosis_models_must_exist_in_the_registry(tmp_path, edit, message):
 @pytest.mark.parametrize(
     "edit, message",
     [
-        (lambda d: d["grading"]["estimators"].update(producer="triage_probe"), "must be a VLM"),
+        (lambda d: d["grading"]["estimators"].update(producer="tumor_head"), "must be a VLM"),
         (lambda d: d["grading"]["estimators"].update(pleo_prompt="pleo@v2.md"), "pleo_prompt 'pleo@v2.md' is not in configs/prompts"),
         (lambda d: d["grading"]["estimators"].update(histotype_images=30), "must not exceed n_patches"),
         (lambda d: d["grading"]["estimators"].pop("tubule_prompt"), "tubule_prompt"),

@@ -1,11 +1,18 @@
 # v4.2 Hotspot Triage Configuration
 mpp_target: 1.0 # 10x magnification (~1.0 µm/px)
 patch_size_px: 224 # 224x224 tiles: the global grid of 224 µm tiles from the slide origin (SPEC-05 §3)
-tissue_threshold_pct: 0.25 # An overview heatmap cell is tissue if >= 25% of it is (tiles: specimen_profiles.yaml triage)
 
 # Registry keys (configs/models.yaml), which also hold versions, request limits and artifacts.
 embedding_model: path_foundation # 224x224 tile embeddings at 1.0 µm/px
-tumor_model: triage_probe # classifier over the embeddings
+
+# The tumour head over the embeddings and how it becomes the tumour mask (SPEC-05 §4.2).
+# threshold and smoothing come from the model card models/tumor_head/1.0.0/card.json.
+tumor_head:
+  model: tumor_head
+  calibrator: tumor_head_calibrator
+  positive_class: invasive_tumor
+  threshold: 0.5 # τ_tumor = argmax F1 on BCSS val (calibrated p); BCNB val is deferred (D20)
+  smoothing_sigma_tiles: null # σ = 1 tile lowered val F1 by 0.095 (card ablation), so no smoothing
 
 # VLM check of candidate hotspots before the top max_hotspots are kept (SPEC-05 §5.4 arm).
 tumor_referee:

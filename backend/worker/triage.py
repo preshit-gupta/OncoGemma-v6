@@ -1,8 +1,13 @@
 """
-Triage stage worker handler (v4.2 Hotspot Triage).
-Extracts 1.0 µm/px tiles, embeds them with the registry's embedding model and scores them
-with its tumour classifier (both through the model gateway), extracts hotspot candidates,
-has the configured VLM check them, and renders the viridis heatmap overlay.
+Triage stage worker handler (SPEC-05 §3-4).
+Embeds every tissue tile of the global 224 µm grid with the registry's embedding model, scores
+each tile with the trained tumour head and its calibrator (all through the model gateway),
+thresholds the calibrated tumour probability into the tumour mask, extracts hotspot candidates,
+has the configured VLM check them, and writes the tile-resolution heatmap.
+
+Outputs (SPEC-05 §4.3) under ``cases/<case>/triage/``: ``tiles.parquet`` (every tile's class
+probabilities, ``p_tumor_cal`` and ``is_tumor``), ``heatmap.png`` + ``heatmap.json`` (1 px per tile,
+alpha 0 only off tissue) and ``tumor_mask.png`` + ``tumor_mask.json`` on the same grid.
 
 Every model call is a DecisionRecord (SPEC-01 §3.3). A slide that cannot be read fails the
 stage (SlideReadError); nothing is synthesised in its place (SPEC-01 §3.9). Tissue comes from
@@ -16,7 +21,8 @@ import tempfile
 import shutil
 import numpy as np
 import matplotlib
-import matplotlib.cm as cm
+import pyarrow as pa
+import pyarrow.parquet as pq
 from PIL import Image
 from sqlalchemy.orm import Session
 
@@ -32,7 +38,6 @@ from app.core.stain_profiles import usable_stain_transform
 from app.core.tasks import EntityType, Task
 from app.core.tissue_mask_store import load_tissue_mask
 from app.inference.gateway import EntityRef, FallbackResult, ImageInput, InputSpec, ModelInputs
-from app.inference.outputs import ClassProbabilities
 from app.inference.schemas import TumorVerdict
 from app.models.case import Case
 from app.models.slide import Slide
@@ -40,53 +45,52 @@ from app.models.stage_execution import StageExecution
 from app.models.audit import AuditEvent
 from pipeline.errors import DegenerateStainProfileError, SlideReadError
 from pipeline.hotspots import extract_hotspots
-from pipeline.probe import l2_normalize
 from pipeline.slide_io import SlideReader, centered_origin_um, normalize_region, read_region_at_mpp, require_mpp
 from pipeline.stain import StainTransform
 from pipeline.tile_embeddings import embed_tile_grid
-from pipeline.tile_grid import tissue_tile_grid
+from pipeline.tile_grid import TileGrid, tissue_tile_grid
+from pipeline.tumor_head import TileScores, score_tiles, smooth_tile_probabilities, tile_raster
 from worker.runtime import StageRuntime
 
-# Class label of "tumour" in the tumour classifier's predict_proba columns.
-TUMOR_CLASS = 1
+TILES_FORMAT = "triage_tiles_v1"
 
 
-def render_viridis_heatmap_png(
-    prob_grid: np.ndarray,
-    output_path: str,
-    scale: float = 1.0
-) -> str:
-    """
-    Renders 2D probability grid as a full-spectrum Viridis color image with alpha channel for OSD overlay.
-    """
-    ny, nx = prob_grid.shape
-    valid_mask = ~np.isnan(prob_grid)
+def heatmap_png(p_raster: np.ndarray) -> bytes:
+    """``p_tumor_cal`` in viridis, one pixel per tile; alpha 0 only where the tile is not tissue (NaN)."""
+    tissue = ~np.isnan(p_raster)
+    rgba = matplotlib.colormaps["viridis"](np.clip(np.nan_to_num(p_raster, nan=0.0), 0.0, 1.0))
+    rgba[..., 3] = np.where(tissue, 1.0, 0.0)
+    buf = io.BytesIO()
+    Image.fromarray((rgba * 255).round().astype(np.uint8), mode="RGBA").save(buf, "PNG")
+    return buf.getvalue()
 
-    prob_norm = np.nan_to_num(prob_grid, nan=0.0)
-    prob_norm = np.clip(prob_norm, 0.0, 1.0)
 
-    try:
-        colormap = matplotlib.colormaps["viridis"]
-    except Exception:
-        colormap = cm.get_cmap("viridis")
+def tumor_mask_png(is_tumor: np.ndarray) -> bytes:
+    """The tumour mask, one pixel per tile: 255 tumour, 0 not (or not tissue)."""
+    buf = io.BytesIO()
+    Image.fromarray(np.where(is_tumor, 255, 0).astype(np.uint8), mode="L").save(buf, "PNG")
+    return buf.getvalue()
 
-    rgba_mapped = colormap(prob_norm) # Shape (ny, nx, 4)
 
-    # Set alpha channel: 0.0 for non-tissue (NaN), scaled alpha for tissue based on prob
-    alpha = np.where(valid_mask, np.clip(0.35 + 0.55 * prob_norm, 0.25, 0.90), 0.0)
-    rgba_mapped[..., 3] = alpha
-
-    img_uint8 = (rgba_mapped * 255).astype(np.uint8)
-    img = Image.fromarray(img_uint8, mode="RGBA")
-
-    if scale != 1.0:
-        new_w = max(1, int(nx * scale))
-        new_h = max(1, int(ny * scale))
-        img = img.resize((new_w, new_h), Image.BILINEAR)
-
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    img.save(output_path, format="PNG")
-    return output_path
+def tiles_parquet(grid: TileGrid, scores: TileScores, p_tumor_cal: np.ndarray, is_tumor: np.ndarray, head_version: str) -> bytes:
+    """``triage/tiles.parquet`` (SPEC-05 §4.3): one row per tissue tile; ``p`` in the head's class order."""
+    k = len(scores.classes)
+    table = pa.table({
+        "i": pa.array(grid.i, pa.int32()),
+        "j": pa.array(grid.j, pa.int32()),
+        "x_um": pa.array(grid.x_um, pa.float32()),
+        "y_um": pa.array(grid.y_um, pa.float32()),
+        "tissue_fraction": pa.array(grid.tissue_fraction, pa.float32()),
+        "p": pa.FixedSizeListArray.from_arrays(pa.array(scores.probabilities.astype(np.float32).ravel(), pa.float32()), k),
+        "p_tumor_cal": pa.array(p_tumor_cal, pa.float32()),
+        "is_tumor": pa.array(is_tumor, pa.bool_()),
+    })
+    metadata = {"format": TILES_FORMAT, "classes": scores.classes, "tile_um": grid.tile_um, "grid_version": grid.version,
+                "head_version": head_version}
+    table = table.replace_schema_metadata({b"oncogemma.triage_tiles": json.dumps(metadata).encode()})
+    buf = io.BytesIO()
+    pq.write_table(table, buf)
+    return buf.getvalue()
 
 
 def _png(rgb: np.ndarray) -> bytes:
@@ -117,18 +121,20 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
     Triage stage worker handler execution:
     1. Loads the registered tissue mask and the slide's persisted stain profile.
     2. Downloads raw slide to transient temp file for high-res patch sampling.
-    3. Embeds every tissue tile of the global grid (cached per slide) and scores them with the tumour classifier (gateway).
+    3. Embeds every tissue tile of the global grid (cached per slide), scores every tile with the
+       tumour head and its calibrator (gateway) and thresholds it into the tumour mask.
     4. Has the configured VLM check hotspot candidates (gateway).
-    5. Renders Viridis heatmap & extracts hotspot thumbnails.
+    5. Writes tiles.parquet, the heatmap, the tumour mask and the hotspot thumbnails.
     6. Uploads all triage outputs directly to GCS artifacts bucket.
     7. Purges all temporary scratch files.
     """
     start_time = time.time()
     config = runtime.config
     triage_cfg = config.triage
+    head_cfg = triage_cfg.tumor_head
     registry = config.models
     gateway, ctx = runtime.gateway, runtime.ctx
-    embed_key, tumor_key = triage_cfg.embedding_model, triage_cfg.tumor_model
+    embed_key = triage_cfg.embedding_model
     referee_cfg = triage_cfg.tumor_referee
 
     input_ref = stage_execution.input_ref or {}
@@ -159,14 +165,6 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
     od_beta = profile.stain_fit.od_beta
     tissue = load_tissue_mask(case_id)
 
-    # Issue #86: Define triage overview grid dimensions matching slide aspect ratio
-    nx = 80
-    ny = max(1, int(round(nx * (height_px / max(width_px, 1)))))
-
-    stride_x_um = width_um / nx
-    stride_y_um = height_um / ny
-    grid_origin_um = (0.0, 0.0)
-
     scratch_dir = tempfile.mkdtemp(prefix="og_triage_")
     reader = None
 
@@ -182,31 +180,6 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
         except OSError as exc:
             raise SlideReadError(f"could not download slide {gcs_uri_original}: {exc}") from exc
         reader = SlideReader.from_slide_row(local_slide_path, slide_obj)
-
-        # The overview: one cell of the heatmap grid per pixel, read at that resolution.
-        overview = read_region_at_mpp(reader, 0.0, 0.0, width_um, height_um, stride_x_um).rgb
-        if overview.shape[:2] != (ny, nx):  # the grid rounds its row count; squash the sub-cell difference
-            overview = np.array(Image.fromarray(overview).resize((nx, ny), Image.Resampling.BOX))
-        arr = overview.astype(float)
-        od = np.maximum(0, -np.log10(np.clip(arr / 255.0, 1e-4, 1.0)))
-        stain_map = od.sum(axis=-1)
-
-        # A cell is tissue when the registered mask covers enough of it; no clean-up erodes it (SPEC-04 §1).
-        cell_tissue_fraction = tissue.fraction_grid(stride_x_um, stride_y_um, nx, ny)
-        tissue_mask_overview = cell_tissue_fraction >= triage_cfg.tissue_threshold_pct
-        if not tissue_mask_overview.any():
-            raise ValueError(f"The registered tissue mask has no heatmap cell with {triage_cfg.tissue_threshold_pct:.0%} tissue on slide {slide_obj.id}.")
-
-        from scipy import ndimage
-        dist_from_edge = ndimage.distance_transform_edt(tissue_mask_overview)
-        margin_factor = np.clip(dist_from_edge / 2.0, 0.15, 1.0)
-
-        # Normalized histological cellularity across valid tissue
-        tissue_coords = [(ix, iy) for iy in range(ny) for ix in range(nx) if tissue_mask_overview[iy, ix]]
-        stain_vals = [float(stain_map[iy, ix]) for (ix, iy) in tissue_coords]
-        p10 = float(np.percentile(stain_vals, 10))
-        p90 = float(np.percentile(stain_vals, 90))
-        norm_cellularity = np.clip((stain_map - p10) / max(p90 - p10, 1e-4), 0.0, 1.0)
 
         # 2. Every tissue tile of the global grid from the slide origin (SPEC-05 §3). There is no
         # sample cap, so every tissue tile gets a probability.
@@ -233,64 +206,25 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
         embeddings = grid_embeddings.embeddings
         tiles_sent = grid_embeddings.tiles_sent
 
-        # 4. Predict tumour probabilities with the registry's classifier over the embeddings
-        scores = gateway.invoke(
-            Task.TUMOR_HEAD,
-            tumor_key,
-            ModelInputs(features=l2_normalize(embeddings), features_producer=embed_key),
-            ctx,
-            EntityRef(EntityType.TILE_BATCH, "tiles", ids=tuple(tile_ids)),
-            ClassProbabilities,
+        # 4. Every tile's seven class probabilities and calibrated tumour probability (SPEC-05 §4.2).
+        scores = score_tiles(
+            embeddings, tile_ids, head_key=head_cfg.model, calibrator_key=head_cfg.calibrator, embed_key=embed_key,
+            positive_class=head_cfg.positive_class, gateway=gateway, ctx=ctx,
         )
-        raw_probs = scores.output.column(TUMOR_CLASS)
-        print(f"[Triage Worker] Embeddings shape: {embeddings.shape}, Mean Tumor Prob: {float(np.mean(raw_probs)):.3f}")
+        head_version = registry.version_of(head_cfg.model)
+        p_raster = tile_raster(grid.i, grid.j, scores.p_tumor_cal, grid.n_cols, grid.n_rows)  # NaN off tissue
+        mask_raster = p_raster if head_cfg.smoothing_sigma_tiles is None else smooth_tile_probabilities(p_raster, head_cfg.smoothing_sigma_tiles)
+        is_tumor_raster = np.nan_to_num(mask_raster, nan=-1.0) >= head_cfg.threshold
+        is_tumor = is_tumor_raster[grid.j, grid.i]
+        print(f"[Triage Worker] {int(is_tumor.sum())} of {grid.n_tiles} tiles are invasive tumour at τ {head_cfg.threshold:g} ({head_version})")
 
-        # Each overview cell takes the mean probability of the tiles centred in it.
-        cell_ix = np.clip(((grid.x_um + tile_um / 2) / stride_x_um).astype(np.int64), 0, nx - 1)
-        cell_iy = np.clip(((grid.y_um + tile_um / 2) / stride_y_um).astype(np.int64), 0, ny - 1)
-        prob_sums = np.zeros((ny, nx))
-        tile_counts = np.zeros((ny, nx))
-        np.add.at(prob_sums, (cell_iy, cell_ix), raw_probs)
-        np.add.at(tile_counts, (cell_iy, cell_ix), 1)
-        sampled_iy, sampled_ix = np.nonzero(tile_counts)
-        sampled_cells = list(zip(sampled_ix.tolist(), sampled_iy.tolist()))
-        cell_probs = prob_sums[sampled_iy, sampled_ix] / tile_counts[sampled_iy, sampled_ix]
-
-        # 5. Build 2D probability grid [ny, nx] by fusing probe predictions with cellularity and margin depth
-        prob_grid = np.full((ny, nx), np.nan, dtype=np.float32)
-
-        for k, (ix, iy) in enumerate(sampled_cells):
-            base_prob = float(cell_probs[k])
-            cell_score = float(norm_cellularity[iy, ix])
-            m_factor = float(margin_factor[iy, ix])
-            fused_prob = (0.35 * base_prob + 0.65 * cell_score) * (0.40 + 0.60 * m_factor) * 1.25
-            prob_grid[iy, ix] = float(np.clip(fused_prob, 0.05, 0.98))
-
-        unsampled_tissue = [(ix, iy) for (ix, iy) in tissue_coords if np.isnan(prob_grid[iy, ix])]
-        if unsampled_tissue:
-            from scipy.spatial import KDTree
-            kdtree = KDTree(sampled_cells)
-            k_val = min(3, len(sampled_cells))
-            dists, nn_indices = kdtree.query(unsampled_tissue, k=k_val)
-            if k_val == 1 or dists.ndim == 1:
-                dists = dists[:, np.newaxis]
-                nn_indices = nn_indices[:, np.newaxis]
-            weights = 1.0 / np.maximum(dists, 1.0)
-            weights /= np.sum(weights, axis=1, keepdims=True)
-            for idx, (ux, uy) in enumerate(unsampled_tissue):
-                interp_p = float(np.sum(weights[idx] * cell_probs[nn_indices[idx]]))
-                cell_score = float(norm_cellularity[uy, ux])
-                m_factor = float(margin_factor[uy, ux])
-                fused_interp = (0.35 * interp_p + 0.65 * cell_score) * (0.40 + 0.60 * m_factor) * 1.25
-                prob_grid[uy, ux] = float(np.clip(fused_interp, 0.05, 0.98))
-
-        # Extract candidate hotspot ROIs for the referee
+        # Hotspot candidates on the tile grid (the window lattice of SPEC-05 §5 replaces this).
         candidate_cfg = triage_cfg.hotspot_extraction.model_dump()
         candidate_cfg["max_hotspots"] = referee_cfg.candidates
         raw_candidates = extract_hotspots(
-            prob_grid=prob_grid,
-            grid_origin_um=grid_origin_um,
-            stride_um=(stride_x_um, stride_y_um),
+            prob_grid=p_raster.astype(np.float32),
+            grid_origin_um=(0.0, 0.0),
+            stride_um=(grid.tile_um, grid.tile_um),
             cfg=candidate_cfg,
             slide_dimensions_um=(width_um, height_um)
         )
@@ -355,28 +289,22 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
             item_copy["id"] = f"hs_{idx + 1:02d}"
             hotspots.append(item_copy)
 
-        # Render Viridis heatmap overlay PNG
-        heatmap_png_path = os.path.join(scratch_dir, "heatmap_triage.png")
-        render_viridis_heatmap_png(prob_grid, heatmap_png_path)
-        with open(heatmap_png_path, "rb") as hf:
-            heatmap_bytes = hf.read()
-        upload_blob_from_bytes(
-            settings.GCS_ARTIFACTS_BUCKET,
-            f"cases/{case_id}/triage/heatmap_triage.png",
-            heatmap_bytes,
-            "image/png"
-        )
-
-        # Save & upload prob_grid.npy
-        prob_grid_path = os.path.join(scratch_dir, "prob_grid.npy")
-        np.save(prob_grid_path, prob_grid)
-        with open(prob_grid_path, "rb") as pgf:
-            upload_blob_from_bytes(
-                settings.GCS_ARTIFACTS_BUCKET,
-                f"cases/{case_id}/triage/prob_grid.npy",
-                pgf.read(),
-                "application/octet-stream"
-            )
+        # SPEC-05 §4.3 outputs: every tile's scores, the tile-resolution heatmap and the tumour mask.
+        triage_prefix = f"cases/{case_id}/triage"
+        grid_geometry = {"tile_um": grid.tile_um, "origin_um": [0.0, 0.0], "nx": grid.n_cols, "ny": grid.n_rows,
+                         "head_version": head_version}
+        heatmap_meta = {**grid_geometry, "value": "p_tumor_cal"}
+        tumor_mask_meta = {**grid_geometry, "threshold": head_cfg.threshold, "smoothing_sigma_tiles": head_cfg.smoothing_sigma_tiles,
+                           "n_tumor_tiles": int(is_tumor.sum()), "n_tissue_tiles": grid.n_tiles}
+        uploads = [
+            ("tiles.parquet", tiles_parquet(grid, scores, scores.p_tumor_cal, is_tumor, head_version), "application/octet-stream"),
+            ("heatmap.png", heatmap_png(p_raster), "image/png"),
+            ("heatmap.json", json.dumps(heatmap_meta).encode("utf-8"), "application/json"),
+            ("tumor_mask.png", tumor_mask_png(is_tumor_raster), "image/png"),
+            ("tumor_mask.json", json.dumps(tumor_mask_meta).encode("utf-8"), "application/json"),
+        ]
+        for name, data, content_type in uploads:
+            upload_blob_from_bytes(settings.GCS_ARTIFACTS_BUCKET, f"{triage_prefix}/{name}", data, content_type)
 
         # Review thumbnails of every hotspot at three magnifications (10x: 512 um, 20x: 256 um, 40x: 128 um),
         # as scanned and, when the slide's stain fit allows it, normalised. A degenerate fit leaves no
@@ -425,20 +353,23 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
             hs["thumbnail_uri"] = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/triage/patches/{hs_id}_10x_{thumb_variant}.png"
             hs["thumbnail_url"] = get_gcs_artifact_direct_url(f"cases/{case_id}/triage/patches/{hs_id}_10x_{thumb_variant}.png")
 
-        model_versions = {key: registry.version_of(key) for key in (embed_key, tumor_key, referee_cfg.producer)}
+        model_versions = {
+            key: registry.version_of(key) for key in (embed_key, head_cfg.model, head_cfg.calibrator, referee_cfg.producer)
+        }
         wall_time_s = round(time.time() - start_time, 2)
         unit_price = config.pricing.path_foundation.unit_price_per_1k_patches
         estimated_usd = round((tiles_sent / 1000.0) * unit_price, 4)
 
         output_result = {
-            "heatmap_png_uri": f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/triage/heatmap_triage.png",
-            "heatmap_direct_url": get_gcs_artifact_direct_url(f"cases/{case_id}/triage/heatmap_triage.png"),
-            "prob_grid_uri": f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/triage/prob_grid.npy",
-            "grid": {
-                "origin_um": list(grid_origin_um),
-                "stride_um": [float(stride_x_um), float(stride_y_um)],
-                "nx": nx,
-                "ny": ny
+            "heatmap_png_uri": f"gs://{settings.GCS_ARTIFACTS_BUCKET}/{triage_prefix}/heatmap.png",
+            "heatmap_direct_url": get_gcs_artifact_direct_url(f"{triage_prefix}/heatmap.png"),
+            "heatmap": heatmap_meta,
+            "tumor_threshold": head_cfg.threshold,
+            "tumor_mask": {**tumor_mask_meta, "uri": f"gs://{settings.GCS_ARTIFACTS_BUCKET}/{triage_prefix}/tumor_mask.png"},
+            "tiles_uri": f"gs://{settings.GCS_ARTIFACTS_BUCKET}/{triage_prefix}/tiles.parquet",
+            "tumor_head": {
+                "head": head_cfg.model, "calibrator": head_cfg.calibrator, "positive_class": head_cfg.positive_class,
+                "head_record_id": scores.head_record_id, "calibrator_record_id": scores.calibrator_record_id,
             },
             "tile_grid": {
                 "version": grid.version,

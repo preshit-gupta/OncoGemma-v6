@@ -1039,6 +1039,7 @@ fsspec==2026.4.0 \
     #   dask
     #   huggingface-hub
     #   s3fs
+    #   tiffslide
     #   torch
     #   universal-pathlib
     #   wsidicom
@@ -1346,7 +1347,10 @@ imagecodecs==2026.1.14 \
     --hash=sha256:b94c57922816eb025d443f4594f1235d80f0f56b4b48aa9b60bf9d679ea49415 \
     --hash=sha256:bd72bdff628d6c32c71f086e488f483abbf84816b05d439964d980af49f2a9c5 \
     --hash=sha256:e37ef5116d41ba90b1c9d1d7121846671fd65c271f0c15ef24208353fa79b283
-    # via tiatoolbox
+    # via
+    #   -r requirements/training.in
+    #   tiatoolbox
+    #   tiffslide
 imageio==2.38.0 \
     --hash=sha256:474ea3a39e36e0e8e02d81d7f10412aaecec7a2825e5fbc4f44cbcd7bb7cebfc \
     --hash=sha256:fe1d406862f6bc2930e8ec662d7bc40d4370cb76e3390dcd33819560d2708531
@@ -2744,6 +2748,7 @@ pillow==12.1.1 \
     #   openslide-python
     #   scikit-image
     #   tiatoolbox
+    #   tiffslide
     #   torchvision
     #   wsidicom
 platformdirs==4.12.1 \
@@ -4267,6 +4272,11 @@ tifffile==2026.2.24 \
     # via
     #   scikit-image
     #   tiatoolbox
+    #   tiffslide
+tiffslide==3.0.1 \
+    --hash=sha256:383de7b8013204b74f3ca5a6a5d768b1f21b7d15529a6b1d5dcbbcdd4b515b49 \
+    --hash=sha256:a2dbfb21f25ca717d8a81a30f23bd139bd9577c482084bfeffdcfc77fc55a3c8
+    # via -r requirements/training.in
 timm==1.0.27 \
     --hash=sha256:315dfe63186ca9fb7ff941268941231fd5be259f2b4bb4afa28560ae1015cb9a \
     --hash=sha256:5ff07c9ddf53cbada88eab1c93ff175c64cab683b5a2fddf863bcee985926f89
@@ -4457,6 +4467,7 @@ typing-extensions==4.16.0 \
     #   referencing
     #   sqlalchemy
     #   starlette
+    #   tiffslide
     #   torch
     #   typing-inspection
     #   zarr
@@ -4996,4 +5007,6 @@ yarl==1.25.1 \
 zarr==3.1.6 \
     --hash=sha256:b5a82c5079d1c3d4ee8f06746fa3b9a98a7d804300fa3f4be154362a33e1207e \
     --hash=sha256:d95e72cbea4b90e9a70679468b8266400331756232576ae2b43400ac5108d0eb
-    # via tiatoolbox
+    # via
+    #   tiatoolbox
+    #   tiffslide
