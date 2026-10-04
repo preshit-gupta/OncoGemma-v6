@@ -62,8 +62,8 @@ The card column links the delegate task cards.
 | 7.8 | Validate the baseline on MIDOG++ breast (fixed settings, no tuning) | 02 §5, 06 §3.1, 6.1 | M | C | 5.5 | [WP-7.8](tasks/WP-7.8-baseline-validation.md) |
 | 7.6b | Tumour-cell gate and HPF tumour constraints | 06 §5.5, 5.8 | M | C | 6.2 (merged), 6.3 (merged), 7.6a | [WP-7.6b](tasks/WP-7.6b-tumour-gate.md) |
 | 7.3, 7.4, 7.5 | Attribution study, classifier B, referee v2, definition file | 06 §3, 5.3–5.4, 6.2 | — | — | — | **deferred to the next iteration** (D19) |
-| 8.6 | `grading_v6` API, hotspot-framed stratified sampling, separate tubule/pleomorphism reads, unbiased aggregation (baseline end to end) | 07 §4–5.2, 6.1, 7.1, 7.3 | L | C | 7.6a, 6.2/6.3 (merged), 8.5 (merged) | [WP-8.6](tasks/WP-8.6-grading-v6-api.md) (**production grade screen broken until done**) |
-| 8.7 | Validate the grading baseline on TCGA-BRCA val (fixed settings, no tuning) | 02 §5, 07 §7.1, 8.2 (metrics) | M | C | 8.6, TCGA in-place reads | [WP-8.7](tasks/WP-8.7-grading-baseline-validation.md) |
+| 8.6 | `grading_v6` API, hotspot-framed stratified sampling, separate tubule/pleomorphism reads, unbiased aggregation (baseline end to end) | 07 §4–5.2, 6.1, 7.1, 7.3 | L | C | 7.6a, 6.2/6.3 (merged), 8.5 (merged) | [WP-8.6](tasks/WP-8.6-grading-v6-api.md) **done** (#49) |
+| 8.7 | Validate the grading baseline on TCGA-BRCA val (fixed settings, no tuning) | 02 §5, 07 §7.1, 8.2 (metrics) | M | C | 8.6 (#49), 5.6 IDC source (#54) | [WP-8.7](tasks/WP-8.7-grading-baseline-validation.md) |
 | 8.1 | Tumour-mask sampling, aggregation, bias removal | 07 §4–5.2 | — | — | — | **absorbed into 8.6** (sampling, aggregation, B2–B5); the whole-tumour frame is deferred (§2.3, D21) |
 | 8.2, 8.3, 8.4 | VLM arms (T1 `@v2`, T1-MG, P1), StarDist and nuclear features, MIL/ordinal heads, H2, direct-grade comparator, attribution study | 07 §5.3–5.4, 6.2–6.4, 7.2, 8.2 | — | — | — | **deferred to the next iteration** (§2.3, D21) |
 | 8.5 | GradingReviewWorkspace rewrite | 07 §10 | M | D | contract | [WP-8.5](tasks/WP-8.5-grading-workspace.md) **done** (#9) |

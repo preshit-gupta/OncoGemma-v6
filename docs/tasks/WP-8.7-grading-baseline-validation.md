@@ -20,13 +20,34 @@ This is validation only (D19 spirit, as for WP-7.8):
 - no training;
 - no tuning of any threshold.
 
-## Prerequisite (not built yet)
+## Prerequisite (met)
 
-The harness cannot run whole TCGA slides yet:
-- the owner ruled out a bulk copy into our buckets (2026-09-30);
-- the in-place source (IDC DICOM or GDC range reads in ingest and `SlideReader`) is STATUS "Claude — next" item 1.
+WP-5.6 (#54) reads TCGA-BRCA in place from IDC DICOM, and the val manifest is committed: `backend/eval/manifests/tcga_brca_idc_val.parquet`, 231 slides, 158 with a grade. The deployed worker, eval-worker and API images must include #49 and #54; the #54 lockfile adds `openslide-bin`.
 
-This card starts after that lands, or after the owner approves another source for the val slides only. Do not build it under this card.
+## How to run (owner, PowerShell)
+
+The laptop only creates the run in the production database. The Cloud Run eval worker downloads the slides (in us-central1, from the public IDC bucket) and runs the stages, so nothing large comes to the laptop.
+
+```powershell
+cd "D:\Projects\OncoGemma v6"; git checkout main; git pull
+# Terminal 1: a local tunnel to Cloud SQL (Cloud SQL Auth Proxy, signed in with gcloud)
+cloud-sql-proxy <PROJECT_ID>:us-central1:oncogemma-dev-psql --port 5433
+# Terminal 2, from backend/ (eval is a package inside backend):
+cd backend
+$env:DATABASE_URL = "postgresql+psycopg2://oncogemma:<DB_PASSWORD>@127.0.0.1:5433/oncogemma_db"
+python -m eval.cli run --manifest eval/manifests/tcga_brca_idc_val.parquet --split val --stages ingest,preprocess,qc,triage,mitosis,grading --concurrency 8 --name tcga-val-grading-baseline --no-wait
+gcloud run jobs execute oncogemma-eval-worker --region=us-central1 --tasks=8
+python -m eval.cli status --run <run_id>
+```
+
+- `<DB_PASSWORD>` is the latest version of the Secret Manager secret `og-db-password`.
+- `--no-wait` exits after creating the run; eval workers drive it under a lease.
+- Each job task is one worker, and a task stops after 15 idle minutes or 24 h, so run `execute` again if items are still pending.
+- **Smoke test first:** run one small slide end to end (`TCGA-OL-A5S0-01Z-00-DX1`, 35 MB, 20×) and check the runtime and cost before the full run. One-shot hashes the slide locally first, so pick a small one:
+
+```powershell
+python -m eval.cli one-shot --slide gs://idc-open-data/5a655632-6895-4319-91b7-7c4b4e827acc/ --specimen resection --use-workers --out one_slide.json
+```
 
 ## Read first (only these)
 
@@ -47,7 +68,7 @@ This card starts after that lands, or after the owner approves another source fo
 
 ## Tasks
 
-1. **Run.** Start a harness batch over the TCGA val split, with stages through grading, in `run_mode=eval`, using the deployed models, with no config overrides.
+1. **Run** (steps above). Start a harness batch over the TCGA val split, with stages through grading, in `run_mode=eval`, using the deployed models, with no config overrides.
    - The harness confirms Stages 3 and 4 with their unreviewed machine output and never confirms grading. Check this in `one_shot.py`/`driver.py` and state it in the report.
    - Record the run id, `config_hash` and the image tags.
 2. **Ground truth.** Use `tcga_grade.parquet` rows with `excluded_reason` null.
