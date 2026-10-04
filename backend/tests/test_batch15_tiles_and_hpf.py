@@ -14,10 +14,6 @@ import pytest
 from PIL import Image
 from fastapi import HTTPException
 
-from pipeline.hpf import (
-    greedy_place_hpfs,
-    create_circular_disk_mask
-)
 from pipeline.tiles import extract_patch_from_pyramid
 from pipeline.tumor_head import l2_normalize
 from app.core.config import settings
@@ -30,95 +26,8 @@ from app.models.slide import Slide
 from app.routers.tiles import stream_slide_tile, generate_tile_on_the_fly
 
 
-# ---------------------------------------------------------------------------
-# 1. HPF Placement & Spatial Optimization Tests (#747, #720, #586, #596)
-# ---------------------------------------------------------------------------
-
-def test_greedy_place_hpfs_empty_hotspots_returns_empty():
-    """Issue #747: When hotspot_polygons_um is explicitly [], return [] immediately."""
-    density_map = np.ones((50, 50), dtype=np.float32) * 5.0
-    grid_meta = {"origin_um": [0.0, 0.0], "stride_um": 16.0, "nx": 50, "ny": 50}
-
-    # Explicit empty list of hotspots -> must return []
-    res_empty = greedy_place_hpfs(
-        density_map,
-        grid_meta,
-        hotspot_polygons_um=[],
-        count=5
-    )
-    assert res_empty == []
-
-    # None -> unconstrained whole-slide placement
-    res_unconstrained = greedy_place_hpfs(
-        density_map,
-        grid_meta,
-        hotspot_polygons_um=None,
-        count=5
-    )
-    assert len(res_unconstrained) > 0
-
-
-def test_greedy_place_hpfs_vectorized_polygon_containment():
-    """Issue #720: Vectorized polygon containment with matplotlib.path.Path."""
-    ny, nx = 60, 60
-    stride = 16.0
-    density_map = np.ones((ny, nx), dtype=np.float32)
-    grid_meta = {"origin_um": [0.0, 0.0], "stride_um": stride, "nx": nx, "ny": ny}
-
-    # Hotspot polygon confined to coordinates [300, 300] to [600, 600]
-    poly = [[300.0, 300.0], [600.0, 300.0], [600.0, 600.0], [300.0, 600.0]]
-
-    hpfs = greedy_place_hpfs(
-        density_map,
-        grid_meta,
-        hotspot_polygons_um=[poly],
-        count=2,
-        radius_um=100.0,
-        min_separation_um=200.0
-    )
-
-    assert len(hpfs) >= 1
-    for h in hpfs:
-        cx, cy = h["center_um"]
-        assert 300.0 <= cx <= 600.0
-        assert 300.0 <= cy <= 600.0
-
-
-def test_greedy_place_hpfs_circle_inside_slide():
-    """Issue #586: Circle must not clip beyond slide dimensions."""
-    ny, nx = 40, 40
-    stride = 16.0
-    slide_w_um = 640.0
-    slide_h_um = 640.0
-    density_map = np.zeros((ny, nx), dtype=np.float32)
-
-    # Place peak right at edge (x=16 um, y=16 um)
-    density_map[1, 1] = 10.0
-    # Place peak comfortably inside (x=320 um, y=320 um)
-    density_map[20, 20] = 5.0
-
-    grid_meta = {"origin_um": [0.0, 0.0], "stride_um": stride, "nx": nx, "ny": ny}
-    radius_um = 100.0
-
-    hpfs = greedy_place_hpfs(
-        density_map,
-        grid_meta,
-        count=1,
-        radius_um=radius_um,
-        slide_dimensions_um=(slide_w_um, slide_h_um)
-    )
-
-    assert len(hpfs) == 1
-    cx, cy = hpfs[0]["center_um"]
-    # (16, 16) with r=100 would clip at 16 - 100 < 0, so it must choose the center peak!
-    assert cx - radius_um >= 0.0
-    assert cy - radius_um >= 0.0
-    assert cx + radius_um <= slide_w_um
-    assert cy + radius_um <= slide_h_um
-
-
-# Issue #596's probability weighting of unreviewed candidates is gone: the density is built from counted
-# candidates only (SPEC-06 §5.8; test_hpf.py::test_density_comes_from_counted_candidates_only_with_no_probability_weighting).
+# 1. HPF placement (#747, #720, #586) is one field per hotspot window since WP-7.6b; see test_hpf.py
+# and test_mitosis_gate.py (no hotspots refused, disk inside the window and the slide, never overlapping).
 
 
 # ---------------------------------------------------------------------------
