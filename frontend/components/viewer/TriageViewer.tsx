@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import { 
   Flame, 
   CheckCircle2, 
@@ -74,11 +74,15 @@ export function TriageViewer({
   const [activePolygonPoints, setActivePolygonPoints] = useState<[number, number][]>([]);
   const [editingVertexHotspotId, setEditingVertexHotspotId] = useState<string | null>(null);
 
+  // The loader must not depend on `data`: each fetch would re-create it and the effect below
+  // would fetch again, forever. Whether data is already shown is read from a ref instead.
+  const hasDataRef = useRef(false);
   const fetchTriageData = useCallback(async (silent: boolean = false) => {
     try {
-      if (!silent && !data) setLoading(true);
+      if (!silent && !hasDataRef.current) setLoading(true);
       setError(null);
       const stageData = await getTriage(caseId);
+      hasDataRef.current = true;
       setData(stageData);
       setHotspotsList(stageData.hotspots || []);
       setConflictingHotspotIds([]);
@@ -87,9 +91,10 @@ export function TriageViewer({
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [caseId, data]);
+  }, [caseId]);
 
   useEffect(() => {
+    hasDataRef.current = false;
     fetchTriageData();
   }, [fetchTriageData]);
 
