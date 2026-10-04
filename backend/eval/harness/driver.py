@@ -23,8 +23,8 @@ from eval.harness.controller import RunController
 ACTIVE_RUN = ("created", "running")
 
 
-def worker_identity() -> str:
-    return f"worker:{socket.gethostname()}:{os.getpid()}"
+def worker_identity(kind: str = "worker") -> str:
+    return f"{kind}:{socket.gethostname()}:{os.getpid()}"
 
 
 def take_lease(session: Session, run_id, owner: str, *, lease_s: float, now: datetime) -> bool:
@@ -69,6 +69,27 @@ def fail_run(session: Session, run_id, owner: str, exc: BaseException) -> None:
         payload={"run_id": str(run_id), "class": type(exc).__name__, "detail": str(exc)},
     ))
     session.commit()
+
+
+def step_under_lease(
+    session: Session,
+    controller: RunController,
+    owner: str,
+    *,
+    lease_s: float,
+    now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+) -> bool:
+    """One controller pass for a local loop (``eval.cli run``/``resume``/``one-shot``), taken under
+    the same lease as the workers, so a laptop and an eval worker never drive one run at once.
+    Returns False, with the run refreshed, while another owner holds it or the run has ended."""
+    run_id = controller.run.id
+    if not take_lease(session, run_id, owner, lease_s=lease_s, now=now()):
+        session.refresh(controller.run)
+        return False
+    controller.step()
+    if controller.run.status not in ACTIVE_RUN:
+        release_lease(session, run_id, owner)
+    return True
 
 
 def drive_active_runs(

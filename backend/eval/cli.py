@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -126,12 +127,19 @@ def print_status(session, run_id, out=sys.stdout) -> dict[str, int]:
 
 
 def drive(session, run_id, poll_s: float) -> int:
-    from eval.harness.controller import RunController
+    from app.core.config import settings
+    from eval.harness.controller import FINAL_RUN, RunController, item_progress
+    from eval.harness.driver import step_under_lease, worker_identity
 
-    controller = RunController(session, run_id)
-    controller.run_until_done(poll_s, on_step=lambda p: print(
-        "  " + ", ".join(f"{s} {n}" for s, n in sorted(p.counts.items())), flush=True
-    ))
+    # Under the workers' lease: while an eval worker drives the run, this loop only reports progress.
+    controller, owner = RunController(session, run_id), worker_identity("cli")
+    while True:
+        step_under_lease(session, controller, owner, lease_s=settings.HARNESS_LEASE_S)
+        counts = item_progress(session, run_id).counts
+        print("  " + ", ".join(f"{s} {n}" for s, n in sorted(counts.items())), flush=True)
+        if controller.run.status in FINAL_RUN:
+            break
+        time.sleep(poll_s)
     counts = print_status(session, run_id)
     return 2 if counts.get("failed") else 0
 

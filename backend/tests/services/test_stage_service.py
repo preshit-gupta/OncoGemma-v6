@@ -143,6 +143,30 @@ def test_harness_confirm_of_triage_queues_mitosis_in_the_same_run(db):
     assert events == ["stage_confirmed", "stage_started"]
 
 
+def test_a_stale_copy_cannot_confirm_a_stage_twice(db):
+    """Two controllers on one run (a laptop and an eval worker) both saw triage awaiting review.
+    The second confirm reads the locked row afresh and is refused, so mitosis is queued once."""
+    run = add_run(db)
+    case, _ = add_case(db)
+    add_execution(db, case, "triage", "awaiting_review", run=run)
+    write_triage_output(case, [HOTSPOT])
+    seen = stage_service.latest_execution(db, case.id, "triage")  # db now holds a copy (kept referenced)
+    assert seen.status == "awaiting_review"
+
+    other = Session()
+    try:
+        stage_service.confirm_stage(other, case.id, "triage", "worker")
+    finally:
+        other.close()
+
+    with pytest.raises(stage_service.StageConflict):
+        stage_service.confirm_stage(db, case.id, "triage", "laptop")
+    db.rollback()
+    attempts = db.scalars(select(StageExecution.attempt).where(
+        StageExecution.case_id == case.id, StageExecution.stage == "mitosis")).all()
+    assert attempts == [1]
+
+
 def test_triage_without_active_hotspots_needs_the_no_tumour_flag(db):
     case, _ = add_case(db)
     add_execution(db, case, "triage", "awaiting_review")

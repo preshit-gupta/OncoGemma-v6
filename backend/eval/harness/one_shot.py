@@ -17,6 +17,7 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.slide_source import download_slide, local_slide_sha256
 from app.core.pipeline_config import get_config_hash, get_pipeline_config
 from app.models.decision_record import DecisionRecord
@@ -27,7 +28,8 @@ from app.models.stage_execution import StageExecution
 from app.models.validation import ValidationItem
 from app.services import stages as stage_service
 from eval.datasets.manifest import MANIFEST_COLUMNS
-from eval.harness.controller import RunController
+from eval.harness.controller import FINAL_RUN, RunController
+from eval.harness.driver import step_under_lease, worker_identity
 from eval.harness.documents import Decision, OneShotResult, StageResult
 from eval.harness.runs import ADHOC, create_adhoc_run
 from worker.execution import StageFailedError, execute_stage, mark_running
@@ -169,9 +171,10 @@ def one_shot(
         mode="auto", concurrency=1, actor=actor,
     )
     controller = RunController(session, run.id)
+    owner = worker_identity("cli")
     while True:
-        controller.step()
-        if controller.run.status == "completed":
+        step_under_lease(session, controller, owner, lease_s=settings.HARNESS_LEASE_S)
+        if controller.run.status in FINAL_RUN:
             break
         if in_process:
             run_queued(session, run.id, handlers=handlers, gateway_factory=gateway_factory)
