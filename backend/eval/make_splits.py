@@ -16,10 +16,20 @@ another seed: a new split would put test patients into training.
 ``tss_group`` merges tissue source sites with fewer than ``--min-tss`` patients into ``other``,
 and ``native_mag`` is the scan magnification from the slide's TIFF header (``AppMag``, else ``MPP``,
 else ``unknown``), read by one ranged request per slide because GDC does not report it.
+
+The MIDOG++ breast images get a case-level val/test split (WP-7.8), stratified by scanner and added
+to the same lock; the TCGA/BCSS entries are verified first and stay as they are:
+
+    python -m eval.make_splits midogpp --labels MIDOG++.json --scanners datasets_xvalidation.csv \
+        --out-dir eval/splits --seed 20260928
+
+``datasets_xvalidation.csv`` is the MIDOG++ authors' per-slide table (figshare article 23559798,
+``Slide;Dataset;Tumor;Scanner;...``); ``MIDOG++.json`` has no scanner field.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -27,7 +37,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from eval.splits import check_disjoint, inherit_splits, make_splits, write_lock
+from eval.splits import check_disjoint, inherit_splits, make_splits, verify_lock, write_lock
 
 APPMAG = re.compile(r"\|\s*AppMag\s*=\s*([0-9.]+)")
 MPP_FIELD = re.compile(r"\|\s*MPP\s*=\s*([0-9.]+)")
@@ -37,10 +47,19 @@ DX_SLIDE = re.compile(r"^(TCGA-[A-Z0-9]{2}-[A-Z0-9]{4})-\d{2}[A-Z]-\d{2}-(DX\d+)
 MIN_TSS_PATIENTS = 10  # SPEC-02 §5.2
 HEADER_BLOCK_BYTES = 1 << 16
 SPLIT_FILES = ("tcga_brca_dx.parquet", "bcss.parquet")
+MIDOGPP_BREAST_FILE = "midogpp_breast.parquet"
+MIDOGPP_BREAST_TUMOR = "human breast cancer"
+MIDOGPP_RATIOS = (0.0, 0.5, 0.5)  # validation only (D19): no train split
+# 094 chose the production τ and NMS radius (D17), so it can never be a test image.
+MIDOGPP_PINNED_VAL = ("094.tiff",)
 
 
 class MissingMagnificationError(ValueError):
     """A slide's native magnification cannot be read or is not 20x/40x."""
+
+
+class MIDOGppSplitError(ValueError):
+    """The MIDOG++ labels and the authors' scanner table do not describe the same breast images."""
 
 
 def short_barcode(file_name: str) -> str:
@@ -132,6 +151,74 @@ def bcss_frame(roi_bounds: Path, exclude: frozenset[str] = frozenset()) -> pd.Da
     return frame.sort_values("slide_id").reset_index(drop=True)
 
 
+def midogpp_breast_frame(labels: dict, scanners: pd.DataFrame) -> pd.DataFrame:
+    """One row per MIDOG++ breast image in the authors' table, with its scanner and label counts.
+
+    Images 151-200 of ``MIDOG++.json`` are breast images without annotations and are not in the
+    table, so they are left out. Every breast slide of the table must be in the labels.
+    """
+    table = scanners[scanners["Tumor"] == MIDOGPP_BREAST_TUMOR]
+    if table.empty:
+        raise MIDOGppSplitError(f"the scanner table has no {MIDOGPP_BREAST_TUMOR!r} slides")
+    images = {int(Path(i["file_name"]).stem): i for i in labels["images"]}
+    missing = sorted(set(table["Slide"].astype(int)) - set(images))
+    if missing:
+        raise MIDOGppSplitError(f"{len(missing)} breast slides of the scanner table are not in the labels, e.g. {missing[:3]}")
+    categories = {c["id"]: c["name"] for c in labels["categories"]}
+    counts: dict[tuple[int, str], int] = {}
+    for ann in labels["annotations"]:
+        key = (ann["image_id"], categories[ann["category_id"]])
+        counts[key] = counts.get(key, 0) + 1
+    rows = []
+    for _, row in table.iterrows():
+        image = images[int(row["Slide"])]
+        if image["tumor_type"] != MIDOGPP_BREAST_TUMOR:
+            raise MIDOGppSplitError(f"slide {row['Slide']} is {image['tumor_type']!r} in the labels")
+        rows.append({
+            "image_id": int(image["id"]),
+            "file_name": image["file_name"],
+            "patient_id": f"midogpp_{int(image['id']):04d}",  # one image per case (eval.datasets.midogpp)
+            "scanner": str(row["Scanner"]),
+            "midogpp_dataset": str(row["Dataset"]),  # the authors' own train/test assignment, kept for reference
+            "n_mf": counts.get((image["id"], "mitotic figure"), 0),
+            "n_imposter": counts.get((image["id"], "not mitotic figure"), 0),
+            "width_px": int(image["width"]),
+            "height_px": int(image["height"]),
+        })
+    return pd.DataFrame(rows).sort_values("image_id").reset_index(drop=True)
+
+
+def midogpp_split(frame: pd.DataFrame, seed: int, pinned_val: tuple[str, ...] = MIDOGPP_PINNED_VAL) -> pd.DataFrame:
+    """Case-level val/test split stratified by scanner; ``pinned_val`` images are val and not drawn."""
+    unknown = sorted(set(pinned_val) - set(frame["file_name"]))
+    if unknown:
+        raise MIDOGppSplitError(f"pinned val images are not in the frame: {unknown}")
+    pinned = frame["file_name"].isin(pinned_val)
+    drawn = make_splits(frame[~pinned], seed=seed, strata_cols=("scanner",), ratios=MIDOGPP_RATIOS)
+    out = pd.concat([drawn, frame[pinned].assign(split="val")]).sort_values("image_id").reset_index(drop=True)
+    out["seed"] = seed
+    return out
+
+
+def add_to_lock(new_paths: list[Path], lock_path: Path, lock_root: Path) -> dict[str, str]:
+    """Add files to an existing SPLITS.lock after checking that every entry already in it still matches."""
+    verify_lock(lock_path, lock_root)
+    existing = [lock_root / rel for rel in json.loads(lock_path.read_text(encoding="utf-8"))]
+    return write_lock(sorted(set(existing) | set(new_paths)), lock_path, lock_root)
+
+
+def make_midogpp(args) -> int:
+    labels = json.loads(args.labels.read_text(encoding="utf-8"))
+    frame = midogpp_split(midogpp_breast_frame(labels, pd.read_csv(args.scanners, sep=";")), args.seed)
+    check_disjoint({"midogpp_breast": frame})
+    path = args.out_dir / MIDOGPP_BREAST_FILE
+    frame.to_parquet(path, index=False)
+    lock = add_to_lock([path], args.out_dir / "SPLITS.lock", args.lock_root)
+    print(f"midogpp_breast images {frame.groupby(['scanner', 'split']).size().to_dict()}")
+    print(f"SPLITS.lock: {lock}")
+    return 0
+
+
 def make(args) -> int:
     dx = pd.read_parquet(args.dx)
     tcga = tcga_split_frame(dx, pd.read_parquet(args.native_mag), pd.read_parquet(args.grades), args.min_tss)
@@ -168,7 +255,15 @@ def main(argv: list[str] | None = None) -> int:
     mk.add_argument("--seed", type=int, required=True)
     mk.add_argument("--exclude-bcss", nargs="*", help="BCSS slide ids left out (e.g. no open-access GDC slide)")
     mk.add_argument("--min-tss", type=int, default=MIN_TSS_PATIENTS)
+    mp = sub.add_parser("midogpp", help="make the MIDOG++ breast val/test split and add it to SPLITS.lock")
+    mp.add_argument("--labels", type=Path, required=True, help="MIDOG++.json")
+    mp.add_argument("--scanners", type=Path, required=True, help="the authors' datasets_xvalidation.csv")
+    mp.add_argument("--out-dir", type=Path, required=True)
+    mp.add_argument("--lock-root", type=Path, default=Path("."), help="lock paths are relative to this (backend/)")
+    mp.add_argument("--seed", type=int, required=True)
     args = parser.parse_args(argv)
+    if args.command == "midogpp":
+        return make_midogpp(args)
     if args.command == "native-mag":
         dx = pd.read_parquet(args.dx)
         fetch_native_mag(dx, args.workers, args.out.with_suffix(".progress.jsonl")).to_parquet(args.out, index=False)
