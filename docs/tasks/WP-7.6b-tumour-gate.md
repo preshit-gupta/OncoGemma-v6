@@ -10,7 +10,7 @@ Count only mitoses in invasive tumour cells, and place HPFs in tumour (SPEC-06 �
 
 **Two facts from WP-6 that shape this card:**
 - `tumor_head@1.0.0` predicts invasive / stroma / inflammatory / necrosis only. BCSS had 1 DCIS tile, so there is no trained in-situ class, and SPEC-06 §5.5's `argmax ≠ in_situ` cannot exclude anything yet. Implement the gate as "in the invasive tumour mask, dilated by one tile". Record in the stage output that in-situ exclusion is not available.
-- Hotspots are now 600 µm square windows (`specimen_profiles.<type>.hotspots`, `k_max` 10, WP-6.3). An HPF disk (r 262 µm, 524 µm across) fits inside a window only if its centre is within 38 µm of the window centre, so "disk ⊂ a hotspot window" gives at most one HPF per window. **Ask the owner** whether that is intended before implementing it. The alternative is disk ⊂ the union of windows.
+- Hotspots are now 600 µm square windows (`specimen_profiles.<type>.hotspots`, `k_max` 10, WP-6.3). An HPF disk (r 262 µm, 524 µm across) fits inside a window only if its centre is within 38 µm of the window centre, so "disk ⊂ a hotspot window" gives at most one HPF per window. **Owner decision (2026-10-04): one HPF per window** (disk ⊂ one hotspot window; not the union of windows).
 
 Classifier B, the referee and the Stage-A cache are deferred to the next iteration (D19).
 
@@ -33,7 +33,7 @@ Classifier B, the referee and the Stage-A cache are deferred to the next iterati
 1. **Gate** (§5.5). A candidate is eligible only if its tile in the tumour mask (`p_tumor_cal ≥ tumor_head.threshold`), dilated by 1 tile (224 µm), is tumour. The `≠ in_situ` clause waits for a model with an in-situ class (see above). Read the mask the way `hotspots_v6.py` does; do not reimplement thresholds.
 
    `in_tumor` is set for every candidate when `tumor_gate: true`. A pathologist's `review_label = 'mitosis'` still counts.
-2. **HPFs** (§5.8). Each centre must satisfy: disk inside the hotspot geometry the owner confirms (see above), tissue coverage ≥ 0.70, tumour fraction ≥ 0.50 (both from the profile's existing values). Report `tumor_fraction` per HPF.
+2. **HPFs** (§5.8). Each centre must satisfy: disk inside one hotspot window, at most one HPF per window (owner, 2026-10-04), tissue coverage ≥ 0.70, tumour fraction ≥ 0.50 (both from the profile's existing values). Report `tumor_fraction` per HPF.
 3. **Check on real slides.** After the WP-6.x deployment, run the gate on and off on a few TCGA slides with the owner, and record the count difference in `docs/STATUS.md`.
 
 ## Acceptance (run these)
