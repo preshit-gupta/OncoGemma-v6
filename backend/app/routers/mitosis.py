@@ -33,6 +33,7 @@ from app.inference.records import mitosis_count_record
 from pipeline.detect import candidate_review_crops, review_crop_blob
 from pipeline.errors import SlideReadError
 from pipeline.hpf import place_hpfs
+from pipeline.mitosis_gate import load_tumor_gate
 from pipeline.scoring import summarize_stage4
 from pipeline.slide_io import centered_origin_um, read_region_at_mpp
 from app.models.case import Case
@@ -387,11 +388,16 @@ def add_candidate(payload: AddPayload, db: Session = Depends(get_db), user: Curr
             raise ContractError(409, "slide_unavailable", str(exc)) from exc
         except (SlideReadError, NotFound, OSError) as exc:
             raise ContractError(502, "slide_unreadable", f"Could not read the slide for the added figure's images: {exc}") from exc
+        try:
+            # The gate runs on an added figure too; its review_label 'mitosis' still decides the count.
+            in_tumor = load_tumor_gate(case_id, cfg.tumor_gate.dilation_tiles).in_tumor(cx_um, cy_um) if cfg.tumor_gate.enabled else None
+        except PRECONDITION_ERRORS as exc:
+            raise ContractError(409, "tumor_mask_unavailable", str(exc)) from exc
         upload_blob_from_bytes(settings.GCS_ARTIFACTS_BUCKET, review_crop_blob(case_id, new_id, "crop"), crops.crop_png, "image/png")
         upload_blob_from_bytes(settings.GCS_ARTIFACTS_BUCKET, review_crop_blob(case_id, new_id, "context"), crops.context_png, "image/png")
         db.add(Detection(
             id=new_id, case_id=case_obj.id, hotspot_id=None, centroid_um=[float(cx_um), float(cy_um)],
-            p_a=None, p_b=None, vlm=None, rule_override=False, in_tumor=None,
+            p_a=None, p_b=None, vlm=None, rule_override=False, in_tumor=in_tumor,
             final_decision="mitosis", decision_path="human", review_label="mitosis", record_ids=None,
         ))
         db.add(AuditEvent(case_id=case_id, actor=user.id, event_type="mitosis_added", stage="mitosis",
@@ -411,7 +417,7 @@ def invalidate_hpf_cached_thumbnails(case_id: str, seqs) -> None:
 
 @router.post("/replace-hpfs")
 def replace_hpfs(payload: CasePayload, db: Session = Depends(get_db), user: CurrentUser = Depends(require("stage:review"))):
-    """Places the HPFs again from the currently counted candidates (``pipeline/hpf.py::place_hpfs``)."""
+    """Places the HPFs again from the currently counted candidates: one per hotspot window (``pipeline/hpf.py::place_hpfs``)."""
     case_obj, stage_exec = _editable(payload.case_id, db)
     slide = _slide(db, case_obj)
     case_id = str(case_obj.id)
@@ -420,8 +426,11 @@ def replace_hpfs(payload: CasePayload, db: Session = Depends(get_db), user: Curr
     ).all()
     if not hotspots:
         raise ContractError(409, "no_hotspots", "HPFs are placed inside confirmed hotspots, and this case has none")
+    config = get_pipeline_config()
     try:
         tissue = load_tissue_mask(case_id)
+        tumor = load_tumor_gate(case_id, config.mitosis.tumor_gate.dilation_tiles)
+        hotspot_cfg = config.specimen_profiles.for_type(case_obj.specimen_type).hotspots
     except PRECONDITION_ERRORS as exc:
         raise ContractError(409, "tissue_mask_unavailable", str(exc)) from exc
 
@@ -430,8 +439,11 @@ def replace_hpfs(payload: CasePayload, db: Session = Depends(get_db), user: Curr
         _candidates(db, case_obj),
         [(h.polygon_um, float(h.prob_mean or 0.0)) for h in sorted(hotspots, key=lambda h: h.prob_mean or 0.0, reverse=True)],
         tissue=tissue,
+        tumor=tumor,
         slide_dimensions_um=(slide.width_px * float(slide.mpp_x), slide.height_px * float(slide.mpp_y)),
-        cfg=get_pipeline_config().mitosis.hpf,
+        cfg=config.mitosis.hpf,
+        min_tissue_fraction=hotspot_cfg.min_tissue_fraction,
+        min_tumor_fraction=hotspot_cfg.min_tumor_fraction,
     )
     db.execute(delete(HpfSite).where(HpfSite.case_id == case_obj.id))
     for h in new_hpfs:

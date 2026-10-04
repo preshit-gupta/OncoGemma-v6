@@ -1,328 +1,56 @@
 """
-Stage 4 HPF placement (SPEC-06 §5.8).
-Convolves the counted mitotic figures with a circular HPF kernel using FFT, and places up to
-``count`` virtual high-power fields greedily inside the hotspots. Fields never overlap: when fewer
-fit, fewer are placed (``n_hpf < count``) and the summary flags it (pipeline/scoring.py).
+Stage 4 HPF placement (SPEC-06 §5.8): one field per hotspot window, its disk inside the window.
+
+Owner decision (2026-10-04): a hotspot window holds at most one HPF and the whole disk lies inside
+it. A 600 µm window and a 262 µm radius leave the centre a 76 µm square, so the choice inside a
+window is small; the windows themselves (SPEC-05 §5, non-overlapping) decide where the fields go.
+
+Inside each window, candidate centres lie on a ``centre_step_um`` lattice anchored at the window's
+centre. A centre is eligible when its disk is inside the slide and the window, at least
+``min_tissue_fraction`` tissue and ``min_tumor_fraction`` tumour (specimen profile), and at least
+``min_separation_um`` from every placed field. The eligible centre with the most counted candidates
+in its disk wins (then the higher tumour fraction, then the one nearer the window centre). Windows
+are taken by priority, so with more windows than ``count`` the best-ranked ones get the fields.
+Fewer than ``count`` fields is a result (``hpf_count_lt_10``, pipeline/scoring.py).
 """
 import math
-from typing import List, Dict, Any, Tuple, Optional
-import numpy as np
-from scipy.signal import fftconvolve
+from typing import Any, Dict, List, Tuple
+
+from shapely.geometry import Point, Polygon
 
 from app.core.pipeline_config import MitosisHpfConfig
+from pipeline.mitosis_gate import TumorGate
 from pipeline.tissue_mask import TissueMask
 
-
-def create_circular_disk_mask(radius_cells: float) -> np.ndarray:
-    """
-    Creates a discrete circular disk mask kernel of given radius in cells.
-    """
-    r_ceil = int(math.ceil(radius_cells))
-    size = 2 * r_ceil + 1
-    y, x = np.ogrid[-r_ceil:r_ceil + 1, -r_ceil:r_ceil + 1]
-    mask = (x * x + y * y) <= (radius_cells * radius_cells)
-    return mask.astype(np.float32)
+# A polygon has at least three vertices.
+MIN_POLYGON_VERTICES = 3
+# Slack for floating point when a disk exactly fits its window or two fields exactly touch.
+FIT_TOLERANCE_UM = 1e-6
+# Decimals of the tumour fraction used to rank centres within a window.
+TIE_DECIMALS = 3
 
 
-def generate_mitosis_density_map(
-    candidates: List[Dict[str, Any]],
-    bounding_box_um: Tuple[float, float, float, float],
-    grid_res_um: float = 16.0,
-    radius_um: float = 262.0
-) -> Tuple[np.ndarray, Dict[str, Any]]:
-    """
-    Splats the counted figures (``candidate["counted"]``) onto a ``grid_res_um`` grid and convolves
-    with a circular disk kernel of the HPF radius.
-
-    Returns:
-        density_map: 2D float32 array of continuous mitotic counts per HPF area.
-        grid_meta: metadata dictionary containing origin_um, stride_um, nx, ny.
-    """
-    min_x_um, min_y_um, max_x_um, max_y_um = bounding_box_um
-
-    # Add margin around bounding box equal to HPF radius
-    pad_um = radius_um * 1.5
-    min_x_um -= pad_um
-    min_y_um -= pad_um
-    max_x_um += pad_um
-    max_y_um += pad_um
-
-    nx = max(16, int(math.ceil((max_x_um - min_x_um) / grid_res_um)))
-    ny = max(16, int(math.ceil((max_y_um - min_y_um) / grid_res_um)))
-
-    point_grid = np.zeros((ny, nx), dtype=np.float32)
-
-    # Only counted figures make the density (SPEC-06 §5.8); nothing is weighted by a probability.
-    for cand in candidates:
-        if not cand["counted"]:
-            continue
-        cx_um, cy_um = cand["centroid_um"]
-        gx = int(round((cx_um - min_x_um) / grid_res_um))
-        gy = int(round((cy_um - min_y_um) / grid_res_um))
-
-        if 0 <= gx < nx and 0 <= gy < ny:
-            point_grid[gy, gx] += 1.0
-
-    # Convolve with circular disk kernel
-    radius_cells = radius_um / grid_res_um
-    kernel = create_circular_disk_mask(radius_cells)
-    density_map = fftconvolve(point_grid, kernel, mode="same")
-    density_map = np.maximum(density_map, 0.0)
-    density_map[density_map < 1e-6] = 0.0
-
-    grid_meta = {
-        "origin_um": [float(min_x_um), float(min_y_um)],
-        "stride_um": float(grid_res_um),
-        "nx": nx,
-        "ny": ny,
-        "radius_um": float(radius_um)
-    }
-
-    return density_map.astype(np.float32), grid_meta
-
-
-def is_point_in_polygon(x: float, y: float, polygon: List[List[float]]) -> bool:
-    """Ray-casting algorithm for point-in-polygon test."""
-    n = len(polygon)
-    inside = False
-    p1x, p1y = polygon[0]
-    for i in range(1, n + 1):
-        p2x, p2y = polygon[i % n]
-        if y > min(p1y, p2y):
-            if y <= max(p1y, p2y):
-                if x <= max(p1x, p2x):
-                    if p1y != p2y:
-                        xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
-                    if p1x == p2x or x <= xinters:
-                        inside = not inside
-        p1x, p1y = p2x, p2y
-    return inside
-
-
-def compute_continuous_tissue_coverage(
-    grid_meta: Dict[str, Any],
-    tissue: TissueMask,
-    radius_um: float
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Computes isotropic continuous circular tissue coverage fraction [0.0, 1.0]
-    and center tissue boolean mask for every cell in grid_meta.
-    Each grid node stands for the ``stride`` square around it, whose tissue fraction the registered mask gives exactly.
-    """
-    origin_x, origin_y = grid_meta["origin_um"]
-    stride = grid_meta["stride_um"]
-    nx, ny = grid_meta["nx"], grid_meta["ny"]
-
-    tissue_grid = tissue.fraction_grid(
-        stride, stride, nx, ny, origin_um=(origin_x - stride / 2, origin_y - stride / 2)
-    ).astype(np.float32)
-
-    radius_cells = radius_um / stride
-    kernel = create_circular_disk_mask(radius_cells)
-    k_sum = kernel.sum()
-    if k_sum > 0:
-        coverage_grid = fftconvolve(tissue_grid, kernel, mode="same") / k_sum
-        coverage_grid = np.clip(coverage_grid, 0.0, 1.0).astype(np.float32)
-    else:
-        coverage_grid = tissue_grid.copy()
-
-    center_tissue_grid = tissue_grid > 0.5
-    return coverage_grid, center_tissue_grid
-
-
-def greedy_place_hpfs(
-    density_map: np.ndarray,
-    grid_meta: Dict[str, Any],
-    hotspot_polygons_um: Optional[List[List[List[float]]]] = None,
-    count: int = 10,
-    radius_um: float = 262.0,
-    min_separation_um: float = 524.0,
-    tissue: Optional[TissueMask] = None,
-    slide_dimensions_um: Optional[Tuple[float, float]] = None,
-    min_tissue_coverage: float = 0.70,
-    hotspot_priorities: Optional[List[float]] = None
-) -> List[Dict[str, Any]]:
-    """
-    Greedily selects the top virtual HPF coordinates from the mitotic density map and tissue mask.
-    Fields are at least ``min_separation_um`` apart (>= 2r, so they never overlap) and at least
-    ``min_tissue_coverage`` tissue. One field per hotspot first (densest hotspot first), then the
-    densest remaining places inside any hotspot. Fewer than ``count`` fields is a result: there is
-    no relaxed separation and no placement outside the hotspots (SPEC-06 §5.8).
-    """
-    # Issue #747: Distinguish None (unconstrained slide search) from [] (explicitly zero hotspots remaining)
-    if hotspot_polygons_um is not None and len(hotspot_polygons_um) == 0:
+def window_centres(polygon_um: List[List[float]], radius_um: float, step_um: float) -> List[Tuple[float, float]]:
+    """Lattice points (``step_um``, anchored at the window's centroid) where a ``radius_um`` disk lies inside the polygon."""
+    if len(polygon_um) < MIN_POLYGON_VERTICES:
+        raise ValueError(f"a hotspot polygon needs at least {MIN_POLYGON_VERTICES} vertices, got {len(polygon_um)}")
+    polygon = Polygon(polygon_um)
+    if not polygon.is_valid:
+        polygon = polygon.buffer(0)
+    eroded = polygon.buffer(-(radius_um - FIT_TOLERANCE_UM))  # centres whose disk is inside the polygon
+    if eroded.is_empty:
         return []
-
-    origin_x, origin_y = grid_meta["origin_um"]
-    stride = grid_meta["stride_um"]
-    ny, nx = density_map.shape
-
-    working_density = density_map.copy()
-
-    # Continuous circular tissue coverage calculation
-    if tissue is not None:
-        coverage_grid, center_tissue_grid = compute_continuous_tissue_coverage(
-            grid_meta, tissue, radius_um=radius_um
-        )
-        valid_tissue_mask = (coverage_grid >= min_tissue_coverage) & center_tissue_grid
-    else:
-        coverage_grid = np.ones((ny, nx), dtype=np.float32)
-        valid_tissue_mask = np.ones((ny, nx), dtype=bool)
-    # Reported per field; coverage_grid itself is zeroed around placed fields below.
-    true_coverage = coverage_grid.copy()
-
-    # Helper to enforce circle fully inside slide dimensions (Issue #586)
-    def _is_circle_inside_slide(cx: float, cy: float, r: float) -> bool:
-        if slide_dimensions_um is not None:
-            sw, sh = slide_dimensions_um
-            if (cx - r < 0.0) or (cy - r < 0.0) or (cx + r > sw) or (cy + r > sh):
-                return False
-        return True
-
-    # Hotspot polygon masks (Vectorized using matplotlib.path.Path #720)
-    ordered_hotspot_masks: List[np.ndarray] = []
-    if hotspot_polygons_um:
-        import matplotlib.path as mpath
-        indexed_polys = list(enumerate(hotspot_polygons_um))
-        if hotspot_priorities and len(hotspot_priorities) == len(hotspot_polygons_um):
-            indexed_polys.sort(key=lambda item: (hotspot_priorities[item[0]] or 0.0), reverse=True)
-
-        for _, poly in indexed_polys:
-            if not poly or len(poly) < 3:
-                continue
-            poly_xs = [p[0] for p in poly]
-            poly_ys = [p[1] for p in poly]
-            gx_min = max(0, int(math.floor((min(poly_xs) - origin_x) / stride)))
-            gx_max = min(nx, int(math.ceil((max(poly_xs) - origin_x) / stride)) + 1)
-            gy_min = max(0, int(math.floor((min(poly_ys) - origin_y) / stride)))
-            gy_max = min(ny, int(math.ceil((max(poly_ys) - origin_y) / stride)) + 1)
-
-            h_mask = np.zeros((ny, nx), dtype=bool)
-            gx_range = np.arange(gx_min, gx_max)
-            gy_range = np.arange(gy_min, gy_max)
-            if len(gx_range) > 0 and len(gy_range) > 0:
-                grid_x, grid_y = np.meshgrid(origin_x + gx_range * stride, origin_y + gy_range * stride)
-                pts = np.column_stack((grid_x.ravel(), grid_y.ravel()))
-                path = mpath.Path(poly)
-                inside = path.contains_points(pts).reshape(len(gy_range), len(gx_range))
-                h_mask[gy_min:gy_max, gx_min:gx_max] = inside
-            ordered_hotspot_masks.append(h_mask)
-
-    placed_hpfs: List[Dict[str, Any]] = []
-    placed_centers: List[Tuple[float, float]] = []
-
-    suppress_radius_cells = min_separation_um / stride
-
-    def _suppress(gy: int, gx: int, r_cells: float):
-        y_min = max(0, int(gy - r_cells))
-        y_max = min(ny, int(gy + r_cells + 1))
-        x_min = max(0, int(gx - r_cells))
-        x_max = min(nx, int(gx + r_cells + 1))
-        y_coords, x_coords = np.ogrid[y_min:y_max, x_min:x_max]
-        dist_sq = (x_coords - gx) ** 2 + (y_coords - gy) ** 2
-        circle_mask = dist_sq <= (r_cells ** 2)
-        working_density[y_min:y_max, x_min:x_max][circle_mask] = 0.0
-
-    # Pass 1: Prioritize 1 best HPF in each hotspot (starting from densest), enforcing >= 70% tissue coverage
-    for h_mask in ordered_hotspot_masks:
-        if len(placed_hpfs) >= count:
-            break
-        eligible = h_mask & valid_tissue_mask
-        if not np.any(eligible):
-            continue
-
-        # Check if working_density has positive peaks
-        eligible_density = working_density * eligible
-        if np.max(eligible_density) > 0.0:
-            score_field = eligible_density * (1.0 + coverage_grid * 1e-3)
-            gy, gx = np.unravel_index(np.argmax(score_field), score_field.shape)
-        else:
-            # If no mitotic figures in hotspot, choose location of highest tissue coverage
-            tissue_scores = coverage_grid * eligible
-            if np.max(tissue_scores) <= 0.0:
-                continue
-            gy, gx = np.unravel_index(np.argmax(tissue_scores), tissue_scores.shape)
-
-        cx_um = float(origin_x + gx * stride)
-        cy_um = float(origin_y + gy * stride)
-
-        valid = _is_circle_inside_slide(cx_um, cy_um, radius_um)
-        if valid:
-            for px, py in placed_centers:
-                if math.hypot(cx_um - px, cy_um - py) < min_separation_um - 1e-3:
-                    valid = False
-                    break
-
-        if valid:
-            placed_centers.append((cx_um, cy_um))
-            placed_hpfs.append({
-                "seq": len(placed_hpfs) + 1,
-                "center_um": [cx_um, cy_um],
-                "radius_um": float(radius_um),
-                "count": 0,
-                "density_val": float(density_map[gy, gx]),
-                "tissue_coverage": float(true_coverage[gy, gx]),
-                "tumor_fraction": None,
-                "source": "model"
-            })
-            _suppress(gy, gx, suppress_radius_cells)
-
-    # Pass 2: further HPFs inside any hotspot (anywhere on the grid when no hotspots constrain it)
-    if len(placed_hpfs) < count and (ordered_hotspot_masks or hotspot_polygons_um is None):
-        combined_hotspot_mask = np.zeros((ny, nx), dtype=bool) if ordered_hotspot_masks else np.ones((ny, nx), dtype=bool)
-        for h_mask in ordered_hotspot_masks:
-            combined_hotspot_mask |= h_mask
-
-        r_sep_cells = suppress_radius_cells
-        while len(placed_hpfs) < count:
-            eligible = combined_hotspot_mask & valid_tissue_mask
-            score_field = working_density * eligible
-            max_val = np.max(score_field)
-            if max_val <= 0.0:
-                # Tissue coverage fallback: place within densest tissue of hotspot
-                tissue_scores = coverage_grid * eligible
-                if np.max(tissue_scores) <= 0.0:
-                    break
-                score_field = tissue_scores
-                max_val = np.max(score_field)
-
-            gy, gx = np.unravel_index(np.argmax(score_field), score_field.shape)
-            cx_um = float(origin_x + gx * stride)
-            cy_um = float(origin_y + gy * stride)
-
-            valid = _is_circle_inside_slide(cx_um, cy_um, radius_um)
-            if valid:
-                for px, py in placed_centers:
-                    if math.hypot(cx_um - px, cy_um - py) < min_separation_um - 1e-3:
-                        valid = False
-                        break
-
-            if valid:
-                placed_centers.append((cx_um, cy_um))
-                placed_hpfs.append({
-                    "seq": len(placed_hpfs) + 1,
-                    "center_um": [cx_um, cy_um],
-                    "radius_um": float(radius_um),
-                    "count": 0,
-                    "density_val": float(density_map[gy, gx]),
-                    "tissue_coverage": float(true_coverage[gy, gx]),
-                    "tumor_fraction": None,
-                    "source": "model"
-                })
-                _suppress(gy, gx, r_sep_cells)
-                # Also zero out local coverage to avoid placing overlapping field
-                y_min = max(0, int(gy - r_sep_cells))
-                y_max = min(ny, int(gy + r_sep_cells + 1))
-                x_min = max(0, int(gx - r_sep_cells))
-                x_max = min(nx, int(gx + r_sep_cells + 1))
-                coverage_grid[y_min:y_max, x_min:x_max] = 0.0
-            else:
-                # Suppress single cell to prevent infinite loop on invalid peak
-                working_density[gy, gx] = 0.0
-                coverage_grid[gy, gx] = 0.0
-
-    return placed_hpfs[:count]
-
+    anchor = polygon.centroid
+    x0, y0, x1, y1 = eroded.bounds
+    kx0, kx1 = math.floor((x0 - anchor.x) / step_um), math.ceil((x1 - anchor.x) / step_um)
+    ky0, ky1 = math.floor((y0 - anchor.y) / step_um), math.ceil((y1 - anchor.y) / step_um)
+    centres = []
+    for ky in range(ky0, ky1 + 1):
+        for kx in range(kx0, kx1 + 1):
+            x, y = anchor.x + kx * step_um, anchor.y + ky * step_um
+            if eroded.covers(Point(x, y)):
+                centres.append((x, y))
+    return centres
 
 
 def place_hpfs(
@@ -330,34 +58,55 @@ def place_hpfs(
     hotspots: List[Tuple[List[List[float]], float]],
     *,
     tissue: TissueMask,
+    tumor: TumorGate,
     slide_dimensions_um: Tuple[float, float],
     cfg: MitosisHpfConfig,
+    min_tissue_fraction: float,
+    min_tumor_fraction: float,
 ) -> List[Dict[str, Any]]:
     """
-    Stage 4's HPFs: the counted candidates' density over the hotspots, placed by ``greedy_place_hpfs``.
+    Stage 4's HPFs: at most one per hotspot window, by window priority, at most ``cfg.count``.
 
-    ``hotspots`` are (polygon_um, priority) pairs, densest first by priority. The density grid spans
-    the hotspots and the candidates, so its size does not depend on the slide's.
+    ``hotspots`` are (polygon_um, priority) pairs; ``candidates`` carry ``centroid_um`` and ``counted``.
+    Each field reports its ``count`` of counted candidates, ``tissue_coverage`` and ``tumor_fraction``.
     """
     if not hotspots:
         raise ValueError("HPFs are placed inside confirmed hotspots; there are none")
-    xs = [pt[0] for polygon, _ in hotspots for pt in polygon] + [c["centroid_um"][0] for c in candidates if c["counted"]]
-    ys = [pt[1] for polygon, _ in hotspots for pt in polygon] + [c["centroid_um"][1] for c in candidates if c["counted"]]
-    density_map, grid_meta = generate_mitosis_density_map(
-        candidates,
-        bounding_box_um=(min(xs), min(ys), max(xs), max(ys)),
-        grid_res_um=cfg.density_grid_res_um,
-        radius_um=cfg.radius_um,
-    )
-    return greedy_place_hpfs(
-        density_map,
-        grid_meta,
-        hotspot_polygons_um=[polygon for polygon, _ in hotspots],
-        count=cfg.count,
-        radius_um=cfg.radius_um,
-        min_separation_um=cfg.min_separation_um,
-        tissue=tissue,
-        slide_dimensions_um=slide_dimensions_um,
-        min_tissue_coverage=cfg.min_tissue_coverage,
-        hotspot_priorities=[priority for _, priority in hotspots],
-    )
+    r = cfg.radius_um
+    width_um, height_um = slide_dimensions_um
+    counted = [tuple(c["centroid_um"]) for c in candidates if c["counted"]]
+
+    placed: List[Dict[str, Any]] = []
+    for polygon, _priority in sorted(hotspots, key=lambda h: h[1], reverse=True):
+        if len(placed) >= cfg.count:
+            break
+        anchor = Polygon(polygon).centroid
+        best = None
+        for cx, cy in window_centres(polygon, r, cfg.centre_step_um):
+            if cx - r < 0.0 or cy - r < 0.0 or cx + r > width_um or cy + r > height_um:
+                continue
+            if any(math.dist((cx, cy), h["center_um"]) < cfg.min_separation_um - FIT_TOLERANCE_UM for h in placed):
+                continue
+            tissue_coverage = tissue.fraction_in_disk_um(cx, cy, r)
+            if tissue_coverage < min_tissue_fraction:
+                continue
+            tumor_fraction = tumor.tumor_fraction_in_disk(cx, cy, r)
+            if tumor_fraction < min_tumor_fraction:
+                continue
+            n = sum(1 for p in counted if math.dist(p, (cx, cy)) <= r)
+            # Fractions are compared at TIE_DECIMALS so area-sampling noise never outranks the window centre.
+            key = (n, round(tumor_fraction, TIE_DECIMALS), -math.dist((cx, cy), (anchor.x, anchor.y)), -cy, -cx)
+            if best is None or key > best[0]:
+                best = (key, cx, cy, n, tissue_coverage, tumor_fraction)
+        if best is not None:
+            _, cx, cy, n, tissue_coverage, tumor_fraction = best
+            placed.append({
+                "seq": len(placed) + 1,
+                "center_um": [float(cx), float(cy)],
+                "radius_um": float(r),
+                "count": n,
+                "tissue_coverage": float(tissue_coverage),
+                "tumor_fraction": float(tumor_fraction),
+                "source": "model",
+            })
+    return placed

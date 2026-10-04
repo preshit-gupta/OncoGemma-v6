@@ -8,6 +8,7 @@ import threading
 import uuid
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -26,6 +27,7 @@ from tests.fakes.gateway import FakeAdapter, json_text
 from tests.fakes.runtime import make_runtime
 from tests.fakes.slide import FakeOpenSlide, install_fake_slide
 from tests.fakes.stage2 import seed_stage2
+from tests.test_mitosis_gate import save_tumor_mask
 from worker.mitosis import run_mitosis
 
 SIDE_PX, MPP = 8000, 0.25
@@ -106,7 +108,7 @@ def db_session():
     session.close()
 
 
-def seed(db_session, mpp=MPP):
+def seed(db_session, mpp=MPP, tumor=None):
     case_id, slide_id, exec_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     raw_uri = f"gs://{settings.GCS_RAW_BUCKET}/cases/{case_id}/{slide_id}.svs"
     stage = StageExecution(id=exec_id, case_id=case_id, stage="mitosis", attempt=1, status="running")
@@ -120,6 +122,9 @@ def seed(db_session, mpp=MPP):
     ])
     db_session.commit()
     seed_stage2(db_session, case_id, slide_id, SIDE_PX * MPP, SIDE_PX * MPP)  # the mask spans the section, whatever the scan's mpp
+    # The triage tumour mask on 224 µm tiles: all tumour unless the test gives one.
+    n_tiles = int(np.ceil(SIDE_PX * MPP / 224.0))
+    save_tumor_mask(case_id, np.ones((n_tiles, n_tiles), dtype=bool) if tumor is None else tumor)
     return stage, raw_uri
 
 
@@ -181,7 +186,7 @@ def test_mitosis_runs_on_the_gateway_and_labels_come_from_the_referee(db_session
     by_verdict = {}
     for det in found:
         by_verdict.setdefault(det.vlm["verdict"], set()).add(det.final_decision)
-        assert det.vlm["rule_override"] is False and det.p_b is None and det.in_tumor is None
+        assert det.vlm["rule_override"] is False and det.p_b is None and det.in_tumor is True
         assert det.decision_path == "A" and det.review_label is None and det.p_a >= 0.75
         assert det.record_ids[0] in detect_ids and det.record_ids[1:] == [det.record_ids[1]] and det.record_ids[1] in referee_ids
     # EQUIVOCAL is never a mitosis (SPEC-06 §5.6) and never counted.
@@ -301,7 +306,7 @@ def test_with_the_referee_off_the_detector_decides(db_session, monkeypatch):
     found = detections(db_session, stage)
     detect_ids = {str(r["id"]) for r in log.pending()}
     for d in found:
-        assert (d.final_decision, d.decision_path, d.in_tumor, d.review_label, d.vlm, d.p_b) == ("mitosis", "A", None, None, None, None)
+        assert (d.final_decision, d.decision_path, d.in_tumor, d.review_label, d.vlm, d.p_b) == ("mitosis", "A", True, None, None, None)
         assert d.p_a >= get_pipeline_config().mitosis.detector.det_threshold and d.counted
         assert len(d.record_ids) == 1 and d.record_ids[0] in detect_ids
     assert found
@@ -368,13 +373,14 @@ def test_hpfs_come_from_counted_candidates_never_overlap_and_report_coverage(db_
     cfg = get_pipeline_config().mitosis.hpf
     assert hpfs
     for a in hpfs:
-        assert a.tissue_coverage >= cfg.min_tissue_coverage and a.tumor_fraction is None
+        assert a.tissue_coverage >= 0.7 and a.tumor_fraction == 1.0
         for b in hpfs:
             if a.seq < b.seq:
                 assert ((a.center_um[0] - b.center_um[0]) ** 2 + (a.center_um[1] - b.center_um[1]) ** 2) ** 0.5 >= 2 * cfg.radius_um - 1e-6
     summary = mitosis_output(stage)["summary"]
-    # The 600 µm hotspot fits fewer than 10 fields: no relaxed separation fills the rest.
-    assert summary["n_hpf"] == len(hpfs) < cfg.count and summary["flags"] == ["hpf_count_lt_10"]
+    # One field per hotspot window, its disk inside the 600 µm window: the single hotspot holds one field.
+    assert summary["n_hpf"] == len(hpfs) == 1 and summary["flags"] == ["hpf_count_lt_10"]
+    assert abs(hpfs[0].center_um[0] - 1000.0) <= 38.0 + 1e-6 and abs(hpfs[0].center_um[1] - 1000.0) <= 38.0 + 1e-6
 
 
 def test_pathologist_decisions_survive_a_rerun(db_session, monkeypatch):
@@ -400,3 +406,40 @@ def test_pathologist_decisions_survive_a_rerun(db_session, monkeypatch):
     assert all(((d.centroid_um[0] - reviewed.centroid_um[0]) ** 2 + (d.centroid_um[1] - reviewed.centroid_um[1]) ** 2) ** 0.5 >= 7.5
                for d in others)
     assert len(after) == len(set(after))
+
+
+def test_candidates_outside_the_dilated_tumour_mask_are_not_counted(db_session, monkeypatch):
+    """SPEC-06 §5.5: with tumour only in the top-left tiles, candidates in the hotspot (around 1 mm) are in stroma."""
+    tumor = np.zeros((9, 9), dtype=bool)
+    tumor[0, 0] = True
+    stage, raw_uri = seed(db_session, tumor=tumor)
+    install_fake_slide(monkeypatch, FakeOpenSlide(SIDE_PX, SIDE_PX), raw_uri)
+    run_mitosis(stage, db_session, runtime_for(stage, config=configured(referee=False)))
+    found = detections(db_session, stage)
+    assert found and all(d.in_tumor is False and d.final_decision == "mitosis" and not d.counted for d in found)
+    output = mitosis_output(stage)
+    assert output["tumor_gate"]["applied"] is True and output["tumor_gate"]["in_situ_exclusion"] is False
+    # No window holds enough tumour for a field either (tumour fraction >= 0.5).
+    assert output["hpfs"] == [] and output["summary"]["mitotic_score"] is None
+
+
+def test_a_clinical_run_refuses_a_disabled_gate(db_session, monkeypatch):
+    stage, raw_uri = seed(db_session)
+    install_fake_slide(monkeypatch, FakeOpenSlide(SIDE_PX, SIDE_PX), raw_uri)
+    config = configured(referee=False)
+    off = config.mitosis.tumor_gate.model_copy(update={"enabled": False})
+    config = config.model_copy(update={"mitosis": config.mitosis.model_copy(update={"tumor_gate": off})})
+    with pytest.raises(ValueError, match="eval ablation"):
+        run_mitosis(stage, db_session, runtime_for(stage, config=config))
+
+
+def test_a_case_triaged_without_a_tumour_mask_fails(db_session, monkeypatch):
+    from app.core.gcs import delete_blob
+    from pipeline.mitosis_gate import TumorMaskMissingError, tumor_mask_blob_names
+
+    stage, raw_uri = seed(db_session)
+    install_fake_slide(monkeypatch, FakeOpenSlide(SIDE_PX, SIDE_PX), raw_uri)
+    for name in tumor_mask_blob_names(stage.case_id):
+        delete_blob(settings.GCS_ARTIFACTS_BUCKET, name)
+    with pytest.raises(TumorMaskMissingError):
+        run_mitosis(stage, db_session, runtime_for(stage, config=configured(referee=False)))

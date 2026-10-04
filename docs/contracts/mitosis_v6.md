@@ -20,7 +20,7 @@ interface Candidate {
   p_a: number | null;           // detector probability (null for pathologist-added); calibration is deferred (D19)
   p_b: number | null;           // calibrated classifier probability
   vlm: VlmVerdict | null;
-  in_tumor: boolean | null;     // null: the tumour-cell gate did not run (mitosis.tumor_gate: false); the candidate is eligible
+  in_tumor: boolean;            // tumour-cell gate (SPEC-06 §5.5); only an eval ablation run (mitosis.tumor_gate.enabled: false) carries null
   final_decision: "mitosis" | "not_mitosis" | "equivocal";
   decision_path: "A" | "AB" | "ABC" | "human";
   review_label: "mitosis" | "not_mitosis" | null;
@@ -31,7 +31,7 @@ interface Candidate {
 
 interface Hpf {
   seq: number; center_um: [number, number]; radius_um: number;
-  count: number; tissue_coverage: number; tumor_fraction: number | null;  // null until the tumour mask is used (WP-7.6b)
+  count: number; tissue_coverage: number; tumor_fraction: number;
 }
 
 interface MitosisSummary {

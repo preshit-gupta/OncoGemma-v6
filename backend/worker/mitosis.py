@@ -35,6 +35,7 @@ from app.core.gcs import (
     resolve_slide_raw_uri
 )
 from app.core.stain_profiles import usable_stain_transform
+from app.core.run_context import RunMode
 from app.core.tasks import EntityType, Task
 from app.core.tissue_mask_store import load_tissue_mask
 from app.inference.gateway import EntityRef, FallbackResult, ModelInputs
@@ -51,6 +52,7 @@ from pipeline.mitosis_detect import detect_region, make_detect_batch
 from pipeline.errors import DegenerateStainProfileError, SlideReadError
 from pipeline.verify import mitosis_referee_images
 from pipeline.hpf import place_hpfs
+from pipeline.mitosis_gate import load_tumor_gate
 from pipeline.scoring import is_counted, summarize_stage4
 from pipeline.slide_io import SlideReader, centered_origin_um, normalize_region, read_region_at_mpp, require_mpp
 from pipeline.stain import StainTransform
@@ -139,9 +141,15 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
         )
 
     slide_dimensions_um = (float(width_px * mpp_x), float(height_px * mpp_y))
-    od_beta = config.specimen_profiles.for_type(case_obj.specimen_type).stain_fit.od_beta
+    profile = config.specimen_profiles.for_type(case_obj.specimen_type)
+    od_beta = profile.stain_fit.od_beta
     tissue = load_tissue_mask(case_id)  # TissueMaskMissingError: run preprocess again
     print(f"[Worker:Mitosis] Loaded registered tissue mask ({tissue.width_px}x{tissue.height_px} px at {tissue.mpp} um/px, {tissue.area_mm2:.1f} mm2)")
+    # The triage tumour mask: the tumour-cell gate (SPEC-06 §5.5) and the HPFs' tumour fraction (§5.8).
+    gate_cfg = mitosis_cfg.tumor_gate
+    if not gate_cfg.enabled and ctx.run_mode is RunMode.CLINICAL:
+        raise ValueError("mitosis.tumor_gate.enabled is false: the gate may be switched off only in an eval ablation run")
+    tumor = load_tumor_gate(case_id, gate_cfg.dilation_tiles)  # TumorMaskMissingError: run triage again
 
     scratch_dir = tempfile.mkdtemp(prefix="og_mitosis_")
     reader = None
@@ -250,7 +258,7 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
                 "p_b": None,
                 "vlm": None,
                 "rule_override": False,
-                "in_tumor": None,  # mitosis.tumor_gate is off until WP-7.6b
+                "in_tumor": None,  # set by the tumour-cell gate after NMS
                 "final_decision": "mitosis",
                 "decision_path": "A",
                 "review_label": None,
@@ -299,6 +307,14 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
         ]
         print(f"[Worker:Mitosis] {n_decided} candidates >= {det_cfg.det_threshold} -> {len(candidates)} after {det_cfg.nms_radius_um}um NMS.")
 
+        # Tumour-cell gate (SPEC-06 §5.5) on every candidate, the kept pathologist rows included; a
+        # pathologist's review_label still decides those. In an eval ablation in_tumor stays null.
+        for cand in candidates:
+            cand["in_tumor"] = tumor.in_tumor(*cand["centroid_um"]) if gate_cfg.enabled else None
+        for d in preserved:
+            d.in_tumor = tumor.in_tumor(*d.centroid_um) if gate_cfg.enabled else None
+        print(f"[Worker:Mitosis] Tumour gate: {sum(1 for c in candidates if c['in_tumor'])} of {len(candidates)} candidates in tumour.")
+
         # Review images of every persisted candidate, raw colour (contract mitosis_v6).
         crop_uploads = []
         for cand in candidates:
@@ -324,13 +340,16 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
         for cand in all_candidates:
             cand["counted"] = is_counted(cand["review_label"], cand["final_decision"], cand["in_tumor"])
 
-        # HPFs from the counted candidates, inside the hotspots, never overlapping (SPEC-06 §5.8).
+        # HPFs: one per hotspot window, the disk inside it, enough tissue and tumour (SPEC-06 §5.8).
         hpfs = place_hpfs(
             all_candidates,
             [(h["polygon_um"], float(h.get("prob_mean") or 0.0)) for h in hotspots],
             tissue=tissue,
+            tumor=tumor,
             slide_dimensions_um=slide_dimensions_um,
             cfg=hpf_cfg,
+            min_tissue_fraction=profile.hotspots.min_tissue_fraction,
+            min_tumor_fraction=profile.hotspots.min_tumor_fraction,
         )
         hpfs, scoring_summary = summarize_stage4(
             all_candidates, hpfs, scoring=mitosis_cfg.scoring, hpf_count=hpf_count
@@ -438,6 +457,7 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
             "hpfs": hpfs,
             "summary": scoring_summary,
             "stain_normalization": "unavailable" if stain is None else "available",
+            "tumor_gate": tumor.summary() if gate_cfg.enabled else {"applied": False, "reason": "eval ablation"},
             # The 20x/40x slice (SPEC-00 R6): a slide coarser than the detector's resolution is upsampled.
             "native_mpp": reader.native_mpp,
             "detector_upsampled": reader.native_mpp > det_cfg.mpp * (1 + detector_entry.input.mpp_tolerance),
