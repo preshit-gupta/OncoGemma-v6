@@ -83,9 +83,9 @@ def seed(db_session, with_hpfs=True):
         rows += [
             HpfSite(case_id=case_id, seq=1, center_um=[2000.0, 2000.0], radius_um=262.0, mitotic_count=2),
             Detection(id="m_0001", case_id=case_id, hotspot_id="hs_01", centroid_um=[2000.0, 2010.0],
-                      label="mitosis", label_source="referee:gemini_referee"),
+                      p_a=0.9, final_decision="mitosis", decision_path="A"),
             Detection(id="m_0002", case_id=case_id, hotspot_id="hs_01", centroid_um=[2050.0, 2000.0],
-                      label="mitosis", label_source="pathologist"),
+                      p_a=None, final_decision="mitosis", decision_path="human", review_label="mitosis"),
         ]
     db_session.add_all(rows)
     db_session.commit()

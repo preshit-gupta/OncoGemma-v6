@@ -165,8 +165,9 @@ def test_run_grading_worker_queries_detections_without_name_error():
         case_id=case_uid,
         hotspot_id="hs_01",
         centroid_um=[1500.0, 1500.0],
-        label="mitosis",
-        label_source="model"
+        p_a=0.9,
+        final_decision="mitosis",
+        decision_path="A"
     )
     hpf = HpfSite(
         seq=1,

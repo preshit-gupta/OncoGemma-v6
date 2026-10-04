@@ -213,7 +213,7 @@ def test_a_normalised_hotspot_patch_of_a_slide_without_a_profile_is_a_409_not_th
 
 def add_hpf_and_detection(db, case):
     db.add(HpfSite(case_id=case.id, seq=1, center_um=[325.0, 175.0], radius_um=262.0, mitotic_count=0))
-    db.add(Detection(id="m_0001", case_id=case.id, centroid_um=[325.0, 175.0], label="mitosis", label_source="model"))
+    db.add(Detection(id="m_0001", case_id=case.id, centroid_um=[325.0, 175.0], p_a=0.9, final_decision="mitosis", decision_path="A"))
     db.commit()
 
 
@@ -235,16 +235,6 @@ def test_a_normalised_hpf_image_of_a_slide_without_a_profile_is_a_409(db, tmp_pa
     assert raised.value.status_code == 409
 
 
-def test_a_candidate_crop_is_what_the_referee_sees(db, tmp_path):
-    case, slide, tiff = add_case(db, tmp_path)
-    add_hpf_and_detection(db, case)
-    referee = get_pipeline_config().mitosis.referee
-    orig = decode(mitosis_router.get_candidate_crop(case_id=str(case.id), candidate_id="m_0001", stain="orig", db=db))
-    norm = decode(mitosis_router.get_candidate_crop(case_id=str(case.id), candidate_id="m_0001", stain="norm", db=db))
-    assert orig.shape == (referee.focus_px, referee.focus_px, 3)
-    assert np.array_equal(norm, transform(db, slide).apply(orig))
-
-
 def add_mitosis_stage(db, case):
     from app.models.stage_execution import StageExecution
 
@@ -252,38 +242,32 @@ def add_mitosis_stage(db, case):
     db.commit()
 
 
-def crop_blob(case, candidate_id: str, suffix: str = "") -> np.ndarray:
+def crop_blob(case, candidate_id: str, kind: str) -> np.ndarray:
     from app.core.gcs import download_blob_as_bytes
 
-    data = download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case.id}/mitosis/crops/{candidate_id}{suffix}.png")
+    data = download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case.id}/mitosis/crops/{candidate_id}_{kind}.png")
     return np.array(Image.open(io.BytesIO(data)).convert("RGB"))
 
 
-def test_a_pathologist_added_mitosis_gets_the_referees_crop_raw_and_normalised(client, db, tmp_path):
-    case, slide, tiff = add_case(db, tmp_path)
-    add_mitosis_stage(db, case)
-    referee = get_pipeline_config().mitosis.referee
-    side = referee.focus_px * referee.focus_mpp
+def expected_view(tiff, cx_um, cy_um, size_um, mpp):
     with SlideReader(str(tiff), MPP, MPP, "tif") as reader:
-        expected = read_region_at_mpp(reader, 325.0 - side / 2, 175.0 - side / 2, side, side, referee.focus_mpp).rgb
-
-    response = client.post("/api/v1/stages/mitosis/add_candidate", json={"case_id": str(case.id), "centroid_um": [325.0, 175.0]})
-    assert response.status_code == 200, response.text
-    candidate = response.json()["candidate"]
-    raw, norm = crop_blob(case, candidate["id"], "_orig"), crop_blob(case, candidate["id"])
-    assert np.array_equal(raw, expected)
-    assert np.array_equal(norm, transform(db, slide).apply(raw)) and not np.array_equal(norm, raw)  # v5 wrote the raw crop twice
-    assert candidate["crop_uri"].endswith(f"{candidate['id']}.png")
+        return read_region_at_mpp(reader, cx_um - size_um / 2, cy_um - size_um / 2, size_um, size_um, mpp).rgb
 
 
-def test_a_slide_without_a_profile_gets_only_the_raw_crop_for_an_added_mitosis(client, db, tmp_path):
-    from app.core.gcs import blob_exists
-
-    case, slide, tiff = add_case(db, tmp_path, profile=False)
+@pytest.mark.parametrize("profile", [True, False])
+def test_a_pathologist_added_mitosis_gets_the_contract_crop_and_context_in_raw_colour(client, db, tmp_path, profile):
+    """The added figure's crop_url / context_url images are read through read_region_at_mpp as scanned, whether or
+    not the slide has a stain profile (contract mitosis_v6; the referee's normalised crop is not used)."""
+    case, slide, tiff = add_case(db, tmp_path, profile=profile)
     add_mitosis_stage(db, case)
-    response = client.post("/api/v1/stages/mitosis/add_candidate", json={"case_id": str(case.id), "centroid_um": [325.0, 175.0]})
+    crops = get_pipeline_config().mitosis.review_crops
+
+    response = client.post("/api/v1/stages/mitosis/add", json={"case_id": str(case.id), "centroid_um": [325.0, 175.0]})
     assert response.status_code == 200, response.text
-    candidate = response.json()["candidate"]
-    assert crop_blob(case, candidate["id"], "_orig").shape == (128, 128, 3)
-    assert not blob_exists(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case.id}/mitosis/crops/{candidate['id']}.png")
-    assert candidate["crop_uri"].endswith(f"{candidate['id']}_orig.png")
+    added = [c for c in response.json()["candidates"] if c["decision_path"] == "human"]
+    assert len(added) == 1 and added[0]["review_label"] == "mitosis" and added[0]["counted"] is True
+    candidate_id = added[0]["id"]
+    assert np.array_equal(crop_blob(case, candidate_id, "crop"), expected_view(tiff, 325.0, 175.0, crops.crop_um, crops.crop_mpp))
+    assert np.array_equal(crop_blob(case, candidate_id, "context"), expected_view(tiff, 325.0, 175.0, crops.context_um, crops.context_mpp))
+    served = client.get(added[0]["crop_url"])
+    assert served.status_code == 200 and served.headers["content-type"] == "image/png"
