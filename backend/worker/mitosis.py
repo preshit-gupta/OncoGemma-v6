@@ -1,12 +1,13 @@
 """
-Stage 4 worker: mitosis candidate detection, VLM adjudication and virtual HPF selection.
+Stage 4 worker: mitosis candidate detection, decision, virtual HPF selection and the count.
 
-Both models run through the gateway (SPEC-01 §3.4): the detector sweeps 1024 px tiles over
-the confirmed hotspots in its 512 px input patches, and the configured VLM adjudicates every
-candidate with a strict MitosisVerdict. Each call is a DecisionRecord, and each detection's
-label names the producer that decided it. A detector or referee failure fails the stage
-unless configs/fallbacks.yaml allows the referee's in a clinical run; then the candidate
-stays unreviewed and needs a human (SPEC-01 §3.6, §3.9).
+The detector runs through the gateway (SPEC-01 §3.4): it sweeps the confirmed hotspots in its
+512 px input patches, and every call is a DecisionRecord. The baseline decides (SPEC-06 arm A1,
+D17/D19): a candidate at or above ``det_threshold`` is ``final_decision = 'mitosis'`` with
+``decision_path = 'A'``. The optional referee (off in production) turns EQUIVOCAL into
+``equivocal``, never into ``mitosis``; an allowed referee outage leaves the candidate
+``equivocal`` for a pathologist (SPEC-01 §3.6, §3.9). One NMS runs after the decisions, HPFs
+come from the counted candidates only, and the count is written as a ``mitosis_count`` record.
 
 Every read goes through read_region_at_mpp: detector tiles are resampled to the detector's
 resolution (a 20x scan is upsampled and reported as such), tissue comes from the registered
@@ -15,6 +16,7 @@ mask and colour from the slide's persisted stain profile (SPEC-04).
 import os
 import io
 import json
+import math
 import tempfile
 import shutil
 from concurrent.futures import ThreadPoolExecutor
@@ -22,7 +24,7 @@ from typing import Any, Dict, Tuple
 import numpy as np
 from PIL import Image
 from shapely.geometry import box
-from sqlalchemy import select, delete, not_
+from sqlalchemy import select, delete
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -36,6 +38,7 @@ from app.core.stain_profiles import usable_stain_transform
 from app.core.tasks import EntityType, Task
 from app.core.tissue_mask_store import load_tissue_mask
 from app.inference.gateway import EntityRef, FallbackResult, ModelInputs
+from app.inference.records import mitosis_count_record
 from app.inference.schemas import MitosisVerdict
 from app.models.case import Case
 from app.models.slide import Slide
@@ -43,21 +46,21 @@ from app.models.hotspot import Hotspot
 from app.models.detection import Detection
 from app.models.hpf_site import HpfSite
 from app.models.audit import AuditEvent
-from pipeline.detect import apply_global_nms, hotspot_geometry, hotspot_region_um
+from pipeline.detect import apply_global_nms, candidate_review_crops, hotspot_geometry, hotspot_region_um, review_crop_blob
 from pipeline.mitosis_detect import detect_region, make_detect_batch
 from pipeline.errors import DegenerateStainProfileError, SlideReadError
 from pipeline.verify import mitosis_referee_images
-from pipeline.hpf import generate_mitosis_density_map, greedy_place_hpfs
-from pipeline.scoring import calculate_hpf_mitosis_counts, compute_nottingham_mitotic_score
+from pipeline.hpf import place_hpfs
+from pipeline.scoring import is_counted, summarize_stage4
 from pipeline.slide_io import SlideReader, centered_origin_um, normalize_region, read_region_at_mpp, require_mpp
 from pipeline.stain import StainTransform
 from worker.runtime import StageRuntime
 
-# Detection label for each referee verdict. EQUIVOCAL is never counted (SPEC-06 §5.6).
-LABEL_FOR_VERDICT = {
+# final_decision for each referee verdict. EQUIVOCAL is never counted (SPEC-06 §5.6).
+DECISION_FOR_VERDICT = {
     "MITOTIC_FIGURE": "mitosis",
     "NOT_MITOTIC_FIGURE": "not_mitosis",
-    "EQUIVOCAL": "unreviewed",
+    "EQUIVOCAL": "equivocal",
 }
 # Concurrent gateway calls for the tile sweep and the referee, as v5 ran them.
 MODEL_CALL_THREADS = 4
@@ -109,7 +112,6 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
     height_px = int(slide_obj.height_px)
 
     tile_um = det_cfg.tile_size_um
-    radius_um = hpf_cfg.radius_um
     hpf_count = hpf_cfg.count
 
     # Hotspots come from the pathologist-confirmed triage in the database only (SPEC-06 §9).
@@ -163,12 +165,8 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
         reader = SlideReader.from_slide_row(local_slide_path, slide_obj)
 
         # The persisted stain transform; None when the slide's fit is degenerate. A model that must see
-        # normalised colour cannot be run without it.
+        # normalised colour cannot be run without it (checked where the referee runs).
         stain = _stain_transform(db, slide_obj.id, od_beta)
-        if referee_cfg.color == "normalized" and stain is None:
-            raise DegenerateStainProfileError(
-                f"the mitosis referee is configured for normalized colour but slide {slide_id}'s stain fit is degenerate"
-            )
 
         # Stage A (SPEC-06 §5.1-5.2): each hotspot's region in detector-sized tiles at the detector's
         # resolution (SlideReader resamples; a 20x scan is upsampled and the output says so), with
@@ -221,120 +219,121 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
             "application/json",
         )
 
-        raw_candidates = []
+        # Rows a pathologist decided are kept across re-runs: their labels and added figures (#464).
+        preserved = list(db.scalars(
+            select(Detection).where(
+                Detection.case_id == case_obj.id,
+                (Detection.review_label.is_not(None)) | (Detection.decision_path == "human"),
+            )
+        ).all())
+        used_ids = {d.id for d in preserved}
+        id_counter = iter(range(1, 10 ** 9))
+
+        def next_id():
+            while True:
+                cid = f"m_{next(id_counter):04d}"
+                if cid not in used_ids:
+                    used_ids.add(cid)
+                    return cid
+
+        # Decision (SPEC-06 §5.6, arm A1): the detector's probability as returned (no calibration, D19);
+        # a candidate at or above det_threshold is a mitosis, the rest stay only in stage_a.json.
+        candidates = []
         for hs_id, point in stage_a:
             if point.prob < det_cfg.det_threshold:
                 continue
-            raw_candidates.append({
-                "id": f"m_{len(raw_candidates) + 1:04d}",
+            candidates.append({
+                "id": next_id(),
                 "hotspot_id": hs_id,
                 "centroid_um": [point.x_um, point.y_um],
-                "det_conf": point.prob,
-                "det_record_id": point.record_id,
-                "ver_conf": None,
-                "label": "unreviewed",
-                "label_source": "model"
+                "p_a": point.prob,
+                "p_b": None,
+                "vlm": None,
+                "rule_override": False,
+                "in_tumor": None,  # mitosis.tumor_gate is off until WP-7.6b
+                "final_decision": "mitosis",
+                "decision_path": "A",
+                "review_label": None,
+                "record_ids": [str(point.record_id)],
             })
 
-        # Cross-tile Global Physical NMS
-        candidates = apply_global_nms(raw_candidates, nms_radius_um=det_cfg.nms_radius_um)
-        print(f"[Worker:Mitosis] Detected {len(raw_candidates)} candidates -> {len(candidates)} after {det_cfg.nms_radius_um}um NMS.")
-
-        # Referee inputs are read up front; the model calls then run concurrently.
-        for cand in candidates:
-            cx_um, cy_um = cand["centroid_um"]
-            cand["_referee_images"] = mitosis_referee_images(reader, cx_um, cy_um, referee_cfg, stain)
-            cand["crop_uri"] = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/mitosis/crops/{cand['id']}.png"
-            cand["crop_orig_uri"] = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/mitosis/crops/{cand['id']}_orig.png"
-
-        def _adjudicate(cand):
-            result = gateway.invoke_or_fallback(
-                Task.MITOSIS_REFEREE,
-                referee_cfg.producer,
-                ModelInputs(
-                    images=(cand["_referee_images"].focus, cand["_referee_images"].context), prompt_id=referee_cfg.prompt
-                ),
-                ctx,
-                EntityRef(EntityType.CANDIDATE, cand["id"]),
-                MitosisVerdict,
-            )
-            cand["referee_record_id"] = str(result.record_id)
-            if isinstance(result, FallbackResult):
-                cand["label"] = "unreviewed"
-                cand["label_source"] = "referee_unavailable"
-                cand["needs_human"] = True
-                cand["vlm"] = None
-                cand["medgemma_verdict"] = None
-                cand["medgemma_rationale"] = None
-            else:
-                verdict = result.output
-                cand["label"] = LABEL_FOR_VERDICT[verdict.verdict]
-                cand["label_source"] = f"referee:{result.producer_id}"
-                cand["needs_human"] = False
-                cand["vlm"] = {**verdict.model_dump(mode="json"), "rule_override": False}
-                cand["medgemma_verdict"] = verdict.verdict
-                cand["medgemma_rationale"] = verdict.rationale
-            cand["medgemma_confidence"] = None
-
         if referee_cfg.enabled:
+            # Arm A2 (off in production since the MIDOG++ baseline; referee v2 is WP-7.5).
+            if referee_cfg.color == "normalized" and stain is None:
+                raise DegenerateStainProfileError(
+                    f"the mitosis referee is configured for normalized colour but slide {slide_id}'s stain fit is degenerate"
+                )
+            referee_images = {
+                cand["id"]: mitosis_referee_images(reader, *cand["centroid_um"], referee_cfg, stain) for cand in candidates
+            }
+
+            def _adjudicate(cand):
+                images = referee_images[cand["id"]]
+                result = gateway.invoke_or_fallback(
+                    Task.MITOSIS_REFEREE,
+                    referee_cfg.producer,
+                    ModelInputs(images=(images.focus, images.context), prompt_id=referee_cfg.prompt),
+                    ctx,
+                    EntityRef(EntityType.CANDIDATE, cand["id"]),
+                    MitosisVerdict,
+                )
+                cand["record_ids"].append(str(result.record_id))
+                if isinstance(result, FallbackResult):
+                    # An allowed referee outage leaves the candidate for a pathologist (SPEC-01 §3.6).
+                    cand["final_decision"] = "equivocal"
+                else:
+                    cand["final_decision"] = DECISION_FOR_VERDICT[result.output.verdict]
+                    cand["vlm"] = {**result.output.model_dump(mode="json"), "rule_override": False}
+
             print(f"[Worker:Mitosis] Adjudicating {len(candidates)} candidates via {referee_cfg.producer} with {MODEL_CALL_THREADS} worker threads...")
             with ThreadPoolExecutor(max_workers=MODEL_CALL_THREADS) as pool:
                 list(pool.map(_adjudicate, candidates))
-        else:
-            # SPEC-06 arm A1: the detector at det_threshold decides; no VLM call is made.
-            for cand in candidates:
-                cand.update({
-                    "label": "mitosis", "label_source": f"detector:{det_cfg.producer}", "needs_human": False,
-                    "referee_record_id": None, "vlm": None,
-                    "medgemma_verdict": None, "medgemma_rationale": None, "medgemma_confidence": None,
-                })
 
-        # Post-referee physical NMS to eliminate any residual coinciding/overlapping detections
+        # One NMS, after the decisions, by p_b ?? p_a (SPEC-06 §5.7). A figure a pathologist already
+        # decided stands for its neighbourhood, so a new candidate next to it is suppressed as well.
+        n_decided = len(candidates)
         candidates = apply_global_nms(candidates, nms_radius_um=det_cfg.nms_radius_um)
-        print(f"[Worker:Mitosis] Retained {len(candidates)} spatially distinct candidates after refereeing and {det_cfg.nms_radius_um}um NMS.")
+        candidates = [
+            c for c in candidates
+            if all(math.dist(c["centroid_um"], d.centroid_um) >= det_cfg.nms_radius_um for d in preserved)
+        ]
+        print(f"[Worker:Mitosis] {n_decided} candidates >= {det_cfg.det_threshold} -> {len(candidates)} after {det_cfg.nms_radius_um}um NMS.")
 
-        # Upload each candidate's focus crop: what the referee saw, and as scanned
-        def _upload_single_crop(c_item):
-            images = c_item.pop("_referee_images")
-            for suffix, data in (("", images.focus.data), ("_orig", images.focus_raw_png)):
-                upload_blob_from_bytes(
-                    settings.GCS_ARTIFACTS_BUCKET,
-                    f"cases/{case_id}/mitosis/crops/{c_item['id']}{suffix}.png",
-                    data,
-                    "image/png"
-                )
+        # Review images of every persisted candidate, raw colour (contract mitosis_v6).
+        crop_uploads = []
+        for cand in candidates:
+            crops = candidate_review_crops(reader, *cand["centroid_um"], mitosis_cfg.review_crops)
+            crop_uploads += [(review_crop_blob(case_id, cand["id"], "crop"), crops.crop_png),
+                             (review_crop_blob(case_id, cand["id"], "context"), crops.context_png)]
+
+        def _upload_png(item):
+            upload_blob_from_bytes(settings.GCS_ARTIFACTS_BUCKET, item[0], item[1], "image/png")
 
         with ThreadPoolExecutor(max_workers=16) as pool:
-            list(pool.map(_upload_single_crop, candidates))
+            list(pool.map(_upload_png, crop_uploads))
 
-        # Compute bounding box for density map
-        all_xs = [c["centroid_um"][0] for c in candidates] or [0.0, float(width_px * mpp_x)]
-        all_ys = [c["centroid_um"][1] for c in candidates] or [0.0, float(height_px * mpp_y)]
-        bbox_um = (min(all_xs), min(all_ys), max(all_xs), max(all_ys))
+        all_candidates = candidates + [
+            {
+                "id": d.id, "hotspot_id": d.hotspot_id, "centroid_um": d.centroid_um, "p_a": d.p_a, "p_b": d.p_b,
+                "vlm": d.vlm, "rule_override": d.rule_override, "in_tumor": d.in_tumor,
+                "final_decision": d.final_decision, "decision_path": d.decision_path,
+                "review_label": d.review_label, "record_ids": d.record_ids,
+            }
+            for d in preserved
+        ]
+        for cand in all_candidates:
+            cand["counted"] = is_counted(cand["review_label"], cand["final_decision"], cand["in_tumor"])
 
-        # Spatial FFT Density Convolution
-        density_map, grid_meta = generate_mitosis_density_map(
-            candidates,
-            bounding_box_um=bbox_um,
-            grid_res_um=hpf_cfg.density_grid_res_um,
-            radius_um=radius_um
-        )
-
-        # Greedy 10-HPF Placement with Overlap Relaxation Fallback & Strict Tissue Density Gating
-        hotspot_polys = [h["polygon_um"] for h in hotspots]
-        hotspot_prios = [float(h.get("prob_mean") or 0.0) for h in hotspots]
-        hpfs = greedy_place_hpfs(
-            density_map,
-            grid_meta,
-            hotspot_polygons_um=hotspot_polys,
-            count=hpf_count,
-            radius_um=radius_um,
-            min_separation_um=hpf_cfg.min_separation_um,
-            relaxed_min_separation_um=hpf_cfg.relaxed_min_separation_um,
+        # HPFs from the counted candidates, inside the hotspots, never overlapping (SPEC-06 §5.8).
+        hpfs = place_hpfs(
+            all_candidates,
+            [(h["polygon_um"], float(h.get("prob_mean") or 0.0)) for h in hotspots],
             tissue=tissue,
             slide_dimensions_um=slide_dimensions_um,
-            min_tissue_coverage=hpf_cfg.min_tissue_coverage,
-            hotspot_priorities=hotspot_prios
+            cfg=hpf_cfg,
+        )
+        hpfs, scoring_summary = summarize_stage4(
+            all_candidates, hpfs, scoring=mitosis_cfg.scoring, hpf_count=hpf_count
         )
 
         # Pre-render and upload all HPF review images (10x, 20x, 40x, as scanned and normalised) to GCS.
@@ -375,88 +374,59 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
         with ThreadPoolExecutor(max_workers=16) as pool:
             list(pool.map(_upload_hpf_item, hpf_uploads))
 
-        # Fetch existing pathologist detections before re-populating to preserve reviews & additions (#464)
-        existing_pathologist_dets = list(
-            db.scalars(
-                select(Detection).where(
-                    Detection.case_id == case_obj.id,
-                    (Detection.label_source == "pathologist") | (Detection.label_source.startswith("pathologist"))
-                )
-            ).all()
-        )
-        existing_pathologist_ids = {d.id for d in existing_pathologist_dets}
-
-        # Combine model candidates and preserved pathologist detections
-        all_candidates = []
-        for cand in candidates:
-            if cand["id"] not in existing_pathologist_ids:
-                all_candidates.append(cand)
-        for pd in existing_pathologist_dets:
-            all_candidates.append({
-                "id": pd.id,
-                "case_id": str(case_obj.id),
-                "hotspot_id": pd.hotspot_id,
-                "centroid_um": pd.centroid_um,
-                "det_conf": pd.det_conf,
-                "ver_conf": pd.ver_conf,
-                "label": pd.label,
-                "label_source": pd.label_source,
-                "crop_uri": pd.crop_uri,
-                "crop_orig_uri": pd.crop_orig_uri
-            })
-
-        # Calculate HPF Mitotic Containment Counts
-        hpfs, total_mitoses_in_hpfs = calculate_hpf_mitosis_counts(all_candidates, hpfs)
-
-        # Calculate Nottingham Mitotic Score
-        scoring_summary = compute_nottingham_mitotic_score(
-            count_total=total_mitoses_in_hpfs,
-            n_hpf=len(hpfs),
-            radius_um=radius_um,
-            scoring=mitosis_cfg.scoring,
-        )
-
-        # Persist to Database: strictly preserve all pathologist annotations, delete previous model/referee detections (#464)
+        # Persist: pathologist-decided rows stay; the previous model rows and HPFs are replaced.
         db.execute(
             delete(Detection).where(
                 Detection.case_id == case_obj.id,
-                Detection.label_source != "pathologist",
-                not_(Detection.label_source.startswith("pathologist"))
+                Detection.review_label.is_(None),
+                Detection.decision_path != "human",
             )
         )
         db.execute(delete(HpfSite).where(HpfSite.case_id == case_obj.id))
 
         for cand in candidates:
-            if cand["id"] in existing_pathologist_ids:
-                continue
-            det_row = Detection(
+            db.add(Detection(
                 id=cand["id"],
                 case_id=case_obj.id,
-                hotspot_id=cand.get("hotspot_id"),
+                hotspot_id=cand["hotspot_id"],
                 centroid_um=cand["centroid_um"],
-                det_conf=cand.get("det_conf"),
-                ver_conf=cand.get("ver_conf"),
-                label=cand["label"],
-                label_source=cand["label_source"],
-                medgemma_verdict=cand.get("medgemma_verdict"),
-                medgemma_rationale=cand.get("medgemma_rationale"),
-                medgemma_confidence=cand.get("medgemma_confidence"),
-                crop_uri=cand.get("crop_uri"),
-                crop_orig_uri=cand.get("crop_orig_uri")
-            )
-            db.add(det_row)
+                p_a=cand["p_a"],
+                p_b=cand["p_b"],
+                vlm=cand["vlm"],
+                rule_override=cand["rule_override"],
+                in_tumor=cand["in_tumor"],
+                final_decision=cand["final_decision"],
+                decision_path=cand["decision_path"],
+                review_label=cand["review_label"],
+                record_ids=cand["record_ids"],
+            ))
 
         for hpf in hpfs:
-            hpf_row = HpfSite(
+            db.add(HpfSite(
                 case_id=case_obj.id,
                 seq=hpf["seq"],
                 center_um=hpf["center_um"],
                 radius_um=hpf["radius_um"],
                 mitotic_count=hpf["count"],
+                tissue_coverage=hpf["tissue_coverage"],
+                tumor_fraction=hpf["tumor_fraction"],
                 source=hpf.get("source", "model"),
                 image_patch_uri=None
-            )
-            db.add(hpf_row)
+            ))
+
+        # The count itself is a decision, linked to the detections it counted (SPEC-06 AC8).
+        db.add(mitosis_count_record(
+            case_id=ctx.case_id,
+            stage_execution_id=ctx.stage_execution_id,
+            run_id=ctx.run_id,
+            run_mode=ctx.run_mode.value,
+            config_hash=ctx.config_hash,
+            slide_id=slide_id,
+            candidates=all_candidates,
+            hpfs=hpfs,
+            summary=scoring_summary,
+            thresholds=mitosis_cfg.scoring.thresholds.model_dump(),
+        ))
 
         producers = (det_cfg.producer, referee_cfg.producer) if referee_cfg.enabled else (det_cfg.producer,)
         model_versions = {key: registry.version_of(key) for key in producers}
@@ -467,7 +437,6 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
             "candidates": all_candidates,
             "hpfs": hpfs,
             "summary": scoring_summary,
-            "grid": grid_meta,
             "stain_normalization": "unavailable" if stain is None else "available",
             # The 20x/40x slice (SPEC-00 R6): a slide coarser than the detector's resolution is upsampled.
             "native_mpp": reader.native_mpp,

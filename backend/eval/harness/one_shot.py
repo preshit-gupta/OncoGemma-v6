@@ -108,8 +108,9 @@ def build_result(session: Session, run, item: ValidationItem, slide_uri: str, sp
     triage = stage_service.latest_execution(session, case_id, "triage")
     hotspots = stage_service.effective_triage_hotspots(triage) if triage is not None and triage.output_ref else []
     candidates = [
-        {"id": d.id, "centroid_um": d.centroid_um, "label": d.label, "label_source": d.label_source,
-         "det_conf": d.det_conf, "ver_conf": d.ver_conf, "hotspot_id": d.hotspot_id}
+        {"id": d.id, "centroid_um": d.centroid_um, "hotspot_id": d.hotspot_id, "p_a": d.p_a, "p_b": d.p_b,
+         "in_tumor": d.in_tumor, "final_decision": d.final_decision, "decision_path": d.decision_path,
+         "review_label": d.review_label, "counted": bool(d.counted)}
         for d in session.scalars(select(Detection).where(Detection.case_id == case_id).order_by(Detection.id))
     ]
     hpfs = [

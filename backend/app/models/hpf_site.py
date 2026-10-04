@@ -19,6 +19,8 @@ class HpfSite(Base):
     center_um = Column(JSONType, nullable=False) # [x, y] in base micrometers
     radius_um = Column(Float, nullable=False, default=262.0)
     mitotic_count = Column(Integer, nullable=False, default=0)
+    tissue_coverage = Column(Float, nullable=True) # tissue fraction of the disk (null on rows from before 0016)
+    tumor_fraction = Column(Float, nullable=True) # tumour fraction of the disk; null until the tumour gate (WP-7.6b)
     source = Column(String, nullable=False, default="model") # model | pathologist
     image_patch_uri = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

@@ -17,10 +17,10 @@ interface Candidate {
   id: string;
   hotspot_id: string | null;
   centroid_um: [number, number];
-  p_a: number | null;           // calibrated detector probability (null for pathologist-added)
+  p_a: number | null;           // detector probability (null for pathologist-added); calibration is deferred (D19)
   p_b: number | null;           // calibrated classifier probability
   vlm: VlmVerdict | null;
-  in_tumor: boolean;
+  in_tumor: boolean | null;     // null: the tumour-cell gate did not run (mitosis.tumor_gate: false); the candidate is eligible
   final_decision: "mitosis" | "not_mitosis" | "equivocal";
   decision_path: "A" | "AB" | "ABC" | "human";
   review_label: "mitosis" | "not_mitosis" | null;
@@ -31,12 +31,12 @@ interface Candidate {
 
 interface Hpf {
   seq: number; center_um: [number, number]; radius_um: number;
-  count: number; tissue_coverage: number; tumor_fraction: number;
+  count: number; tissue_coverage: number; tumor_fraction: number | null;  // null until the tumour mask is used (WP-7.6b)
 }
 
 interface MitosisSummary {
   count_total: number; n_hpf: number; area_mm2: number; per_mm2: number;
-  mitotic_score: 1 | 2 | 3; n_equivocal: number;
+  mitotic_score: 1 | 2 | 3 | null; n_equivocal: number;  // null when n_hpf = 0
   flags: ("hpf_count_lt_10")[];
 }
 
@@ -99,4 +99,4 @@ interface MitosisStageV6 {
 }
 ```
 
-The mock `review` handler must recompute `counted` using `review_label ?? (final_decision == "mitosis" && in_tumor)`. It must then recompute `count_total` over candidates inside HPFs, `per_mm2 = count_total / area_mm2`, and `mitotic_score` with thresholds 3.65 and 7.30 per mm². The UI never performs that calculation; the mock only simulates the server.
+The mock `review` handler must recompute `counted` using `review_label ?? (final_decision == "mitosis" && (in_tumor ?? true))`. It must then recompute `count_total` over candidates inside HPFs, `per_mm2 = count_total / area_mm2`, and `mitotic_score` with thresholds 3.65 and 7.30 per mm². The UI never performs that calculation; the mock only simulates the server.

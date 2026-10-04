@@ -176,17 +176,20 @@ def test_grading_is_not_confirmed_without_its_scores(db, client):
 
 
 def test_approve_applies_the_mitosis_review_gate(db, client):
-    """/approve and /stages/mitosis/confirm are one path: neither skips the unreviewed-candidate gate."""
+    """/approve and /stages/mitosis/confirm are one path: neither skips the equivocal-candidate gate (SPEC-06 §5.6)."""
+    from app.models.hpf_site import HpfSite
+
     case, _ = add_case(db)
     add_execution(db, case, "mitosis", "awaiting_review")
-    db.add(Detection(id="m_1", case_id=case.id, centroid_um=[10.0, 10.0], det_conf=0.9, label="unreviewed"))
+    db.add(HpfSite(case_id=case.id, seq=1, center_um=[10.0, 10.0], radius_um=262.0, mitotic_count=0))
+    db.add(Detection(id="m_1", case_id=case.id, centroid_um=[10.0, 10.0], p_a=0.9, final_decision="equivocal", decision_path="A"))
     db.commit()
 
     for resp in (
         client.post(f"/api/v1/cases/{case.id}/stages/mitosis/approve"),
         client.post("/api/v1/stages/mitosis/confirm", json={"case_id": str(case.id)}),
     ):
-        assert resp.status_code == 400 and "Clinical Safety Gate" in resp.json()["detail"]
+        assert resp.status_code == 409 and "review label" in resp.json()["detail"]
     assert stage_service.latest_execution(db, case.id, "mitosis").status == "awaiting_review"
     assert stage_service.latest_execution(db, case.id, "grading") is None
 
@@ -195,7 +198,7 @@ def test_mitosis_confirm_queues_grading_in_the_run(db):
     run = add_run(db)
     case, _ = add_case(db)
     add_execution(db, case, "mitosis", "awaiting_review", run=run)
-    db.add(Detection(id="m_1", case_id=case.id, centroid_um=[10.0, 10.0], det_conf=0.9, label="mitosis"))
+    db.add(Detection(id="m_1", case_id=case.id, centroid_um=[10.0, 10.0], p_a=0.9, final_decision="mitosis", decision_path="A"))
     db.commit()
 
     result = stage_service.confirm_stage(db, case.id, "mitosis", f"harness:{run.id}")

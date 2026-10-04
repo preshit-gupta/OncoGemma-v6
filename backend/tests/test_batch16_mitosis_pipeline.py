@@ -11,26 +11,16 @@ Validates fixes for:
   - #756: Cache-Control immutable on candidate crop streaming.
   - Medical safety: 409 Conflict gating on confirmed stages and non-awaiting confirmation attempts.
 """
-import io
 import math
-import uuid
-from unittest.mock import patch, MagicMock
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
-from PIL import Image
 
 from app.main import app
 from app.core.db import Base, get_db
-from app.models.case import Case
-from app.models.slide import Slide
-from app.models.stage_execution import StageExecution
-from app.models.detection import Detection
-from app.models.hpf_site import HpfSite
-from app.models.hotspot import Hotspot
 from pipeline.detect import enumerate_hotspot_tiles
 from pipeline.tissue_mask import TissueMask
 from pipeline.heuristics.od_sweep import detect_hyperchromatic_features
@@ -160,200 +150,17 @@ def test_scoring_config_loading_and_multi_radius_summation():
 
 
 def test_scoring_zero_hpfs_safe():
-    """Validates #373: zero HPFs returns 0 area and score 1 without zero division."""
+    """Validates #373: zero HPFs returns 0 area without zero division, and no score (contract mitosis_v6: null when n_hpf = 0)."""
     res = compute_nottingham_mitotic_score(
         count_total=0, n_hpf=0, radius_um=262.0, scoring=get_pipeline_config().mitosis.scoring
     )
-    assert res["score"] == 1
+    assert res["score"] is None and res["mitotic_score"] is None
     assert res["area_mm2"] == 0.0
     assert res["mitoses_per_mm2"] == 0.0
 
 
 # =========================================================================
-# 4. Router Tests: Safety 409 Conflict Gating & HPF Non-Overlap 422
+# 4. Router tests: the v5 routes (/recompute, /add_candidate, /bulk_action, /re_place_hpfs) are gone
+# (WP-7.6a). Locked edits, proximity de-duplication on /add and the confirm gate are tested on the
+# mitosis_v6 routes in test_mitosis_api.py.
 # =========================================================================
-def test_router_forbids_mutation_on_confirmed_stage():
-    """Validates medical safety: 409 Conflict when altering confirmed mitosis stage."""
-    db = TestingSessionLocal()
-    case_id = uuid.uuid4()
-    case = Case(id=case_id, created_by="pathologist_test", status="open")
-    slide = Slide(
-        id=uuid.uuid4(),
-        case_id=case_id,
-        gcs_uri_original="gs://raw/slide.svs",
-        width_px=10000,
-        height_px=10000,
-        mpp_x=0.25,
-        mpp_y=0.25
-    )
-    stage_exec = StageExecution(
-        id=uuid.uuid4(),
-        case_id=case_id,
-        stage="mitosis",
-        attempt=1,
-        status="confirmed"
-    )
-    db.add_all([case, slide, stage_exec])
-    db.commit()
-    db.close()
-
-    # 1. /recompute must return 409
-    resp = client.post("/api/v1/stages/mitosis/recompute", json={
-        "case_id": str(case_id),
-        "candidate_labels": {"some_id": "mitosis"}
-    })
-    assert resp.status_code == 409
-    assert "already confirmed" in resp.json()["detail"]
-
-    # 2. /add_candidate must return 409
-    resp2 = client.post("/api/v1/stages/mitosis/add_candidate", json={
-        "case_id": str(case_id),
-        "centroid_um": [1500.0, 1500.0],
-        "label": "mitosis",
-        "reviewed_by": "pathologist_test"
-    })
-    assert resp2.status_code == 409
-
-    # 3. /bulk_action must return 409
-    resp3 = client.post("/api/v1/stages/mitosis/bulk_action", json={
-        "case_id": str(case_id),
-        "action": "reject_unreviewed",
-        "reviewed_by": "pathologist_test"
-    })
-    assert resp3.status_code == 409
-
-    # 4. /re_place_hpfs must return 409
-    resp4 = client.post("/api/v1/stages/mitosis/re_place_hpfs", json={
-        "case_id": str(case_id),
-        "action": "re_place_hpfs",
-        "reviewed_by": "pathologist_test"
-    })
-    assert resp4.status_code == 409
-
-
-def test_recompute_validates_hpf_non_overlap():
-    """Validates #115 & #344: /recompute raises 422 if HPFs overlap (dist < 2r - 5 µm)."""
-    db = TestingSessionLocal()
-    case_id = uuid.uuid4()
-    case = Case(id=case_id, created_by="pathologist_test", status="open")
-    stage_exec = StageExecution(
-        id=uuid.uuid4(),
-        case_id=case_id,
-        stage="mitosis",
-        attempt=1,
-        status="awaiting_review"
-    )
-    db.add_all([case, stage_exec])
-    db.commit()
-    db.close()
-
-    overlapping_hpfs = [
-        {"seq": 1, "center_um": [1000.0, 1000.0], "radius_um": 262.0},
-        {"seq": 2, "center_um": [1200.0, 1000.0], "radius_um": 262.0}
-    ]
-
-    resp = client.post("/api/v1/stages/mitosis/recompute", json={
-        "case_id": str(case_id),
-        "hpfs": overlapping_hpfs
-    })
-    assert resp.status_code == 422
-    assert "cannot overlap" in resp.json()["detail"]
-
-
-def test_add_candidate_proximity_deduplication():
-    """Validates #593: adding candidate within 7.5 µm reactivates existing detection."""
-    db = TestingSessionLocal()
-    case_id = uuid.uuid4()
-    case = Case(id=case_id, created_by="pathologist_test", status="open")
-    slide = Slide(
-        id=uuid.uuid4(),
-        case_id=case_id,
-        gcs_uri_original="gs://raw/slide.svs",
-        width_px=10000,
-        height_px=10000,
-        mpp_x=0.25,
-        mpp_y=0.25
-    )
-    stage_exec = StageExecution(
-        id=uuid.uuid4(),
-        case_id=case_id,
-        stage="mitosis",
-        attempt=1,
-        status="awaiting_review"
-    )
-    det = Detection(
-        id="m_existing_1",
-        case_id=case_id,
-        centroid_um=[2000.0, 3000.0],
-        det_conf=0.75,
-        ver_conf=0.80,
-        label="not_mitosis",
-        label_source="model"
-    )
-    db.add_all([case, slide, stage_exec, det])
-    db.commit()
-    db.close()
-
-    resp = client.post("/api/v1/stages/mitosis/add_candidate", json={
-        "case_id": str(case_id),
-        "centroid_um": [2003.0, 3004.0],
-        "label": "mitosis",
-        "reviewed_by": "dr_smith"
-    })
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["candidate"]["id"] == "m_existing_1"
-    assert data["candidate"]["label"] == "mitosis"
-
-    db = TestingSessionLocal()
-    dets = db.scalars(select(Detection).where(Detection.case_id == case_id)).all()
-    assert len(dets) == 1
-    assert dets[0].label == "mitosis"
-    assert dets[0].label_source == "pathologist"
-    db.close()
-
-
-def test_confirm_requires_awaiting_review_and_no_unreviewed_high_conf():
-    """Validates clinical gate: /confirm requires awaiting_review and checks conf >= 0.50."""
-    db = TestingSessionLocal()
-    case_id = uuid.uuid4()
-    case = Case(id=case_id, created_by="pathologist_test", status="open")
-    stage_exec = StageExecution(
-        id=uuid.uuid4(),
-        case_id=case_id,
-        stage="mitosis",
-        attempt=1,
-        status="running"
-    )
-    db.add_all([case, stage_exec])
-    db.commit()
-    db.close()
-
-    resp = client.post("/api/v1/stages/mitosis/confirm", json={
-        "case_id": str(case_id),
-        "reviewed_by": "dr_smith"
-    })
-    assert resp.status_code == 409
-    assert "must be 'awaiting_review'" in resp.json()["detail"]
-
-    db = TestingSessionLocal()
-    exec_row = db.scalars(select(StageExecution).where(StageExecution.case_id == case_id)).first()
-    exec_row.status = "awaiting_review"
-    unrev_det = Detection(
-        id="m_unrev_high",
-        case_id=case_id,
-        centroid_um=[1000.0, 1000.0],
-        det_conf=0.65,
-        ver_conf=0.20,
-        label="unreviewed"
-    )
-    db.add(unrev_det)
-    db.commit()
-    db.close()
-
-    resp2 = client.post("/api/v1/stages/mitosis/confirm", json={
-        "case_id": str(case_id),
-        "reviewed_by": "dr_smith"
-    })
-    assert resp2.status_code == 400
-    assert "Clinical Safety Gate" in resp2.json()["detail"]

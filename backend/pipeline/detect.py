@@ -1,52 +1,48 @@
 """
-OncoGemma Stage 4 - hotspot tiling and physical micrometer cross-tile NMS.
+OncoGemma Stage 4 - hotspot tiling, cross-tile NMS in micrometres and the candidates' review images.
 The detector itself runs through the model gateway (worker/mitosis.py).
 """
+import io
 import math
+from dataclasses import dataclass
 from typing import List, Tuple, Dict, Any
 import numpy as np
+from PIL import Image
 from shapely.geometry import Polygon, box
 
+from app.core.pipeline_config import MitosisReviewCropsConfig
+from pipeline.slide_io import SlideReader, read_region_at_mpp
 from pipeline.tissue_mask import TissueMask
 
 # A polygon has at least three vertices.
 MIN_POLYGON_VERTICES = 3
 
 
+def nms_priority(candidate: Dict[str, Any]) -> float:
+    """The probability NMS orders by: the classifier's when there is one, otherwise the detector's (SPEC-06 §5.7)."""
+    p = candidate.get("p_b") if candidate.get("p_b") is not None else candidate.get("p_a")
+    if p is None:
+        raise ValueError(f"candidate {candidate.get('id')} has neither p_b nor p_a; NMS needs a model probability")
+    return float(p)
+
+
 def apply_global_nms(
     candidates: List[Dict[str, Any]],
-    nms_radius_um: float = 20.0
+    *,
+    nms_radius_um: float,
 ) -> List[Dict[str, Any]]:
     """
-    Applies greedy Non-Maximum Suppression across candidate mitotic figures in physical micrometer space.
-    Suppresses lower-confidence detections within nms_radius_um (MIDOG challenge standard: 15-20 um cell diameter).
+    Greedy non-maximum suppression in micrometres, run once after the decisions (SPEC-06 §5.7).
+
+    Candidates are visited by ``p_b ?? p_a`` descending, with no rank by decision; one closer than
+    ``nms_radius_um`` to a kept candidate is suppressed. The two chromosome groups of one dividing
+    cell are closer than the radius, so they count once (§3).
     """
-    if not candidates:
-        return []
-
-    def _cand_priority(c: Dict[str, Any]) -> Tuple[int, float]:
-        lbl = c.get("label", "unreviewed")
-        rank = 2 if lbl == "mitosis" else (1 if lbl == "unreviewed" else 0)
-        conf = float(c.get("ver_conf") if c.get("ver_conf") is not None else c.get("det_conf", 0.0))
-        return (rank, conf)
-
-    sorted_cands = sorted(candidates, key=_cand_priority, reverse=True)
-
     kept: List[Dict[str, Any]] = []
-    kept_coords: List[Tuple[float, float]] = []
-
-    for cand in sorted_cands:
+    for cand in sorted(candidates, key=nms_priority, reverse=True):
         cx, cy = cand["centroid_um"]
-        suppress = False
-        for kx, ky in kept_coords:
-            dist = math.hypot(cx - kx, cy - ky)
-            if dist < nms_radius_um:
-                suppress = True
-                break
-        if not suppress:
+        if all(math.hypot(cx - kx, cy - ky) >= nms_radius_um for kx, ky in (k["centroid_um"] for k in kept)):
             kept.append(cand)
-            kept_coords.append((cx, cy))
-
     return kept
 
 
@@ -113,3 +109,31 @@ def hotspot_region_um(
     x0, y0, x1, y1 = geometry.bounds
     width_um, height_um = extent_um
     return max(0.0, x0 - margin_um), max(0.0, y0 - margin_um), min(width_um, x1 + margin_um), min(height_um, y1 + margin_um)
+
+
+@dataclass(frozen=True)
+class ReviewCrops:
+    """The two review images of a candidate (contract mitosis_v6), PNG, raw colour."""
+
+    crop_png: bytes
+    context_png: bytes
+
+
+def review_crop_blob(case_id: str, candidate_id: str, kind: str) -> str:
+    """Artifacts-bucket blob of a candidate's review image; ``kind`` is ``crop`` or ``context``."""
+    if kind not in ("crop", "context"):
+        raise ValueError(f"unknown review image kind {kind!r}")
+    return f"cases/{case_id}/mitosis/crops/{candidate_id}_{kind}.png"
+
+
+def candidate_review_crops(reader: SlideReader, cx_um: float, cy_um: float, cfg: MitosisReviewCropsConfig) -> ReviewCrops:
+    """The crop (``crop_um`` at ``crop_mpp``) and context (``context_um`` at ``context_mpp``) centred on the
+    candidate, as scanned. A view overhanging the slide edge is padded with white, so the candidate stays centred.
+    They are independent of what any model was shown."""
+    def png(size_um: float, mpp: float) -> bytes:
+        region = read_region_at_mpp(reader, cx_um - size_um / 2, cy_um - size_um / 2, size_um, size_um, mpp)
+        buffer = io.BytesIO()
+        Image.fromarray(region.rgb).save(buffer, format="PNG")
+        return buffer.getvalue()
+
+    return ReviewCrops(png(cfg.crop_um, cfg.crop_mpp), png(cfg.context_um, cfg.context_mpp))

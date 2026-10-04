@@ -79,7 +79,7 @@ def triage(execution, session, runtime):
 def mitosis(execution, session, runtime):
     for i in range(3):
         session.add(Detection(id=f"m_{execution.case_id}_{i}", case_id=execution.case_id,
-                              centroid_um=[100.0 * i, 50.0], det_conf=0.9, label="mitosis", label_source="detector"))
+                              centroid_um=[100.0 * i, 50.0], p_a=0.9, final_decision="mitosis", decision_path="A"))
     execution.status = "awaiting_review"
     return "gs://fake/mitosis.json", {}
 

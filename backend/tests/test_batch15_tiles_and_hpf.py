@@ -16,7 +16,6 @@ from fastapi import HTTPException
 
 from pipeline.hpf import (
     greedy_place_hpfs,
-    generate_mitosis_density_map,
     create_circular_disk_mask
 )
 from pipeline.tiles import extract_patch_from_pyramid
@@ -118,25 +117,8 @@ def test_greedy_place_hpfs_circle_inside_slide():
     assert cy + radius_um <= slide_h_um
 
 
-def test_generate_mitosis_density_map_confidence_filtering():
-    """Issue #596: Filter out low-confidence noise (<0.5) and rejected candidates."""
-    candidates = [
-        {"centroid_um": [100.0, 100.0], "label": "not_mitosis"},
-        {"centroid_um": [100.0, 100.0], "label": "rejected"},
-        {"centroid_um": [100.0, 100.0], "label": "unreviewed", "ver_conf": 0.2}, # noise (<0.5)
-        {"centroid_um": [200.0, 200.0], "label": "unreviewed", "ver_conf": 0.8}, # valid
-        {"centroid_um": [300.0, 300.0], "label": "confirmed"},                   # valid
-    ]
-    bbox = (0.0, 0.0, 400.0, 400.0)
-    density_map, meta = generate_mitosis_density_map(candidates, bbox, grid_res_um=16.0, radius_um=50.0)
-
-    # Location (100, 100) had only rejected or low-conf figures -> near zero density
-    g100 = int(round((100.0 - meta["origin_um"][0]) / 16.0))
-    assert density_map[g100, g100] == 0.0
-
-    # Locations 200, 200 and 300, 300 should have positive density
-    g200 = int(round((200.0 - meta["origin_um"][0]) / 16.0))
-    assert density_map[g200, g200] > 0.0
+# Issue #596's probability weighting of unreviewed candidates is gone: the density is built from counted
+# candidates only (SPEC-06 §5.8; test_hpf.py::test_density_comes_from_counted_candidates_only_with_no_probability_weighting).
 
 
 # ---------------------------------------------------------------------------

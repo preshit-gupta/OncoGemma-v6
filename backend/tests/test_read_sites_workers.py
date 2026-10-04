@@ -226,12 +226,10 @@ def test_the_mitosis_referee_is_shown_normalised_crops_and_the_review_keeps_the_
     focus = [s for s in referee_specs if s["format"] == "png"]
     assert focus and all(s["mpp"] == 0.25 and s["size_px"] == [128, 128] for s in focus)
 
-    transform = transform_of(db_session, slide_id_of(stage, db_session))
+    # The review images are the contract crops, as scanned, whatever colour the referee saw (WP-7.6a).
     candidate = mitosis_t.detections(db_session, stage)[0].id
-    seen = png_array(f"cases/{stage.case_id}/mitosis/crops/{candidate}.png")
-    raw = png_array(f"cases/{stage.case_id}/mitosis/crops/{candidate}_orig.png")
-    assert seen.shape == raw.shape == (128, 128, 3)
-    assert np.array_equal(seen, transform.apply(raw)) and not np.array_equal(seen, raw)
+    for kind in ("crop", "context"):
+        assert png_array(f"cases/{stage.case_id}/mitosis/crops/{candidate}_{kind}.png").shape == (256, 256, 3)
 
 
 def test_a_raw_referee_config_sends_raw_crops(db_session, monkeypatch):
@@ -239,8 +237,7 @@ def test_a_raw_referee_config_sends_raw_crops(db_session, monkeypatch):
     run_mitosis(stage, db_session, runtime)
     assert {s["color"] for r in log.pending() if r["task"] == "mitosis_referee" for s in r["input_spec"]["images"]} == {"raw"}
     candidate = mitosis_t.detections(db_session, stage)[0].id
-    base = f"cases/{stage.case_id}/mitosis/crops/{candidate}"
-    assert np.array_equal(png_array(f"{base}.png"), png_array(f"{base}_orig.png"))
+    assert png_array(f"cases/{stage.case_id}/mitosis/crops/{candidate}_crop.png").shape == (256, 256, 3)
 
 
 def test_hpf_review_images_are_raw_and_normalised_at_three_magnifications(db_session, monkeypatch):

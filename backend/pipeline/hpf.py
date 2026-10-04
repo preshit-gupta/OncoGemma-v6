@@ -1,13 +1,15 @@
 """
-OncoGemma Stage v4.3 - Pure HPF Placement & Spatial Density Engine.
-Convolves confirmed mitotic coordinates with a circular HPF kernel (radius = 262 um)
-using FFT, and performs greedy non-overlapping placement of 10 virtual High-Power Fields.
+Stage 4 HPF placement (SPEC-06 §5.8).
+Convolves the counted mitotic figures with a circular HPF kernel using FFT, and places up to
+``count`` virtual high-power fields greedily inside the hotspots. Fields never overlap: when fewer
+fit, fewer are placed (``n_hpf < count``) and the summary flags it (pipeline/scoring.py).
 """
 import math
 from typing import List, Dict, Any, Tuple, Optional
 import numpy as np
 from scipy.signal import fftconvolve
 
+from app.core.pipeline_config import MitosisHpfConfig
 from pipeline.tissue_mask import TissueMask
 
 
@@ -29,8 +31,8 @@ def generate_mitosis_density_map(
     radius_um: float = 262.0
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     """
-    Splats candidate mitotic figures onto a 16 um spatial grid and convolves
-    with a circular disk kernel equivalent to a 262 um HPF radius.
+    Splats the counted figures (``candidate["counted"]``) onto a ``grid_res_um`` grid and convolves
+    with a circular disk kernel of the HPF radius.
 
     Returns:
         density_map: 2D float32 array of continuous mitotic counts per HPF area.
@@ -50,30 +52,16 @@ def generate_mitosis_density_map(
 
     point_grid = np.zeros((ny, nx), dtype=np.float32)
 
-    # Splat candidates
+    # Only counted figures make the density (SPEC-06 §5.8); nothing is weighted by a probability.
     for cand in candidates:
-        # Only splat confirmed or high-confidence candidate figures
-        label = cand.get("label", "unreviewed")
-        if label in ("not_mitosis", "rejected", "dismissed"):
+        if not cand["counted"]:
             continue
-
-        weight = 1.0
-        if label == "unreviewed":
-            # A verifier score when one exists (v5), otherwise the detector probability.
-            weight = cand["ver_conf"] if cand.get("ver_conf") is not None else cand.get("det_conf")
-            if weight is None:
-                raise ValueError(f"unreviewed candidate {cand.get('id')} has no detector or verifier probability")
-            weight = float(weight)
-            # Issue #596: Ignore low-confidence candidate noise (< 0.5)
-            if weight < 0.5:
-                continue
-
         cx_um, cy_um = cand["centroid_um"]
         gx = int(round((cx_um - min_x_um) / grid_res_um))
         gy = int(round((cy_um - min_y_um) / grid_res_um))
 
         if 0 <= gx < nx and 0 <= gy < ny:
-            point_grid[gy, gx] += float(weight)
+            point_grid[gy, gx] += 1.0
 
     # Convolve with circular disk kernel
     radius_cells = radius_um / grid_res_um
@@ -149,7 +137,6 @@ def greedy_place_hpfs(
     count: int = 10,
     radius_um: float = 262.0,
     min_separation_um: float = 524.0,
-    relaxed_min_separation_um: float = 393.0,
     tissue: Optional[TissueMask] = None,
     slide_dimensions_um: Optional[Tuple[float, float]] = None,
     min_tissue_coverage: float = 0.70,
@@ -157,8 +144,10 @@ def greedy_place_hpfs(
 ) -> List[Dict[str, Any]]:
     """
     Greedily selects the top virtual HPF coordinates from the mitotic density map and tissue mask.
-    Enforces non-overlapping constraint (distance >= 2r) and strict tissue coverage gating (>= 70%).
-    Prioritizes hotspots by cellular density/tumor probability and strictly rejects empty glass areas.
+    Fields are at least ``min_separation_um`` apart (>= 2r, so they never overlap) and at least
+    ``min_tissue_coverage`` tissue. One field per hotspot first (densest hotspot first), then the
+    densest remaining places inside any hotspot. Fewer than ``count`` fields is a result: there is
+    no relaxed separation and no placement outside the hotspots (SPEC-06 §5.8).
     """
     # Issue #747: Distinguish None (unconstrained slide search) from [] (explicitly zero hotspots remaining)
     if hotspot_polygons_um is not None and len(hotspot_polygons_um) == 0:
@@ -179,6 +168,8 @@ def greedy_place_hpfs(
     else:
         coverage_grid = np.ones((ny, nx), dtype=np.float32)
         valid_tissue_mask = np.ones((ny, nx), dtype=bool)
+    # Reported per field; coverage_grid itself is zeroed around placed fields below.
+    true_coverage = coverage_grid.copy()
 
     # Helper to enforce circle fully inside slide dimensions (Issue #586)
     def _is_circle_inside_slide(cx: float, cy: float, r: float) -> bool:
@@ -270,112 +261,103 @@ def greedy_place_hpfs(
                 "radius_um": float(radius_um),
                 "count": 0,
                 "density_val": float(density_map[gy, gx]),
-                "tissue_coverage": float(coverage_grid[gy, gx]),
+                "tissue_coverage": float(true_coverage[gy, gx]),
+                "tumor_fraction": None,
                 "source": "model"
             })
             _suppress(gy, gx, suppress_radius_cells)
 
-    # Pass 2: Secondary HPFs within hotspots if fewer than count
-    if len(placed_hpfs) < count and ordered_hotspot_masks:
-        combined_hotspot_mask = np.zeros((ny, nx), dtype=bool)
+    # Pass 2: further HPFs inside any hotspot (anywhere on the grid when no hotspots constrain it)
+    if len(placed_hpfs) < count and (ordered_hotspot_masks or hotspot_polygons_um is None):
+        combined_hotspot_mask = np.zeros((ny, nx), dtype=bool) if ordered_hotspot_masks else np.ones((ny, nx), dtype=bool)
         for h_mask in ordered_hotspot_masks:
             combined_hotspot_mask |= h_mask
 
-        for sep_req in (min_separation_um, relaxed_min_separation_um):
-            r_sep_cells = sep_req / stride
-            while len(placed_hpfs) < count:
-                eligible = combined_hotspot_mask & valid_tissue_mask
-                score_field = working_density * eligible
+        r_sep_cells = suppress_radius_cells
+        while len(placed_hpfs) < count:
+            eligible = combined_hotspot_mask & valid_tissue_mask
+            score_field = working_density * eligible
+            max_val = np.max(score_field)
+            if max_val <= 0.0:
+                # Tissue coverage fallback: place within densest tissue of hotspot
+                tissue_scores = coverage_grid * eligible
+                if np.max(tissue_scores) <= 0.0:
+                    break
+                score_field = tissue_scores
                 max_val = np.max(score_field)
-                if max_val <= 0.0:
-                    # Tissue coverage fallback: place within densest tissue of hotspot
-                    tissue_scores = coverage_grid * eligible
-                    if np.max(tissue_scores) <= 0.0:
+
+            gy, gx = np.unravel_index(np.argmax(score_field), score_field.shape)
+            cx_um = float(origin_x + gx * stride)
+            cy_um = float(origin_y + gy * stride)
+
+            valid = _is_circle_inside_slide(cx_um, cy_um, radius_um)
+            if valid:
+                for px, py in placed_centers:
+                    if math.hypot(cx_um - px, cy_um - py) < min_separation_um - 1e-3:
+                        valid = False
                         break
-                    score_field = tissue_scores
-                    max_val = np.max(score_field)
 
-                gy, gx = np.unravel_index(np.argmax(score_field), score_field.shape)
-                cx_um = float(origin_x + gx * stride)
-                cy_um = float(origin_y + gy * stride)
-
-                valid = _is_circle_inside_slide(cx_um, cy_um, radius_um)
-                if valid:
-                    for px, py in placed_centers:
-                        if math.hypot(cx_um - px, cy_um - py) < sep_req - 1e-3:
-                            valid = False
-                            break
-
-                if valid:
-                    placed_centers.append((cx_um, cy_um))
-                    placed_hpfs.append({
-                        "seq": len(placed_hpfs) + 1,
-                        "center_um": [cx_um, cy_um],
-                        "radius_um": float(radius_um),
-                        "count": 0,
-                        "density_val": float(density_map[gy, gx]),
-                        "tissue_coverage": float(coverage_grid[gy, gx]),
-                        "source": "model"
-                    })
-                    _suppress(gy, gx, r_sep_cells)
-                    # Also zero out local coverage to avoid placing overlapping field
-                    y_min = max(0, int(gy - r_sep_cells))
-                    y_max = min(ny, int(gy + r_sep_cells + 1))
-                    x_min = max(0, int(gx - r_sep_cells))
-                    x_max = min(nx, int(gx + r_sep_cells + 1))
-                    coverage_grid[y_min:y_max, x_min:x_max] = 0.0
-                else:
-                    # Suppress single cell to prevent infinite loop on invalid peak
-                    working_density[gy, gx] = 0.0
-                    coverage_grid[gy, gx] = 0.0
-
-    # Pass 3: Search within valid tissue mask across the entire tumor bed (never on empty glass)
-    # Strictly guarantees standardized 10 HPFs (>2.0 mm²) even if hotspots are narrow or restricted
-    if len(placed_hpfs) < count:
-        for sep_req in (relaxed_min_separation_um, radius_um * 1.0):
-            r_relax_cells = sep_req / stride
-            while len(placed_hpfs) < count:
-                eligible = valid_tissue_mask
-                score_field = working_density * eligible * (1.0 + 0.1 * coverage_grid)
-                max_val = np.max(score_field)
-                if max_val <= 0.0:
-                    tissue_scores = coverage_grid * eligible
-                    if np.max(tissue_scores) <= 0.0:
-                        break
-                    score_field = tissue_scores
-                    max_val = np.max(score_field)
-
-                gy, gx = np.unravel_index(np.argmax(score_field), score_field.shape)
-                cx_um = float(origin_x + gx * stride)
-                cy_um = float(origin_y + gy * stride)
-
-                valid = _is_circle_inside_slide(cx_um, cy_um, radius_um)
-                if valid:
-                    for px, py in placed_centers:
-                        if math.hypot(cx_um - px, cy_um - py) < sep_req - 1e-3:
-                            valid = False
-                            break
-
-                if valid:
-                    placed_centers.append((cx_um, cy_um))
-                    placed_hpfs.append({
-                        "seq": len(placed_hpfs) + 1,
-                        "center_um": [cx_um, cy_um],
-                        "radius_um": float(radius_um),
-                        "count": 0,
-                        "density_val": float(density_map[gy, gx]),
-                        "tissue_coverage": float(coverage_grid[gy, gx]),
-                        "source": "model"
-                    })
-                    _suppress(gy, gx, r_relax_cells)
-                    y_min = max(0, int(gy - r_relax_cells))
-                    y_max = min(ny, int(gy + r_relax_cells + 1))
-                    x_min = max(0, int(gx - r_relax_cells))
-                    x_max = min(nx, int(gx + r_relax_cells + 1))
-                    coverage_grid[y_min:y_max, x_min:x_max] = 0.0
-                else:
-                    working_density[gy, gx] = 0.0
-                    coverage_grid[gy, gx] = 0.0
+            if valid:
+                placed_centers.append((cx_um, cy_um))
+                placed_hpfs.append({
+                    "seq": len(placed_hpfs) + 1,
+                    "center_um": [cx_um, cy_um],
+                    "radius_um": float(radius_um),
+                    "count": 0,
+                    "density_val": float(density_map[gy, gx]),
+                    "tissue_coverage": float(true_coverage[gy, gx]),
+                    "tumor_fraction": None,
+                    "source": "model"
+                })
+                _suppress(gy, gx, r_sep_cells)
+                # Also zero out local coverage to avoid placing overlapping field
+                y_min = max(0, int(gy - r_sep_cells))
+                y_max = min(ny, int(gy + r_sep_cells + 1))
+                x_min = max(0, int(gx - r_sep_cells))
+                x_max = min(nx, int(gx + r_sep_cells + 1))
+                coverage_grid[y_min:y_max, x_min:x_max] = 0.0
+            else:
+                # Suppress single cell to prevent infinite loop on invalid peak
+                working_density[gy, gx] = 0.0
+                coverage_grid[gy, gx] = 0.0
 
     return placed_hpfs[:count]
 
+
+
+def place_hpfs(
+    candidates: List[Dict[str, Any]],
+    hotspots: List[Tuple[List[List[float]], float]],
+    *,
+    tissue: TissueMask,
+    slide_dimensions_um: Tuple[float, float],
+    cfg: MitosisHpfConfig,
+) -> List[Dict[str, Any]]:
+    """
+    Stage 4's HPFs: the counted candidates' density over the hotspots, placed by ``greedy_place_hpfs``.
+
+    ``hotspots`` are (polygon_um, priority) pairs, densest first by priority. The density grid spans
+    the hotspots and the candidates, so its size does not depend on the slide's.
+    """
+    if not hotspots:
+        raise ValueError("HPFs are placed inside confirmed hotspots; there are none")
+    xs = [pt[0] for polygon, _ in hotspots for pt in polygon] + [c["centroid_um"][0] for c in candidates if c["counted"]]
+    ys = [pt[1] for polygon, _ in hotspots for pt in polygon] + [c["centroid_um"][1] for c in candidates if c["counted"]]
+    density_map, grid_meta = generate_mitosis_density_map(
+        candidates,
+        bounding_box_um=(min(xs), min(ys), max(xs), max(ys)),
+        grid_res_um=cfg.density_grid_res_um,
+        radius_um=cfg.radius_um,
+    )
+    return greedy_place_hpfs(
+        density_map,
+        grid_meta,
+        hotspot_polygons_um=[polygon for polygon, _ in hotspots],
+        count=cfg.count,
+        radius_um=cfg.radius_um,
+        min_separation_um=cfg.min_separation_um,
+        tissue=tissue,
+        slide_dimensions_um=slide_dimensions_um,
+        min_tissue_coverage=cfg.min_tissue_coverage,
+        hotspot_priorities=[priority for _, priority in hotspots],
+    )

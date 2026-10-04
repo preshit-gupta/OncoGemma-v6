@@ -12,11 +12,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from PIL import Image
-from sqlalchemy import create_engine, select, delete, not_
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
-from app.core.db import Base
 from app.core.pipeline_config import get_pipeline_config
 from app.core.tasks import EntityType, Task
 from app.inference.adapters.base import AdapterImage, AdapterRequest, CallRejected
@@ -24,8 +20,6 @@ from app.inference.adapters.vertex_endpoint import VertexEndpointAdapter
 from app.inference.errors import ModelCallError
 from app.inference.gateway import EntityRef, ModelInputs
 from app.inference.outputs import DetectionList
-from app.models.case import Case
-from app.models.detection import Detection
 from tests.fakes.gateway import decision_context, make_gateway, png_image
 
 
@@ -180,58 +174,6 @@ def test_error_payload_fails_the_call_through_the_gateway():
             decision_context(), EntityRef(EntityType.TILE_BATCH, "t0000", ids=("p0",)), DetectionList,
             params={"min_prob": 0.35},
         )
-
-
-def test_pathologist_detection_preservation_in_db():
-    """Verify that existing pathologist reviews are preserved when model detections are purged."""
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    Base.metadata.create_all(bind=engine)
-
-    db = TestingSession()
-    case_id = "test-case-preserve"
-    case = Case(id=case_id, created_by="test_user", status="open")
-    db.add(case)
-    db.commit()
-
-    # 1. Seed existing detections: 1 model, 1 referee, 1 pathologist review, 1 pathologist added
-    d1 = Detection(id="d1", case_id=case_id, centroid_um=[100.0, 100.0], label="mitosis", label_source="model")
-    d2 = Detection(id="d2", case_id=case_id, centroid_um=[200.0, 200.0], label="mitosis", label_source="referee:gemini_referee")
-    d3 = Detection(id="d3", case_id=case_id, centroid_um=[300.0, 300.0], label="mitosis", label_source="pathologist")
-    d4 = Detection(id="d4", case_id=case_id, centroid_um=[400.0, 400.0], label="mitosis", label_source="pathologist_manual_added")
-    db.add_all([d1, d2, d3, d4])
-    db.commit()
-
-    # 2. Run the preservation query used in worker/mitosis.py
-    existing_pathologist_dets = list(
-        db.scalars(
-            select(Detection).where(
-                Detection.case_id == case_id,
-                (Detection.label_source == "pathologist") | (Detection.label_source.startswith("pathologist"))
-            )
-        ).all()
-    )
-    assert len(existing_pathologist_dets) == 2
-    assert {d.id for d in existing_pathologist_dets} == {"d3", "d4"}
-
-    # 3. Purge non-pathologist detections
-    db.execute(
-        delete(Detection).where(
-            Detection.case_id == case_id,
-            Detection.label_source != "pathologist",
-            not_(Detection.label_source.startswith("pathologist"))
-        )
-    )
-    db.commit()
-
-    # 4. Check remaining
-    remaining = list(db.scalars(select(Detection).where(Detection.case_id == case_id)).all())
-    assert len(remaining) == 2
-    assert {d.id for d in remaining} == {"d3", "d4"}
 
 
 def test_van_diest_morphometric_verification_rejection():

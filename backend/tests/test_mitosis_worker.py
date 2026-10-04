@@ -1,4 +1,4 @@
-"""Mitosis stage on the model gateway (SPEC-01 §3.4, §3.9; SPEC-06 §5.1-5.2, §9; WP-2.3c, WP-7.2).
+"""Mitosis stage on the model gateway (SPEC-01 §3.4, §3.9; SPEC-06 §5.1-5.8, §9; WP-2.3c, WP-7.2, WP-7.6a).
 
 KongNet is a fake endpoint behind the real VertexEndpointAdapter (kongnet_midog_v2 codec,
 raw predict, pinned weights); the referee is a fake Gemini returning strict MitosisVerdict JSON.
@@ -177,22 +177,23 @@ def test_mitosis_runs_on_the_gateway_and_labels_come_from_the_referee(db_session
     assert (context["size_px"], context["format"]) == ([512, 512], "jpeg") and abs(context["mpp"] - 1.0) < 0.01
 
     assert not any(r["cache_hit"] for r in referees), "candidates must be distinct for this test"
+    detect_ids, referee_ids = {str(r["id"]) for r in detects}, {str(r["id"]) for r in referees}
     by_verdict = {}
     for det in found:
-        by_verdict.setdefault(det.medgemma_verdict, set()).add(det.label)
-        assert det.label_source == "referee:gemini_referee"
-        assert det.ver_conf is None and det.medgemma_confidence is None
-    assert by_verdict == {"MITOTIC_FIGURE": {"mitosis"}, "NOT_MITOTIC_FIGURE": {"not_mitosis"}, "EQUIVOCAL": {"unreviewed"}}
+        by_verdict.setdefault(det.vlm["verdict"], set()).add(det.final_decision)
+        assert det.vlm["rule_override"] is False and det.p_b is None and det.in_tumor is None
+        assert det.decision_path == "A" and det.review_label is None and det.p_a >= 0.75
+        assert det.record_ids[0] in detect_ids and det.record_ids[1:] == [det.record_ids[1]] and det.record_ids[1] in referee_ids
+    # EQUIVOCAL is never a mitosis (SPEC-06 §5.6) and never counted.
+    assert by_verdict == {"MITOTIC_FIGURE": {"mitosis"}, "NOT_MITOTIC_FIGURE": {"not_mitosis"}, "EQUIVOCAL": {"equivocal"}}
+    assert all(bool(d.counted) == (d.final_decision == "mitosis") for d in found)
 
     output = json.loads(download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{stage.case_id}/mitosis/output.json"))
-    record_ids = {str(r["id"]) for r in referees}
     for cand in output["candidates"]:
-        assert cand["referee_record_id"] in record_ids
-        assert cand["vlm"]["verdict"] in VERDICTS and cand["vlm"]["rule_override"] is False
-        assert cand["det_record_id"] in {str(r["id"]) for r in detects}
+        assert cand["vlm"]["verdict"] in VERDICTS
+        assert set(cand["record_ids"]) <= detect_ids | referee_ids
     # Only referee-confirmed figures are counted.
-    counted = sum(1 for d in found if d.label == "mitosis")
-    assert output["summary"]["count_total"] <= counted
+    assert output["summary"]["count_total"] <= sum(1 for d in found if d.counted)
 
 
 def test_detector_outage_fails_the_stage_without_detections(db_session, monkeypatch):
@@ -260,7 +261,7 @@ def test_allowed_referee_outage_leaves_candidates_unreviewed(db_session, monkeyp
     run_mitosis(stage, db_session, runtime_for(stage, referee=FakeAdapter(then=TransientCallError("503")), config=config, log=log))
 
     found = detections(db_session, stage)
-    assert found and all(d.label == "unreviewed" and d.label_source == "referee_unavailable" for d in found)
+    assert found and all(d.final_decision == "equivocal" and d.vlm is None and not d.counted for d in found)
     assert {r["task"] for r in log.pending() if r["producer_kind"] == "fallback"} == {"mitosis_referee"}
 
 
@@ -298,5 +299,104 @@ def test_with_the_referee_off_the_detector_decides(db_session, monkeypatch):
     assert referee.calls == [] and {r["task"] for r in log.pending()} == {"mitosis_detect"}
     assert list(model_versions) == ["kongnet_det_midog_1"]
     found = detections(db_session, stage)
-    assert found and all(d.label == "mitosis" and d.label_source == "detector:kongnet_det_midog_1" for d in found)
+    detect_ids = {str(r["id"]) for r in log.pending()}
+    for d in found:
+        assert (d.final_decision, d.decision_path, d.in_tumor, d.review_label, d.vlm, d.p_b) == ("mitosis", "A", None, None, None, None)
+        assert d.p_a >= get_pipeline_config().mitosis.detector.det_threshold and d.counted
+        assert len(d.record_ids) == 1 and d.record_ids[0] in detect_ids
+    assert found
     assert not get_pipeline_config().mitosis.referee.enabled
+
+
+def baseline_run(db_session, monkeypatch):
+    stage, raw_uri = seed(db_session)
+    install_fake_slide(monkeypatch, FakeOpenSlide(SIDE_PX, SIDE_PX), raw_uri)
+    log = DecisionLog()
+    run_mitosis(stage, db_session, runtime_for(stage, config=configured(referee=False), log=log))
+    return stage, log
+
+
+def test_referee_images_are_not_read_while_the_referee_is_off(db_session, monkeypatch):
+    def refuse(*args, **kwargs):
+        raise AssertionError("referee images read with the referee off")
+
+    monkeypatch.setattr("worker.mitosis.mitosis_referee_images", refuse)
+    stage, _ = baseline_run(db_session, monkeypatch)
+    assert detections(db_session, stage)
+
+
+def test_every_candidate_gets_the_contract_crop_and_context_in_raw_colour(db_session, monkeypatch):
+    """64 µm at 0.25 µm/px and 256 µm at 1.0 µm/px, both 256 px PNG (contract mitosis_v6)."""
+    from PIL import Image
+    import io
+
+    stage, _ = baseline_run(db_session, monkeypatch)
+    found = detections(db_session, stage)
+    assert found
+    for det in found:
+        for kind in ("crop", "context"):
+            data = download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{stage.case_id}/mitosis/crops/{det.id}_{kind}.png")
+            image = Image.open(io.BytesIO(data))
+            assert image.format == "PNG" and image.size == (256, 256)
+
+
+def test_the_count_is_a_decision_record_linked_to_the_detections(db_session, monkeypatch):
+    """SPEC-06 AC8: one mitosis_count record per run, naming the counted candidates and their detect records."""
+    from app.models.decision_record import DecisionRecord
+
+    stage, log = baseline_run(db_session, monkeypatch)
+    db_session.flush()
+    records = db_session.scalars(select(DecisionRecord).where(DecisionRecord.task == "mitosis_count")).all()
+    assert len(records) == 1
+    record = records[0]
+    found = detections(db_session, stage)
+    counted = [d for d in found if d.counted]
+    assert record.input_spec["counted_ids"] == sorted(d.id for d in counted)
+    assert set(record.input_spec["parent_record_ids"]) == {rid for d in counted for rid in d.record_ids}
+    assert set(record.input_spec["parent_record_ids"]) <= {str(r["id"]) for r in log.pending() if r["task"] == "mitosis_detect"}
+    assert record.params == {"thresholds": get_pipeline_config().mitosis.scoring.thresholds.model_dump()}
+    output = mitosis_output(stage)
+    assert record.output == output["summary"]
+    assert record.producer_kind == "heuristic" and record.stage_execution_id == stage.id
+
+
+def test_hpfs_come_from_counted_candidates_never_overlap_and_report_coverage(db_session, monkeypatch):
+    from app.models import HpfSite
+
+    stage, _ = baseline_run(db_session, monkeypatch)
+    hpfs = db_session.scalars(select(HpfSite).where(HpfSite.case_id == stage.case_id)).all()
+    cfg = get_pipeline_config().mitosis.hpf
+    assert hpfs
+    for a in hpfs:
+        assert a.tissue_coverage >= cfg.min_tissue_coverage and a.tumor_fraction is None
+        for b in hpfs:
+            if a.seq < b.seq:
+                assert ((a.center_um[0] - b.center_um[0]) ** 2 + (a.center_um[1] - b.center_um[1]) ** 2) ** 0.5 >= 2 * cfg.radius_um - 1e-6
+    summary = mitosis_output(stage)["summary"]
+    # The 600 µm hotspot fits fewer than 10 fields: no relaxed separation fills the rest.
+    assert summary["n_hpf"] == len(hpfs) < cfg.count and summary["flags"] == ["hpf_count_lt_10"]
+
+
+def test_pathologist_decisions_survive_a_rerun(db_session, monkeypatch):
+    """Rows with a review_label and pathologist-added figures are kept; a new candidate on top of one is suppressed."""
+    stage, raw_uri = seed(db_session)
+    install_fake_slide(monkeypatch, FakeOpenSlide(SIDE_PX, SIDE_PX), raw_uri)
+    first = runtime_for(stage, config=configured(referee=False))
+    run_mitosis(stage, db_session, first)
+    found = detections(db_session, stage)
+    reviewed = found[0]
+    reviewed.review_label = "not_mitosis"
+    db_session.add(Detection(id="m_user_ab12cd34", case_id=stage.case_id, centroid_um=[1000.0, 1000.0], p_a=None,
+                             final_decision="mitosis", decision_path="human", review_label="mitosis"))
+    db_session.commit()
+
+    stage.status = "running"
+    run_mitosis(stage, db_session, runtime_for(stage, config=configured(referee=False)))
+
+    after = {d.id: d for d in detections(db_session, stage)}
+    assert after[reviewed.id].review_label == "not_mitosis" and not after[reviewed.id].counted
+    assert after["m_user_ab12cd34"].decision_path == "human" and after["m_user_ab12cd34"].counted
+    others = [d for d in after.values() if d.id not in (reviewed.id, "m_user_ab12cd34")]
+    assert all(((d.centroid_um[0] - reviewed.centroid_um[0]) ** 2 + (d.centroid_um[1] - reviewed.centroid_um[1]) ** 2) ** 0.5 >= 7.5
+               for d in others)
+    assert len(after) == len(set(after))

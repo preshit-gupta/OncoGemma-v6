@@ -46,12 +46,12 @@ def collect_prediction(session: Session, case: Case, stages: list[str]) -> dict:
 
     if "mitosis" in stages and not prediction["no_invasive_tumor"]:
         figures = session.scalars(
-            select(Detection).where(Detection.case_id == case.id, Detection.label == "mitosis").order_by(Detection.id)
+            select(Detection).where(Detection.case_id == case.id, Detection.counted.is_(True)).order_by(Detection.id)
         ).all()
         prediction["mitosis"] = {
             "count": len(figures),
             "points_um": [list(d.centroid_um) for d in figures],
-            "scores": [d.ver_conf if d.ver_conf is not None else d.det_conf for d in figures],
+            "scores": [d.p_b if d.p_b is not None else d.p_a for d in figures],
         }
 
     if "grading" in stages and not prediction["no_invasive_tumor"]:

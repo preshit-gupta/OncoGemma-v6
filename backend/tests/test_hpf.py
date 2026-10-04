@@ -1,15 +1,19 @@
 """
-Unit tests for HPF Placement and Spatial Density Engine (v4.3).
+HPF placement and the density map (SPEC-06 §5.8; AC10: HPFs never overlap).
 """
 import math
 import numpy as np
 import pytest
+from hypothesis import given, settings, strategies as st
+
+from app.core.pipeline_config import get_pipeline_config
 from pipeline.tissue_mask import TissueMask
 from pipeline.hpf import (
     create_circular_disk_mask,
     generate_mitosis_density_map,
     greedy_place_hpfs,
-    is_point_in_polygon
+    is_point_in_polygon,
+    place_hpfs,
 )
 
 
@@ -30,10 +34,10 @@ def test_circular_disk_mask():
 def test_generate_mitosis_density_map():
     # Synthetic candidates clustered near (1000, 1000)
     candidates = [
-        {"id": "m_01", "centroid_um": [1000.0, 1000.0], "label": "mitosis"},
-        {"id": "m_02", "centroid_um": [1050.0, 1020.0], "label": "mitosis"},
-        {"id": "m_03", "centroid_um": [980.0, 1010.0], "label": "mitosis"},
-        {"id": "m_04", "centroid_um": [2000.0, 2000.0], "label": "not_mitosis"}, # should be ignored
+        {"id": "m_01", "centroid_um": [1000.0, 1000.0], "counted": True},
+        {"id": "m_02", "centroid_um": [1050.0, 1020.0], "counted": True},
+        {"id": "m_03", "centroid_um": [980.0, 1010.0], "counted": True},
+        {"id": "m_04", "centroid_um": [2000.0, 2000.0], "counted": False}, # should be ignored
     ]
     bbox_um = (800.0, 800.0, 1200.0, 1200.0)
     density_map, grid_meta = generate_mitosis_density_map(
@@ -88,7 +92,18 @@ def test_greedy_place_hpfs_non_overlap_invariant():
             assert dist >= min_sep_um - 1e-2, f"HPF {i} and {j} overlap: dist={dist} < {min_sep_um}"
 
 
-def test_greedy_place_hpfs_overlap_relaxation_fallback():
+def test_density_comes_from_counted_candidates_only_with_no_probability_weighting():
+    """SPEC-06 §5.8: an equivocal or unlabelled candidate adds nothing, whatever its probability."""
+    counted = [{"id": "a", "centroid_um": [1000.0, 1000.0], "counted": True, "p_a": 0.2}]
+    uncounted = [{"id": "b", "centroid_um": [1000.0, 1000.0], "counted": False, "p_a": 0.99}]
+    bbox = (800.0, 800.0, 1200.0, 1200.0)
+    with_b, _ = generate_mitosis_density_map(counted + uncounted, bounding_box_um=bbox, grid_res_um=16.0, radius_um=262.0)
+    without_b, _ = generate_mitosis_density_map(counted, bounding_box_um=bbox, grid_res_um=16.0, radius_um=262.0)
+    assert np.array_equal(with_b, without_b)
+    assert math.isclose(float(np.max(with_b)), 1.0, rel_tol=1e-4)
+
+
+def test_fewer_fields_are_placed_instead_of_overlapping_ones():
     # Small area where 10 strictly non-overlapping circles cannot fit
     ny, nx = 40, 40
     stride = 16.0
@@ -106,20 +121,18 @@ def test_greedy_place_hpfs_overlap_relaxation_fallback():
         count=10,
         radius_um=262.0,
         min_separation_um=524.0,
-        relaxed_min_separation_um=393.0
     )
 
-    # Issue #718: Must return ONLY fields that actually fit (no spiral padding to 10)
+    # Issue #718: Must return ONLY fields that actually fit (no spiral padding to 10), and no relaxed pass
     assert 1 <= len(hpfs) < 10
     for i in range(len(hpfs)):
         for j in range(i + 1, len(hpfs)):
             c1 = hpfs[i]["center_um"]
             c2 = hpfs[j]["center_um"]
             dist = math.hypot(c1[0] - c2[0], c1[1] - c2[1])
-            assert dist >= 393.0 - 1e-2
+            assert dist >= 524.0 - 1e-2
 
     # Verify area-normalized scoring uses actual counted area per PRD 04 §4.2
-    from app.core.pipeline_config import get_pipeline_config
     from pipeline.scoring import compute_nottingham_mitotic_score
     score_res = compute_nottingham_mitotic_score(
         count_total=5, n_hpf=len(hpfs), radius_um=262.0, scoring=get_pipeline_config().mitosis.scoring
@@ -212,3 +225,45 @@ def test_greedy_place_hpfs_prioritizes_dense_hotspots():
     # HPF 1 must be from the higher priority hotspot (Hotspot B, cx >= 1000)
     assert hpfs[0]["center_um"][0] >= 1000.0, f"Expected HPF 1 in Hotspot B (>= 1000 um), got {hpfs[0]['center_um']}"
 
+
+
+def square(x0, y0, side):
+    return [[x0, y0], [x0 + side, y0], [x0 + side, y0 + side], [x0, y0 + side]]
+
+
+@settings(max_examples=60, deadline=None)
+@given(
+    points=st.lists(st.tuples(st.floats(0, 3200), st.floats(0, 3200), st.booleans()), max_size=40),
+    hotspots=st.lists(st.tuples(st.floats(0, 2600), st.floats(0, 2600), st.floats(150, 1400), st.floats(0, 1)),
+                      min_size=1, max_size=5),
+    glass_cols=st.integers(0, 150),
+)
+def test_placed_hpfs_never_overlap(points, hotspots, glass_cols):
+    """AC10 (property): whatever the candidates, hotspots and tissue, placed HPFs are >= 2r apart, inside the
+    slide, at most `count`, each at least min_tissue_coverage tissue."""
+    cfg = get_pipeline_config().mitosis.hpf
+    stride = 16.0
+    cells = np.ones((250, 250), dtype=bool)
+    cells[:, :glass_cols] = False
+    tissue = TissueMask(cells, stride)
+    candidates = [{"id": f"m{i}", "centroid_um": [x, y], "counted": c} for i, (x, y, c) in enumerate(points)]
+    hpfs = place_hpfs(
+        candidates,
+        [(square(x, y, side), prio) for x, y, side, prio in hotspots],
+        tissue=tissue,
+        slide_dimensions_um=(4000.0, 4000.0),
+        cfg=cfg,
+    )
+    assert len(hpfs) <= cfg.count
+    for i, a in enumerate(hpfs):
+        cx, cy = a["center_um"]
+        assert cfg.radius_um <= cx <= 4000.0 - cfg.radius_um and cfg.radius_um <= cy <= 4000.0 - cfg.radius_um
+        assert a["tissue_coverage"] >= cfg.min_tissue_coverage
+        for b in hpfs[i + 1:]:
+            assert math.dist(a["center_um"], b["center_um"]) >= 2 * cfg.radius_um - 1e-3
+
+
+def test_place_hpfs_needs_hotspots():
+    with pytest.raises(ValueError, match="hotspots"):
+        place_hpfs([], [], tissue=TissueMask(np.ones((10, 10), dtype=bool), 16.0), slide_dimensions_um=(160.0, 160.0),
+                   cfg=get_pipeline_config().mitosis.hpf)
