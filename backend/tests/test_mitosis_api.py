@@ -4,6 +4,7 @@ Stage 4 review API: the mitosis_v6 routes, server-side recompute, error bodies a
 """
 import uuid
 
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
@@ -22,6 +23,7 @@ from app.models.hpf_site import HpfSite
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
 from tests.fakes.stage2 import seed_stage2
+from tests.test_mitosis_gate import save_tumor_mask
 
 engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -52,7 +54,7 @@ HEADERS = {"X-Test-Role": "pathologist"}
 
 def model_candidate(case_id, cid, xy, p_a, final_decision="mitosis", review_label=None):
     return Detection(id=cid, case_id=case_id, hotspot_id="hs_01", centroid_um=list(xy), p_a=p_a, p_b=None, vlm=None,
-                     in_tumor=None, final_decision=final_decision, decision_path="A", review_label=review_label,
+                     in_tumor=True, final_decision=final_decision, decision_path="A", review_label=review_label,
                      record_ids=[str(uuid.uuid4())])
 
 
@@ -67,7 +69,7 @@ def setup_test_case():
                           model_versions={"kongnet_det_midog_1": "v2"}, config_hash="a" * 64))
     for i in range(1, 4):
         db.add(HpfSite(case_id=case_id, seq=i, center_um=[1000.0 * i, 1000.0 * i], radius_um=262.0, mitotic_count=0,
-                       tissue_coverage=0.9, tumor_fraction=None, source="model"))
+                       tissue_coverage=0.9, tumor_fraction=0.8, source="model"))
     db.add_all([
         model_candidate(case_id, "m_0001", (1010.0, 1010.0), 0.92),                   # inside HPF 1
         model_candidate(case_id, "m_0002", (2020.0, 2020.0), 0.85),                   # inside HPF 2
@@ -107,11 +109,11 @@ def test_get_serves_the_v6_payload(setup_test_case):
     by_id = {c["id"]: c for c in data["candidates"]}
     assert set(by_id) == {"m_0001", "m_0002", "m_0003", "m_0004"}
     assert by_id["m_0001"]["counted"] is True and by_id["m_0003"]["counted"] is False
-    assert by_id["m_0001"]["in_tumor"] is None and by_id["m_0001"]["decision_path"] == "A"
+    assert by_id["m_0001"]["in_tumor"] is True and by_id["m_0001"]["decision_path"] == "A"
     assert by_id["m_0001"]["crop_url"] == f"/api/v1/stages/mitosis/{case_id}/candidates/m_0001/crop"
     assert by_id["m_0001"]["context_url"] == f"/api/v1/stages/mitosis/{case_id}/candidates/m_0001/context"
     assert [h["count"] for h in data["hpfs"]] == [1, 1, 0]
-    assert all(h["tissue_coverage"] == 0.9 and h["tumor_fraction"] is None for h in data["hpfs"])
+    assert all(h["tissue_coverage"] == 0.9 and h["tumor_fraction"] == 0.8 for h in data["hpfs"])
     summary = data["summary"]
     assert (summary["count_total"], summary["n_hpf"], summary["n_equivocal"]) == (2, 3, 1)  # m_0004 is outside the HPFs
     assert summary["flags"] == ["hpf_count_lt_10"]
@@ -236,12 +238,15 @@ def test_replace_hpfs_places_from_counted_candidates_inside_the_hotspots(setup_t
                    polygon_um=[[1800.0, 1800.0], [3000.0, 1800.0], [3000.0, 3000.0], [1800.0, 3000.0]], source="model", excluded=False))
     db.commit()
     seed_stage2(db, case_uid, slide.id, SIDE_PX * MPP, SIDE_PX * MPP)
+    save_tumor_mask(case_uid, np.ones((23, 23), dtype=bool))  # 5 mm of 224 µm tumour tiles
     db.close()
 
     res = post("replace-hpfs", {"case_id": case_id})
     assert res.status_code == 200, res.text
     hpfs = res.json()["hpfs"]
-    assert hpfs and all(1800.0 <= h["center_um"][0] <= 3000.0 and 1800.0 <= h["center_um"][1] <= 3000.0 for h in hpfs)
+    # One field per hotspot window, its disk inside the window (WP-7.6b).
+    assert len(hpfs) == 1 and all(1800.0 + 262.0 <= h["center_um"][i] <= 3000.0 - 262.0 for h in hpfs for i in (0, 1))
+    assert hpfs[0]["tumor_fraction"] == 1.0
     for i, a in enumerate(hpfs):
         assert a["tissue_coverage"] >= 0.7
         for b in hpfs[i + 1:]:

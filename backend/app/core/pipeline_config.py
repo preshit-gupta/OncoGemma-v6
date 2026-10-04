@@ -222,10 +222,9 @@ class MitosisHpfConfig(StrictModel):
     # The review image of each field: review_field_um wide, review_px square (it fits the viewer's reticle).
     review_field_um: PositiveFloat
     review_px: PositiveInt
-    density_grid_res_um: PositiveFloat
+    # Candidate HPF centres lie on a lattice of this step inside each hotspot window.
+    centre_step_um: PositiveFloat
     min_separation_um: PositiveFloat
-    # Minimum tissue fraction inside a placed HPF.
-    min_tissue_coverage: Fraction
 
     @model_validator(mode="after")
     def _non_overlapping(self) -> "MitosisHpfConfig":
@@ -261,19 +260,21 @@ class MitosisReviewCropsConfig(StrictModel):
     context_mpp: Mpp
 
 
+class MitosisTumorGateConfig(StrictModel):
+    """Tumour-cell gate (SPEC-06 §5.5) on the triage tumour mask. ``enabled: false`` is an eval ablation only."""
+
+    enabled: bool
+    # Grid tiles the tumour mask is dilated by before the candidate's tile is looked up.
+    dilation_tiles: NonNegativeInt
+
+
 class MitosisConfig(StrictModel):
     detector: MitosisDetectorConfig
     referee: MitosisRefereeConfig
     hpf: MitosisHpfConfig
     scoring: MitosisScoringConfig
-    # Tumour-cell gate (SPEC-06 §5.5); WP-7.6b implements it, so it cannot be switched on yet.
-    tumor_gate: bool
+    tumor_gate: MitosisTumorGateConfig
     review_crops: MitosisReviewCropsConfig
-
-    @model_validator(mode="after")
-    def _gate_not_implemented(self) -> "MitosisConfig":
-        _require(not self.tumor_gate, "mitosis.tumor_gate is not implemented yet (WP-7.6b); it must be false")
-        return self
 
 
 # --- scoring.yaml -----------------------------------------------------------

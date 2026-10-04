@@ -60,7 +60,7 @@ class Candidate(Strict):
     p_a: Optional[Number]
     p_b: Optional[Number]
     vlm: Optional[VlmVerdict]
-    in_tumor: Optional[bool]
+    in_tumor: Optional[bool]  # null only in an eval tumour-gate ablation run
     final_decision: Literal["mitosis", "not_mitosis", "equivocal"]
     decision_path: Literal["A", "AB", "ABC", "human"]
     review_label: Optional[Literal["mitosis", "not_mitosis"]]
@@ -75,7 +75,7 @@ class Hpf(Strict):
     radius_um: Number
     count: int
     tissue_coverage: Number
-    tumor_fraction: Optional[Number]
+    tumor_fraction: Number
 
 
 class MitosisSummary(Strict):
@@ -146,7 +146,7 @@ def seed_case(db, *, n_hpf: int):
                           model_versions={"kongnet_det_midog_1": "v2"}, config_hash="c" * 64))
     for seq in range(1, n_hpf + 1):
         db.add(HpfSite(case_id=case_id, seq=seq, center_um=[1000.0 * seq, 1000.0], radius_um=262.0,
-                       mitotic_count=0, tissue_coverage=0.95, tumor_fraction=None))
+                       mitotic_count=0, tissue_coverage=0.95, tumor_fraction=0.8))
     vlm = {"verdict": "EQUIVOCAL", "criteria": {"membrane_absent": True, "condensed_chromosome_projections": False,
                                                "phase": "none", "neoplastic_cell": True},
            "mimic": "pyknotic_nucleus", "rationale": "dense round body", "rule_override": False}

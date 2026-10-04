@@ -238,8 +238,11 @@ def test_a_normalised_hpf_image_of_a_slide_without_a_profile_is_a_409(db, tmp_pa
 def add_mitosis_stage(db, case):
     from app.models.stage_execution import StageExecution
 
+    from tests.test_mitosis_gate import save_tumor_mask
+
     db.add(StageExecution(case_id=case.id, stage="mitosis", attempt=1, status="awaiting_review"))
     db.commit()
+    save_tumor_mask(case.id, np.ones((2, 3), dtype=bool))  # the 650 x 350 µm slide on 224 µm tiles, all tumour
 
 
 def crop_blob(case, candidate_id: str, kind: str) -> np.ndarray:
@@ -266,6 +269,7 @@ def test_a_pathologist_added_mitosis_gets_the_contract_crop_and_context_in_raw_c
     assert response.status_code == 200, response.text
     added = [c for c in response.json()["candidates"] if c["decision_path"] == "human"]
     assert len(added) == 1 and added[0]["review_label"] == "mitosis" and added[0]["counted"] is True
+    assert added[0]["in_tumor"] is True  # the tumour gate runs on an added figure too
     candidate_id = added[0]["id"]
     assert np.array_equal(crop_blob(case, candidate_id, "crop"), expected_view(tiff, 325.0, 175.0, crops.crop_um, crops.crop_mpp))
     assert np.array_equal(crop_blob(case, candidate_id, "context"), expected_view(tiff, 325.0, 175.0, crops.context_um, crops.context_mpp))

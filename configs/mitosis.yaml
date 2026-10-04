@@ -32,8 +32,13 @@ referee:
   context_um: 512.0 # context field ...
   context_px: 512 # ... resampled to ~1.0 um/px
 
-# Tumour-cell gate (SPEC-06 §5.5). Off until WP-7.6b: candidates carry in_tumor = null and are eligible.
-tumor_gate: false
+# Tumour-cell gate (SPEC-06 §5.5): a candidate counts only when its tile, in the triage tumour mask dilated by
+# dilation_tiles grid tiles (224 um each), is tumour. A pathologist's 'mitosis' label still counts. The in-situ
+# clause waits for a tumour head with an in-situ class (tumor_head@1.0.0 has none). Off only for an eval ablation:
+# a clinical run refuses enabled: false.
+tumor_gate:
+  enabled: true
+  dilation_tiles: 1
 
 # Review images of every persisted candidate (contract mitosis_v6 crop_url / context_url), raw colour, PNG.
 review_crops:
@@ -42,12 +47,13 @@ review_crops:
   context_um: 256.0 # context: 256 um ...
   context_mpp: 1.0 # ... at 1.0 um/px (256 px)
 
+# One HPF per hotspot window, its disk inside the window (owner, 2026-10-04), at most `count`. Tissue and
+# tumour minimums come from the specimen profile (specimen_profiles.<type>.hotspots, SPEC-06 §5.8).
 hpf:
   radius_um: 262.0 # 250-270 um field radius (area ≈ 0.2157 mm²)
   count: 10 # 10 non-overlapping fields (cumulative area ≈ 2.157 mm²)
-  density_grid_res_um: 16.0 # Spatial density sampling resolution
+  centre_step_um: 16.0 # lattice step of candidate HPF centres inside a hotspot window
   min_separation_um: 524.0 # 2 * radius_um: fields never overlap; fewer fit -> n_hpf < count (SPEC-06 §5.8)
-  min_tissue_coverage: 0.70 # minimum tissue fraction inside an HPF (v5 code default)
   review_field_um: 577.29 # review image width: the viewer's 520 px canvas shows a 236 px reticle for radius_um (520 * 262 / 236)
   review_px: 2048 # ... rendered 2048 px square (~0.28 um/px)
 
