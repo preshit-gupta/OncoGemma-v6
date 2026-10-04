@@ -1,17 +1,11 @@
 """Scoring, grading and QC take the typed configuration; nothing reads YAML or assumes a value (SPEC-01 §3.8)."""
 import ast
 import inspect
-import uuid
 from pathlib import Path
 
 import numpy as np
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
-from app.core.db import Base, get_db
 from app.core.pipeline_config import (
     MitoticThresholds,
     NottinghamGradingConfig,
@@ -19,8 +13,7 @@ from app.core.pipeline_config import (
     get_config_hash,
     get_pipeline_config,
 )
-from app.main import app
-from pipeline.grading import aggregate_grading_findings, calculate_nottingham_grade, calculate_tubule_score
+from pipeline.grading import aggregate_components, calculate_nottingham_grade, calculate_tubule_score, pleomorphism_mode
 from pipeline.qc_checks import check_tissue_coverage
 from pipeline.tissue_mask import TissueMask
 from pipeline.scoring import compute_nottingham_mitotic_score
@@ -62,22 +55,15 @@ def test_hpfs_without_a_radius_are_an_error_not_262_um():
         compute_nottingham_mitotic_score(1, 1, None, get_pipeline_config().mitosis.scoring, hpfs=[{"seq": 1}])
 
 
-def test_a_missing_mitotic_score_needs_a_human_and_yields_no_grade():
-    tubule = [{"tubule_percent": 40.0, "tumor_present": True} for _ in range(8)]
-    pleo = [{"pleomorphism_score": 2} for _ in range(8)]
-    result = aggregate_grading_findings(tubule, pleo, mitotic_score=None, cfg=get_pipeline_config().scoring)
-    assert result["needs_human"] is True
-    assert "no_mitotic_score" in result["flags"]
-    assert result["grade"] is None and result["nottingham_sum"] is None
-    assert result["tubule_score"] == 2 and result["pleo_score"] == 2
+def test_a_missing_mitotic_score_yields_no_grade():
+    result = aggregate_components(2, 2, None, get_pipeline_config().scoring)
+    assert result == {"total": None, "grade": None, "near_grade_boundary": False}
 
 
-def test_an_unknown_confidence_fails_instead_of_weighing_as_medium():
+def test_the_injected_tie_break_decides_a_tied_pleomorphism_mode():
     scoring = get_pipeline_config().scoring
-    pleo = [{"pleomorphism_score": 2}] * 8
-    tubule = [{"tubule_percent": 40.0, "tumor_present": True, "confidence": "certain"}] * 8
-    with pytest.raises(AttributeError):
-        aggregate_grading_findings(tubule, pleo, mitotic_score=1, cfg=scoring)
+    assert scoring.grading.pleo_tie_break == "max"  # owner decision 2026-10-04
+    assert pleomorphism_mode([2, 3], scoring.grading.pleo_tie_break) == (3, True)
 
 
 def test_qc_uses_the_injected_thresholds():
@@ -92,40 +78,3 @@ def test_qc_uses_the_injected_thresholds():
 @pytest.mark.parametrize("stage", sorted(STAGE_HANDLERS))
 def test_every_stage_handler_receives_the_runtime(stage):
     assert list(inspect.signature(STAGE_HANDLERS[stage]).parameters)[2] == "runtime"
-
-
-# --- the grade preview never assumes a score -----------------------------------
-
-engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-Session = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
-@pytest.fixture
-def client():
-    Base.metadata.create_all(bind=engine)
-
-    def override():
-        db = Session()
-        try:
-            yield db
-        finally:
-            db.close()
-
-    app.dependency_overrides[get_db] = override
-    yield TestClient(app)
-    app.dependency_overrides.pop(get_db, None)
-
-
-def test_the_grade_preview_refuses_missing_scores_instead_of_assuming_2(client):
-    res = client.post("/api/v1/stages/grading/recompute", json={"case_id": str(uuid.uuid4()), "tubule_score": 1})
-    assert res.status_code == 400
-    assert "pleo, mitotic" in res.json()["detail"]
-
-
-def test_the_grade_preview_uses_the_configured_bounds(client):
-    res = client.post(
-        "/api/v1/stages/grading/recompute",
-        json={"case_id": str(uuid.uuid4()), "tubule_score": 2, "pleo_score": 2, "mitotic_score": 2},
-    )
-    assert res.status_code == 200
-    assert res.json()["nottingham_sum"] == 6 and res.json()["grade"] == 2

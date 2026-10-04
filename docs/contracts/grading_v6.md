@@ -14,16 +14,17 @@ interface PleoField {
   id: string; center_um: [number, number]; size_um: 128; mpp: 0.25;
   image_url: string; stratum: number;
   estimate: { pleomorphism_score: 1 | 2 | 3 } | null;
-  nuclei: { n: number; area_p50_um2: number; area_cv: number } | null;
+  nuclei: { n: number; area_p50_um2: number; area_cv: number } | null;   // null until nuclear segmentation (WP-8.3, deferred)
   review: { pleomorphism_score?: 1 | 2 | 3; by: string; at: string } | null;
 }
 
-type Flag = "needs_human" | "insufficient_nuclei" | "near_grade_boundary" | "hpf_count_lt_10";
+type Flag = "needs_human" | "insufficient_nuclei" | "near_grade_boundary" | "hpf_count_lt_10";   // insufficient_nuclei only once WP-8.3 exists
 
 interface GradingStageV6 {
   case_id: string; stage_execution_id: string;
   status: "queued" | "running" | "awaiting_review" | "confirmed" | "failed";
   slide: SlideGeom;
+  // estimator: what produced the component, "<arm>:<producer>@<prompt>", e.g. "T1:gemini_referee@tubule@v1"
   tubule: { samples: TubuleSample[]; percent: number | null; score: 1 | 2 | 3 | null; estimator: string; n_used: number };
   pleomorphism: { fields: PleoField[]; score: 1 | 2 | 3 | null; estimator: string; aggregation: "mode" | "p75" | "model" };
   mitotic: { score: 1 | 2 | 3 | null; count_total: number; n_hpf: number; area_mm2: number; per_mm2: number };  // read-only (Stage 4)
@@ -40,11 +41,18 @@ interface GradingStageV6 {
 
 | Method | Path | Body | 2xx | Errors |
 |---|---|---|---|---|
-| GET | `/api/v1/stages/grading/{case_id}` | — | `200 GradingStageV6` | `404 not_found` |
+| GET | `/api/v1/stages/grading/{case_id}` | — | `200 GradingStageV6` | `404 not_found` (also for a grading written by the v5 worker, or none yet) |
+| GET | `/api/v1/stages/grading/{case_id}/{tubule\|pleo}/{sample_id}/image` | — | `200 image/png` (the `image_url` of a sample) | `404 image_not_found` |
 | POST | `/api/v1/stages/grading/review-sample` | `{ case_id, kind: "tubule" \| "pleo", sample_id, value: { tumor_present?, tubule_percent? } \| { pleomorphism_score } }` | `200 GradingStageV6` (server re-aggregates) | `404 sample_not_found` · `422 invalid_value` · `409 stage_locked` |
-| POST | `/api/v1/stages/grading/override` | `{ case_id, component: "tubule" \| "pleo" \| "histotype", value, reason }` (`reason` ≥ 10 characters) | `200 GradingStageV6` | `422 reason_too_short` · `422 invalid_value` |
-| POST | `/api/v1/stages/grading/histotype/confirm` | `{ case_id, type }` | `200 GradingStageV6` | `422 invalid_value` |
+| POST | `/api/v1/stages/grading/override` | `{ case_id, component: "tubule" \| "pleo" \| "histotype", value, reason }` (`reason` ≥ 10 characters) | `200 GradingStageV6` | `422 reason_too_short` · `422 invalid_value` · `409 stage_locked` · `404 not_found` |
+| POST | `/api/v1/stages/grading/histotype/confirm` | `{ case_id, type }` | `200 GradingStageV6` | `422 invalid_value` · `409 stage_locked` · `404 not_found` |
 | POST | `/api/v1/stages/grading/confirm` | `{ case_id }` | `200 { status: "confirmed", case_status: "done", next_stage: null }` | `409 {error:"histotype_unconfirmed"}` · `409 {error:"missing_component", components:[...]}` · `409 not_awaiting_review` |
+
+## Server rules (WP-8.6)
+
+- An override with `value: null` clears that override (a reason is still required). A histotype override un-confirms the type.
+- `review-sample` merges the given fields into the sample's review; the estimate stays as the machine wrote it.
+- A pleomorphism mode tie takes the highest tied score (owner decision 2026-10-04). `aggregation` is `"mode"`.
 
 ## UI rules tied to the contract
 

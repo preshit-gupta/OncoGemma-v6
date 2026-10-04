@@ -1,8 +1,7 @@
-"""Grading stage on the model gateway (SPEC-01 §3.4, §3.9; WP-2.3d).
+"""Stage 5 worker on the model gateway (SPEC-01 §3.4, §3.9; SPEC-07 §4-7; WP-2.3d, WP-8.6).
 
-The estimator is a fake Gemini that answers according to the strict schema it is asked
-for. This replaces test_grading.py::test_medgemma_endpoint_failure_raises_when_mock_disabled
-(SPEC-01 §6.3).
+The estimator is a fake Gemini that answers according to the strict schema it is asked for.
+Samples come from tumour tiles inside the confirmed hotspot; M from the Stage 4 rows.
 """
 import json
 import threading
@@ -14,7 +13,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
 from app.core.db import Base
-from app.core.gcs import download_blob_as_bytes
+from app.core.gcs import blob_exists, download_blob_as_bytes
 from app.core.pipeline_config import get_pipeline_config
 from app.inference import schemas
 from app.inference.adapters.base import TransientCallError
@@ -22,15 +21,19 @@ from app.inference.errors import ModelUnavailableError, SchemaInvalidError
 from app.inference.records import DecisionLog
 from app.models import Case, Detection, Grading, HpfSite, Hotspot, Slide, StageExecution
 from pipeline.errors import SlideReadError
+from pipeline.grading import MACHINE_SCHEMA, sample_blob
+from pipeline.grading_sampling import SamplingFrameEmptyError
 from tests.fakes.gateway import FakeAdapter, json_text
 from tests.fakes.runtime import make_runtime
 from tests.fakes.slide import FakeOpenSlide, install_fake_slide
 from tests.fakes.stage2 import seed_stage2
-from worker.grading import run_grading
+from tests.fakes.stage3 import seed_tiles, tiles_covering
+from worker.grading import TriageOutputMissingError, run_grading
 
 SIDE_PX, MPP = 16000, 0.25
-N_PATCHES, HISTOTYPE_IMAGES = 6, 3
+N_TUBULE, N_PLEO, HISTOTYPE_IMAGES = 6, 4, 3
 HOTSPOT = [[1000.0, 1000.0], [3000.0, 1000.0], [3000.0, 3000.0], [1000.0, 3000.0], [1000.0, 1000.0]]
+EXCLUDED = [[3200.0, 3200.0], [3800.0, 3200.0], [3800.0, 3800.0], [3200.0, 3800.0], [3200.0, 3200.0]]
 
 ANSWERS = {
     schemas.TubuleEstimate: {"tumor_present": True, "tubule_percent": 40, "rationale": "tubules in a third"},
@@ -44,12 +47,17 @@ def answer_by_schema(request):
 
 
 def small_config(**fallback_tasks):
-    """Six patches instead of 24 keeps the test fast; optional clinical fallbacks per task."""
+    """Six tubule samples and four fields instead of 48 + 48 keep the test fast; optional clinical fallbacks per task."""
     config = get_pipeline_config()
     scoring = config.scoring
     estimators = scoring.grading.estimators.model_copy(update={"histotype_images": HISTOTYPE_IMAGES})
-    grading = scoring.grading.model_copy(update={"n_patches": N_PATCHES, "min_tumor_patches": 2, "estimators": estimators})
+    grading = scoring.grading.model_copy(update={"estimators": estimators})
     config = config.model_copy(update={"scoring": scoring.model_copy(update={"grading": grading})})
+    profiles = config.specimen_profiles
+    resection = profiles.profiles["resection"]
+    counts = resection.grading.model_copy(update={"tubule_patches": N_TUBULE, "pleo_fields": N_PLEO})
+    profiles = profiles.model_copy(update={"profiles": {**profiles.profiles, "resection": resection.model_copy(update={"grading": counts})}})
+    config = config.model_copy(update={"specimen_profiles": profiles})
     if fallback_tasks:
         policy = config.fallbacks.model_validate({"fallbacks": [
             {"task": task, "on": errors, "to": None} for task, errors in fallback_tasks.items()
@@ -67,17 +75,20 @@ def db_session():
     session.close()
 
 
-def seed(db_session, with_hpfs=True):
-    case_id, slide_id, exec_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+def seed(db_session, with_hpfs=True, triage_status="confirmed", with_tiles=True):
+    case_id, slide_id, exec_id, triage_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     raw_uri = f"gs://{settings.GCS_RAW_BUCKET}/cases/{case_id}/{slide_id}.svs"
     stage = StageExecution(id=exec_id, case_id=case_id, stage="grading", attempt=1, status="running")
     rows = [
         Case(id=case_id, created_by="grading_test"),
         Slide(id=slide_id, case_id=case_id, gcs_uri_original=raw_uri, mpp_x=MPP, mpp_y=MPP,
-              width_px=SIDE_PX, height_px=SIDE_PX),
+              width_px=SIDE_PX, height_px=SIDE_PX, checksum_sha256="5e" * 32),
+        StageExecution(id=triage_id, case_id=case_id, stage="triage", attempt=1, status=triage_status),
         stage,
-        Hotspot(id="hs_01", case_id=case_id, stage_execution_id=exec_id, polygon_um=HOTSPOT, area_mm2=4.0,
-                prob_mean=0.9, prob_max=0.95, source="model", excluded=False),
+        Hotspot(id="hs_01", case_id=case_id, stage_execution_id=triage_id, polygon_um=HOTSPOT, area_mm2=4.0,
+                prob_mean=0.9, prob_max=0.95, source="model", excluded=False, rank=1),
+        Hotspot(id="hs_02", case_id=case_id, stage_execution_id=triage_id, polygon_um=EXCLUDED, area_mm2=0.36,
+                prob_mean=0.95, prob_max=0.97, source="model", excluded=True, rank=2),
     ]
     if with_hpfs:
         rows += [
@@ -90,6 +101,9 @@ def seed(db_session, with_hpfs=True):
     db_session.add_all(rows)
     db_session.commit()
     seed_stage2(db_session, case_id, slide_id, SIDE_PX * MPP, SIDE_PX * MPP)
+    if with_tiles:
+        # Tumour under both hotspots; the excluded one must never be sampled.
+        seed_tiles(case_id, sorted(set(tiles_covering(900, 900, 3100, 3100) + tiles_covering(3100, 3100, 3900, 3900))))
     return stage, raw_uri
 
 
@@ -98,7 +112,7 @@ def grading_row(db_session, stage):
 
 
 def output_json(stage):
-    return json.loads(download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{stage.case_id}/grading_output.json"))
+    return json.loads(download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{stage.case_id}/grading/output.json"))
 
 
 def test_grading_estimates_come_from_the_gateway_and_aggregate_deterministically(db_session, monkeypatch):
@@ -110,38 +124,69 @@ def test_grading_estimates_come_from_the_gateway_and_aggregate_deterministically
 
     config = get_pipeline_config()
     assert stage.status == "awaiting_review"
+    assert output_ref.endswith(f"cases/{stage.case_id}/grading/output.json")
     assert model_versions == {"gemini_referee": config.models.version_of("gemini_referee")}
     rows = log.pending()
     assert {r["status"] for r in rows} == {"ok"}
     tubule = [r for r in rows if r["task"] == "tubule_patch"]
     pleo = [r for r in rows if r["task"] == "pleo_field"]
     (histotype,) = [r for r in rows if r["task"] == "histotype"]
-    assert len(tubule) == len(pleo) == N_PATCHES
+    assert len(tubule) == N_TUBULE and len(pleo) == N_PLEO
     assert {r["prompt_id"] for r in tubule} == {"tubule@v1.md"} and {r["prompt_id"] for r in pleo} == {"pleo@v1.md"}
     assert histotype["prompt_id"] == "histologic_type@v1.md" and len(histotype["input_spec"]["images"]) == HISTOTYPE_IMAGES
     assert histotype["entity_type"] == "slide"
+    # SPEC-07 AC6: tubule samples at 1.0 µm/px, pleomorphism fields at 0.25 µm/px, 512 px each.
     assert all(s["mpp"] == 1.0 and s["size_px"] == [512, 512] for r in tubule for s in r["input_spec"]["images"])
+    assert all(s["mpp"] == 0.25 and s["size_px"] == [512, 512] for r in pleo for s in r["input_spec"]["images"])
 
     grading = grading_row(db_session, stage)
     assert grading.tubule_percent == 40.0 and grading.tubule_score == 2
     assert grading.pleo_score == 3
+    # Two counted figures in one HPF of radius 262 µm: 9.3 per mm², score 3 (pipeline/scoring.py).
+    assert grading.mitotic_score == 3
+    assert grading.nottingham_sum == 8 and grading.grade == 3
     assert grading.histologic_type == "ILC" and grading.type_confirmed_by == "unconfirmed"
-    assert grading.nottingham_sum == grading.tubule_score + grading.pleo_score + grading.mitotic_score
+    assert grading.overrides == {}
 
-    output = output_json(stage)
-    assert output["needs_human"] is False and output["schema_failed_patches"] == []
-    assert output["histologic_type"]["type"] == "ILC" and output["histologic_type"]["record_id"] == str(histotype["id"])
+    machine = grading.machine
+    assert machine == output_json(stage)
+    assert machine["schema"] == MACHINE_SCHEMA and machine["flags"] == []
+    assert machine["frame"]["hotspot_ids"] == ["hs_01"]
+    assert machine["histotype"]["type"] == "ILC" and machine["histotype"]["record_id"] == str(histotype["id"])
+    assert machine["tubule"]["estimator"] == "T1:gemini_referee@tubule@v1"
+    assert machine["mitotic"] == {"score": 3, "count_total": 2, "n_hpf": 1, "area_mm2": 0.216, "per_mm2": 9.27,
+                                  "flags": ["hpf_count_lt_10"]}
+    assert machine["result"]["flags"] == ["near_grade_boundary", "hpf_count_lt_10"] and machine["needs_human"] is False
     record_ids = {str(r["id"]) for r in tubule + pleo}
-    for patch in output["patches"]:
-        assert patch["tubule"]["record_id"] in record_ids and patch["pleo"]["record_id"] in record_ids
-        assert "confidence" not in patch["tubule"] and "doer_percent" not in patch["tubule"]
-        assert patch["review_status"] == "suggested"
+    for s in machine["tubule"]["samples"] + machine["pleomorphism"]["fields"]:
+        assert s["record_id"] in record_ids and s["hotspot_id"] == "hs_01" and s["tumor_area_um2"] > 0
+    for f in machine["pleomorphism"]["fields"]:
+        assert f["nuclei"] is None
+        assert blob_exists(settings.GCS_ARTIFACTS_BUCKET, sample_blob(str(stage.case_id), "pleo", f["id"]))
+    assert all(blob_exists(settings.GCS_ARTIFACTS_BUCKET, sample_blob(str(stage.case_id), "tubule", s["id"]))
+               for s in machine["tubule"]["samples"])
 
 
-def test_grading_requires_stage_4_hpfs(db_session, monkeypatch):
-    stage, raw_uri = seed(db_session, with_hpfs=False)
-    with pytest.raises(ValueError, match="no Stage 4 HPFs"):
+def test_sampling_needs_a_confirmed_triage(db_session):
+    stage, _ = seed(db_session, triage_status="awaiting_review")
+    with pytest.raises(SamplingFrameEmptyError, match="confirmed Stage 3"):
         run_grading(stage, db_session, make_runtime(stage, {"vertex_genai": FakeAdapter(then=answer_by_schema)}, config=small_config()))
+
+
+def test_sampling_needs_the_stage_3_tiles(db_session):
+    stage, _ = seed(db_session, with_tiles=False)
+    with pytest.raises(TriageOutputMissingError, match="tiles.parquet"):
+        run_grading(stage, db_session, make_runtime(stage, {"vertex_genai": FakeAdapter(then=answer_by_schema)}, config=small_config()))
+
+
+def test_no_stage_4_hpf_means_no_mitotic_score_and_no_grade(db_session, monkeypatch):
+    stage, raw_uri = seed(db_session, with_hpfs=False)
+    install_fake_slide(monkeypatch, FakeOpenSlide(SIDE_PX, SIDE_PX), raw_uri)
+    run_grading(stage, db_session, make_runtime(stage, {"vertex_genai": FakeAdapter(then=answer_by_schema)}, config=small_config()))
+    grading = grading_row(db_session, stage)
+    assert grading.mitotic_score is None and grading.grade is None and grading.nottingham_sum is None
+    assert grading.tubule_score == 2 and grading.pleo_score == 3
+    assert "needs_human" in grading.machine["result"]["flags"] and grading.machine["needs_human"] is True
 
 
 def test_estimator_outage_fails_the_stage_without_a_grade(db_session, monkeypatch):
@@ -183,11 +228,11 @@ def test_allowed_outages_leave_components_unassessed_never_defaulted(db_session,
     grading = grading_row(db_session, stage)
     assert grading.histologic_type is None  # v5 wrote IDC-NST here
     output = output_json(stage)
-    assert output["histologic_type"] is None and output["needs_human"] is True
+    assert output["histotype"] is None and "needs_human" in output["result"]["flags"]
     assert [r["task"] for r in log.pending() if r["producer_kind"] == "fallback"] == ["histotype"]
 
 
-def test_failed_patch_estimates_are_left_out_of_the_aggregate(db_session, monkeypatch):
+def test_failed_field_estimates_are_left_out_of_the_aggregate(db_session, monkeypatch):
     stage, raw_uri = seed(db_session)
     install_fake_slide(monkeypatch, FakeOpenSlide(SIDE_PX, SIDE_PX), raw_uri)
     calls, lock = {"pleo": 0}, threading.Lock()  # estimates run on several threads
@@ -208,10 +253,10 @@ def test_failed_patch_estimates_are_left_out_of_the_aggregate(db_session, monkey
     run_grading(stage, db_session, make_runtime(stage, {"vertex_genai": FakeAdapter(then=first_pleo_down)}, config=config))
 
     output = output_json(stage)
-    failed = [p for p in output["patches"] if p["review_status"] == "needs_review"]
-    assert len(failed) == 1 and failed[0]["pleo"]["pleomorphism_score"] is None
-    assert output["schema_failed_patches"] == [failed[0]["id"]] and output["needs_human"] is True
-    # The remaining patches still grade: no default 2 was voted in for the failed one.
+    failed = [f for f in output["pleomorphism"]["fields"] if f["estimate"] is None]
+    assert len(failed) == 1 and failed[0]["rationale"] is None
+    assert "needs_human" in output["result"]["flags"]
+    # The remaining fields still grade: no default 2 was voted in for the failed one.
     assert grading_row(db_session, stage).pleo_score == 3
 
 

@@ -118,7 +118,12 @@ def build_result(session: Session, run, item: ValidationItem, slide_uri: str, sp
         for h in session.scalars(select(HpfSite).where(HpfSite.case_id == case_id).order_by(HpfSite.seq))
     ]
     grading = session.get(Grading, case_id)
-    patches = list((grading.machine or {}).get("patches", [])) if grading is not None else []
+    # The Stage 5 samples (grading_v6 machine output): tubule samples, then pleomorphism fields.
+    machine = grading.machine if grading is not None else {}
+    patches = (
+        [{"kind": "tubule", **s} for s in machine["tubule"]["samples"]]
+        + [{"kind": "pleo", **f} for f in machine["pleomorphism"]["fields"]]
+    ) if "tubule" in machine else []
     decisions = [
         Decision(
             id=str(r.id), stage=r.stage, task=r.task, entity_type=r.entity_type, entity_id=r.entity_id,

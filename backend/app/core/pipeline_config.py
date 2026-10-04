@@ -308,12 +308,6 @@ class NottinghamGradingConfig(StrictModel):
         return self
 
 
-class ConfidenceWeights(StrictModel):
-    low: PositiveFloat
-    medium: PositiveFloat
-    high: PositiveFloat
-
-
 class GradingEstimatorsConfig(StrictModel):
     producer: RegistryKey
     tubule_prompt: PromptFileName
@@ -323,19 +317,29 @@ class GradingEstimatorsConfig(StrictModel):
     color: ColorPolicy
 
 
-class GradingSamplingConfig(StrictModel):
-    n_patches: PositiveInt
-    patch_size_px: PositiveInt
-    resolution_um: Mpp
-    min_tumor_patches: PositiveInt
-    max_disp: Fraction
-    confidence_weights: ConfidenceWeights
-    estimators: GradingEstimatorsConfig
+class GradingSampleGeometry(StrictModel):
+    """One Stage 5 sample: a ``size_um`` square read at ``mpp`` (SPEC-07 §5.1, §6.1)."""
 
-    @model_validator(mode="after")
-    def _ordered(self) -> "GradingSamplingConfig":
-        _require(self.min_tumor_patches <= self.n_patches, "min_tumor_patches must not exceed n_patches")
-        return self
+    size_um: PositiveFloat
+    mpp: Mpp
+
+    @property
+    def size_px(self) -> int:
+        return round(self.size_um / self.mpp)
+
+
+class GradingSamplingConfig(StrictModel):
+    """Stage 5 sampling and aggregation (SPEC-07 §4-7; the counts are per specimen profile)."""
+
+    tubule_sample: GradingSampleGeometry
+    pleo_field: GradingSampleGeometry
+    # Each tumour tile is split into subdivisions x subdivisions cells; their centres are the sample positions.
+    subdivisions: PositiveInt
+    kmeans_n_init: PositiveInt
+    # The pleomorphism mode when two scores tie (owner decision 2026-10-04: the highest).
+    pleo_tie_break: Literal["max", "min"]
+    override_min_reason_chars: PositiveInt
+    estimators: GradingEstimatorsConfig
 
 
 class ScoringHpfConfig(StrictModel):
@@ -512,6 +516,13 @@ class HotspotsConfig(StrictModel):
     ranking_arm: Literal["H1", "H2", "H3"] = "H1"
 
 
+class SpecimenGradingConfig(StrictModel):
+    """Stage 5 sample counts for the specimen type (SPEC-07 §5.1, §6.1)."""
+
+    tubule_patches: PositiveInt
+    pleo_fields: PositiveInt
+
+
 class SpecimenProfile(StrictModel):
     tissue_mask: TissueMaskConfig
     stain_fit: StainFitConfig
@@ -520,6 +531,7 @@ class SpecimenProfile(StrictModel):
     qc: SpecimenQcConfig
     triage: SpecimenTriageConfig
     hotspots: HotspotsConfig
+    grading: SpecimenGradingConfig
 
 
 class SpecimenProfilesConfig(StrictModel):
@@ -727,10 +739,11 @@ class PipelineConfig(StrictModel):
                 prompt in self.prompts,
                 f"scoring.yaml grading.estimators.{field} {prompt!r} is not in configs/prompts",
             )
-        _require(
-            estimators.histotype_images <= self.scoring.grading.n_patches,
-            "scoring.yaml grading.estimators.histotype_images must not exceed n_patches",
-        )
+        for name, profile in self.specimen_profiles.profiles.items():
+            _require(
+                estimators.histotype_images <= profile.grading.tubule_patches,
+                f"scoring.yaml grading.estimators.histotype_images must not exceed {name} grading.tubule_patches",
+            )
 
     def _mitosis_models_exist(self) -> None:
         models, detector, referee = self.models.models, self.mitosis.detector, self.mitosis.referee
