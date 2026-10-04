@@ -20,15 +20,30 @@ datasets:
 
   midogpp_breast:
     name: "MIDOG++ human breast carcinoma subset"
-    source_url: "https://zenodo.org/records/6344325"
+    # figshare collection of the MIDOG++ paper (Aubreville et al., Sci Data 10:484, 2023; PMC10368709).
+    # The previous zenodo.org/records/6344325 link was an unrelated record (checked 2026-10-04).
+    source_url: "https://doi.org/10.6084/m9.figshare.c.6615571"
     license_ref: "CC BY 4.0"
     license_scope: "commercial_ok"
     adapter: "backend.eval.datasets.midogpp.MIDOGppAdapter"
     version_or_date: "v1.0"
+    labels_sha256: "8c87ab4276eb11f6b6b5ac0d956b89dad7568a5474e0904b653d54dc68091f47"  # MIDOG++.json, article 23531121
+    # Scanner per slide: the authors' datasets_xvalidation.csv (article 23559798), not inferred.
+    # Breast slides 1-50 "Hamammatsu XR" (sic), 51-100 "Hamamatsu S360", 101-150 "Aperio CS2"; 151-200 are unlabelled.
+    scanner_source: "datasets_xvalidation.csv sha256 211140f590199d50ee98d923ddc923c382c3a5543ea3b430612c3624570b26b8"
+    # SPEC-06 §3.1 ground-truth check (WP-7.8): "no harmonisation". The paper's labelling protocol marks
+    # each structure with one circle (radius 50 px) at its centre, classed per Donovan et al. (2021), so a
+    # dividing cell is one label, not two. Checked in the labels: the nearest two breast mitotic figures are
+    # 38.6 px apart (>= 8.5 µm at any of the scanners' 0.22-0.25 µm/px), so no pair falls inside the 7.5 µm
+    # match radius and merging would change nothing.
+    gt_dividing_cell_convention: "one label per dividing cell; no harmonisation (Aubreville et al. 2023, Methods)"
+    # KongNet-Det was trained on ~90% of MIDOG++ (arXiv 2510.23559; held-out list unpublished): results on
+    # this subset are an in-distribution regression check of the pipeline, not a validation of the detector.
+    training_overlap: "kongnet_det_midog_1 (~90% of MIDOG++)"
 
   midogpp_other:
     name: "MIDOG++ other tumor types"
-    source_url: "https://zenodo.org/records/6344325"
+    source_url: "https://doi.org/10.6084/m9.figshare.c.6615571"
     license_ref: "CC BY 4.0"
     license_scope: "commercial_ok"
     adapter: "backend.eval.datasets.midogpp.MIDOGppAdapter"
