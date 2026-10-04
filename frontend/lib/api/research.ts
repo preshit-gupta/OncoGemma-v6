@@ -606,15 +606,90 @@ export async function reviewQAItem(
   return res.json();
 }
 
-export async function createBatch(payload: {
+// Pipeline stages in canonical order (backend/app/core/run_context.py). A batch runs a prefix
+// of these starting at ingest and ending at a stage that stops for review (eval/harness/runs.py).
+export const PIPELINE_STAGES = ["ingest", "preprocess", "qc", "triage", "mitosis", "grading"] as const;
+export type PipelineStage = (typeof PIPELINE_STAGES)[number];
+export const RUN_END_STAGES = ["triage", "mitosis", "grading"] as const;
+export type RunEndStage = (typeof RUN_END_STAGES)[number];
+
+export function stagesThrough(end: RunEndStage): PipelineStage[] {
+  return PIPELINE_STAGES.slice(0, PIPELINE_STAGES.indexOf(end) + 1);
+}
+
+export type BatchSource =
+  | { manifest_uri: string; split: "train" | "val" | "test"; confirm_test_access?: string }
+  | { gcs_prefix: string; specimen_type: "resection" | "core_biopsy"; mpp_override?: number };
+
+export interface CreateBatchPayload {
   name: string;
-  source: { manifest_uri?: string; gcs_prefix?: string; specimen_type?: string; mpp_override?: number };
-  stages: string[];
-  mode: string;
+  source: BatchSource;
+  stages: PipelineStage[];
+  mode: "auto" | "manual";
   concurrency: number;
-}): Promise<{ batch_id: string }> {
+}
+
+export type BatchStatus = "created" | "running" | "completed" | "cancelled" | "failed";
+export const BATCH_FINAL_STATUSES: BatchStatus[] = ["completed", "cancelled", "failed"];
+
+// Payload of GET /api/v1/batches/{id}/events (research_v1.md).
+export interface BatchEvent {
+  status: BatchStatus;
+  counts: Partial<Record<ItemRow["status"], number>>;
+  failures_by_error_class: Record<string, number>;
+}
+
+// Mock batches: scripted progress, one event per second (WP-9.2 card).
+const MOCK_BATCH_SIZE = 10;
+const MOCK_ITEMS_PER_TICK = 2;
+const mockBatches: Record<
+  string,
+  { status: BatchStatus; counts: Record<string, number>; failures: Record<string, number>; failedOnce: boolean }
+> = {};
+
+function mockBatchEvent(id: string): BatchEvent {
+  const b = mockBatches[id];
+  return {
+    status: b.status,
+    counts: { ...b.counts },
+    failures_by_error_class: { ...b.failures },
+  };
+}
+
+function mockBatchTick(id: string) {
+  const b = mockBatches[id];
+  if (b.status !== "running") return;
+  // Finish the running items (the first finished item of a batch fails), then start the next ones.
+  let finished = b.counts.running ?? 0;
+  if (finished > 0 && !b.failedOnce) {
+    b.failedOnce = true;
+    b.counts.failed = (b.counts.failed ?? 0) + 1;
+    b.failures.mock_error = (b.failures.mock_error ?? 0) + 1;
+    finished -= 1;
+  }
+  b.counts.succeeded = (b.counts.succeeded ?? 0) + finished;
+  const started = Math.min(MOCK_ITEMS_PER_TICK, b.counts.pending ?? 0);
+  b.counts.pending = (b.counts.pending ?? 0) - started;
+  b.counts.running = started;
+  if (started === 0) b.status = "completed";
+}
+
+async function batchErrorMessage(res: Response, what: string): Promise<string> {
+  const body = await res.json().catch(() => ({}));
+  const detail = typeof body.detail === "string" ? body.detail : body.detail ? JSON.stringify(body.detail) : null;
+  return `${what}: ${res.status}${detail ? ` ${detail}` : ""}`;
+}
+
+export async function createBatch(payload: CreateBatchPayload): Promise<{ batch_id: string }> {
   if (process.env.NEXT_PUBLIC_API_MOCK === "1") {
-    return { batch_id: `batch_${Date.now()}` };
+    const batch_id = `batch_${Date.now()}`;
+    mockBatches[batch_id] = {
+      status: "running",
+      counts: { pending: MOCK_BATCH_SIZE },
+      failures: {},
+      failedOnce: false,
+    };
+    return { batch_id };
   }
 
   const res = await apiFetch(`/api/v1/batches`, {
@@ -622,18 +697,89 @@ export async function createBatch(payload: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!res.ok) throw new Error(`Failed to create batch: ${res.status}`);
+  if (!res.ok) throw new Error(await batchErrorMessage(res, "Failed to create batch"));
   return res.json();
 }
 
+/**
+ * Subscribe to batch progress (SSE, GET /api/v1/batches/{id}/events). `onEvent` receives every
+ * progress message; the subscription closes itself when the batch reaches a final status.
+ * Returns an unsubscribe function.
+ */
+export function subscribeBatchEvents(
+  id: string,
+  onEvent: (event: BatchEvent) => void,
+  onError: (message: string) => void
+): () => void {
+  if (process.env.NEXT_PUBLIC_API_MOCK === "1") {
+    if (!mockBatches[id]) {
+      onError(`Unknown batch ${id}`);
+      return () => {};
+    }
+    onEvent(mockBatchEvent(id));
+    const interval = setInterval(() => {
+      mockBatchTick(id);
+      const event = mockBatchEvent(id);
+      onEvent(event);
+      if (BATCH_FINAL_STATUSES.includes(event.status)) clearInterval(interval);
+    }, 1000);
+    return () => clearInterval(interval);
+  }
+
+  const source = new EventSource(`/api/v1/batches/${id}/events`, { withCredentials: true });
+  let final = false;
+  source.onmessage = (msg) => {
+    let event: BatchEvent;
+    try {
+      event = JSON.parse(msg.data);
+    } catch {
+      source.close();
+      onError(`Malformed batch event: ${String(msg.data).slice(0, 200)}`);
+      return;
+    }
+    onEvent(event);
+    if (BATCH_FINAL_STATUSES.includes(event.status)) {
+      final = true;
+      source.close();
+    }
+  };
+  source.onerror = () => {
+    // The server ends the stream after the final event; anything else is a real failure.
+    // While readyState is CONNECTING the browser is retrying on its own.
+    if (final) return;
+    if (source.readyState === EventSource.CLOSED) {
+      onError(`Batch progress stream for ${id} closed`);
+    }
+  };
+  return () => source.close();
+}
+
 export async function cancelBatch(id: string): Promise<void> {
-  if (process.env.NEXT_PUBLIC_API_MOCK === "1") return;
+  if (process.env.NEXT_PUBLIC_API_MOCK === "1") {
+    const b = mockBatches[id];
+    if (b && !BATCH_FINAL_STATUSES.includes(b.status)) {
+      b.status = "cancelled";
+      b.counts.cancelled = (b.counts.pending ?? 0) + (b.counts.running ?? 0);
+      b.counts.pending = 0;
+      b.counts.running = 0;
+    }
+    return;
+  }
   const res = await apiFetch(`/api/v1/batches/${id}/cancel`, { method: "POST" });
   if (!res.ok) throw new Error(`Failed to cancel batch: ${res.status}`);
 }
 
 export async function retryBatch(id: string, payload?: { statuses: string[] }): Promise<void> {
-  if (process.env.NEXT_PUBLIC_API_MOCK === "1") return;
+  if (process.env.NEXT_PUBLIC_API_MOCK === "1") {
+    const b = mockBatches[id];
+    if (b) {
+      b.counts.pending = (b.counts.pending ?? 0) + (b.counts.failed ?? 0);
+      b.counts.failed = 0;
+      b.failures = {};
+      b.status = "running";
+    }
+    return;
+  }
   const res = await apiFetch(`/api/v1/batches/${id}/retry`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
