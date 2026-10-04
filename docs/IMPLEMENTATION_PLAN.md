@@ -62,11 +62,11 @@ The card column links the delegate task cards.
 | 7.8 | Validate the baseline on MIDOG++ breast (fixed settings, no tuning) | 02 §5, 06 §3.1, 6.1 | M | C | 5.5 | [WP-7.8](tasks/WP-7.8-baseline-validation.md) |
 | 7.6b | Tumour-cell gate and HPF tumour constraints | 06 §5.5, 5.8 | M | C | 6.2 (merged), 6.3 (merged), 7.6a | [WP-7.6b](tasks/WP-7.6b-tumour-gate.md) |
 | 7.3, 7.4, 7.5 | Attribution study, classifier B, referee v2, definition file | 06 §3, 5.3–5.4, 6.2 | — | — | — | **deferred to the next iteration** (D19) |
-| 8.1 | Tumour-mask sampling, aggregation, bias removal | 07 §4–5.2 | M | C | 6.x | — |
-| 8.2 | VLM estimators (Gemini, MedGemma with images) | 07 §5.3, 6.4 | M | C | 2.3 | — |
-| 8.3 | StarDist segmenter and nuclear features | 07 §6.2–6.3 | M | D+R | 3.1 | later |
-| 8.4 | MIL/ordinal heads, histotype, direct-grade comparator | 07 §5.3, 6.4, 7 | L | C | 5.x, 8.1 | — |
-| 8.5 | GradingReviewWorkspace rewrite | 07 §10 | M | D | contract | [WP-8.5](tasks/WP-8.5-grading-workspace.md) |
+| 8.6 | `grading_v6` API, hotspot-framed stratified sampling, separate tubule/pleomorphism reads, unbiased aggregation (baseline end to end) | 07 §4–5.2, 6.1, 7.1, 7.3 | L | C | 7.6a, 6.2/6.3 (merged), 8.5 (merged) | [WP-8.6](tasks/WP-8.6-grading-v6-api.md) (**production grade screen broken until done**) |
+| 8.7 | Validate the grading baseline on TCGA-BRCA val (fixed settings, no tuning) | 02 §5, 07 §7.1, 8.2 (metrics) | M | C | 8.6, TCGA in-place reads | [WP-8.7](tasks/WP-8.7-grading-baseline-validation.md) |
+| 8.1 | Tumour-mask sampling, aggregation, bias removal | 07 §4–5.2 | — | — | — | **absorbed into 8.6** (sampling, aggregation, B2–B5); the whole-tumour frame is deferred (proposed, §2.3) |
+| 8.2, 8.3, 8.4 | VLM arms (T1 `@v2`, T1-MG, P1), StarDist and nuclear features, MIL/ordinal heads, H2, direct-grade comparator, attribution study | 07 §5.3–5.4, 6.2–6.4, 7.2, 8.2 | — | — | — | **deferred to the next iteration** (proposed, §2.3) |
+| 8.5 | GradingReviewWorkspace rewrite | 07 §10 | M | D | contract | [WP-8.5](tasks/WP-8.5-grading-workspace.md) **done** (#9) |
 | 9.1 | Research API | 08 §7 | M | D+R | 5.5 | later |
 | 9.2 | Research UI | 08 §3–6 | L | D | contract | [WP-9.2](tasks/WP-9.2-research-ui.md) |
 | 9.3 | Label clean-up and label lint | 10 | M | D | 1.1 | [WP-9.3](tasks/WP-9.3-labels.md) |
@@ -116,6 +116,32 @@ The program owner set the scope on 2026-10-02: **this iteration establishes and 
 Notes for the next iteration:
 - The A2 referee run was a mismatched setup. The v1 prompt asks for the v5 fields while Gemini is constrained to `MitosisVerdict`, it captions the images in the wrong order, and it promises a marker that is never drawn.
 - RC11 (transposed coordinates) is the largest v5 cause and is not in SPEC-06 §1.
+
+### 2.3 WP-8 re-plan (2026-10-04, proposed): baseline first
+
+**Status: proposed by Claude on 2026-10-04 for the program owner to confirm.** It applies D19's baseline-first scope to Stage 5, following the owner's WP-8.6 decisions of 2026-10-02.
+
+**Where Stage 5 is.**
+- Already removed in WP-2.3: the v5 doer, the numeric anchors and the silent defaults (B3 anchoring, B5, B6). Estimates go through the gateway with strict schemas, and a failed estimate becomes `null` plus `needs_human`.
+- Still in place: density sampling (B2), pleomorphism at 1.0 µm/px (B4), confidence weights, and the tie-to-max mode.
+- The backend still serves the v5 grading API, so the merged WP-8.5 screen fails outside mock mode.
+
+**This iteration:**
+1. **WP-8.6** ships the baseline end to end. It covers the `grading_v6` API, stratified samples inside the confirmed hotspots (owner, 2026-10-02), tubule at 512 µm @ 1.0 µm/px, pleomorphism at 128 µm @ 0.25 µm/px, area-weighted T%, mode P, no confidence weights, and M only through `pipeline/scoring.py`. It starts after WP-7.6a merges, because both edit the grading readers and `scoring.py`.
+2. **WP-8.7** validates that baseline on the locked TCGA val split with fixed settings. It reports NS-G, the band metrics, and the per-band signed error that tests SPEC-07 §1's upward-bias hypothesis. It needs the harness to read TCGA slides in place, and an owner go-ahead for the live run.
+
+**Deferred to the next iteration (proposed).** These are tested against the validated baseline:
+- WP-8.1's whole-tumour sampling frame (SPEC-07 §4) versus the hotspot frame;
+- the attribution study from G0 = v5 (§8.2);
+- WP-8.2 arms: T1 with `tubule@v2`/`pleo@v2` and the definition files, T1-MG, T1-chain, P1 `p75`;
+- WP-8.3 StarDist and the §6.3 features (`PleoField.nuclei` stays `null`);
+- WP-8.4: T3/P4 ABMIL, P2/P3 ordinal, H2, and the §7.2 direct-grade comparator;
+- T4 cut-point calibration.
+
+**Open for the owner:**
+- confirm this split;
+- the P tie rule (WP-8.6 proposes `null` + `needs_human`);
+- a source for the Thennavan et al. histotype labels, which S5-HT needs (`report.py` marks it unavailable).
 
 ## 3. Token-conscious working rules
 
