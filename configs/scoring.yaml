@@ -35,6 +35,10 @@ grading:
     producer: gemini_referee
     tubule_prompt: tubule@v1.md
     pleo_prompt: pleo@v1.md
+    # An independent second score per pleomorphism field (owner decision 2026-10-04): the verifier
+    # never sees the estimate; a disagreement is flagged on the field for review, the grade is unchanged.
+    pleo_verifier: medgemma
+    pleo_verifier_prompt: pleo_verify@v1.md
     histotype_prompt: histologic_type@v1.md
     histotype_images: 6 # the first patches, shown together (v5 sent 6 to Gemini)
     color: normalized # SPEC-04 §3.5 default for VLM tasks; the raw-vs-normalised ablation decides per task

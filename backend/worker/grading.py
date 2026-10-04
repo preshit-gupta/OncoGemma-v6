@@ -39,7 +39,7 @@ from app.core.gcs import (
 from app.core.stain_profiles import usable_stain_transform
 from app.core.tasks import EntityType, Task
 from app.inference.gateway import EntityRef, FallbackResult, ImageInput, InputSpec, ModelInputs
-from app.inference.schemas import HistotypeVerdict, PleoEstimate, TubuleEstimate
+from app.inference.schemas import HistotypeVerdict, PleoScore, TubuleEstimate
 from app.models.audit import AuditEvent
 from app.models.case import Case
 from app.models.detection import Detection
@@ -207,21 +207,27 @@ def run_grading(stage_exec: StageExecution, db: Session, runtime: StageRuntime) 
         pleo_images = [_image("pleo", s) for s in plan.pleo]
 
         def _estimate(job):
-            task, prompt_id, images, entity, output_model = job
+            task, producer, prompt_id, images, entity, output_model = job
             return gateway.invoke_or_fallback(
-                task, estimators.producer, ModelInputs(images=images, prompt_id=prompt_id), ctx, entity, output_model
+                task, producer, ModelInputs(images=images, prompt_id=prompt_id), ctx, entity, output_model
             )
 
-        jobs = [(Task.TUBULE_PATCH, estimators.tubule_prompt, (img,), EntityRef(EntityType.PATCH, s.id), TubuleEstimate)
+        producer = estimators.producer
+        jobs = [(Task.TUBULE_PATCH, producer, estimators.tubule_prompt, (img,), EntityRef(EntityType.PATCH, s.id), TubuleEstimate)
                 for s, img in zip(plan.tubule, tubule_images)]
-        jobs += [(Task.PLEO_FIELD, estimators.pleo_prompt, (img,), EntityRef(EntityType.FIELD, s.id), PleoEstimate)
+        jobs += [(Task.PLEO_FIELD, producer, estimators.pleo_prompt, (img,), EntityRef(EntityType.FIELD, s.id), PleoScore)
                  for s, img in zip(plan.pleo, pleo_images)]
-        jobs.append((Task.HISTOTYPE, estimators.histotype_prompt, tuple(tubule_images[:estimators.histotype_images]),
+        # The verifier scores each field on its own, never shown the estimate (SPEC-07 §5.4: no anchoring).
+        jobs += [(Task.PLEO_FIELD, estimators.pleo_verifier, estimators.pleo_verifier_prompt, (img,),
+                  EntityRef(EntityType.FIELD, s.id), PleoScore)
+                 for s, img in zip(plan.pleo, pleo_images)]
+        jobs.append((Task.HISTOTYPE, producer, estimators.histotype_prompt, tuple(tubule_images[:estimators.histotype_images]),
                      EntityRef(EntityType.SLIDE, slide_id), HistotypeVerdict))
         with ThreadPoolExecutor(max_workers=ESTIMATOR_THREADS) as pool:
             results = list(pool.map(_estimate, jobs))
         type_result = results.pop()
-        t_results, p_results = results[:len(plan.tubule)], results[len(plan.tubule):]
+        n_t, n_p = len(plan.tubule), len(plan.pleo)
+        t_results, p_results, v_results = results[:n_t], results[n_t:n_t + n_p], results[n_t + n_p:]
     finally:
         if reader is not None:
             reader.close()
@@ -237,12 +243,19 @@ def run_grading(stage_exec: StageExecution, db: Session, runtime: StageRuntime) 
             "record_id": str(res.record_id),
         })
     fields_out = []
-    for s, res in zip(plan.pleo, p_results):
+    for s, res, ver in zip(plan.pleo, p_results, v_results):
         failed = isinstance(res, FallbackResult)
+        score = None if failed else res.output.pleomorphism_score
+        check = None if isinstance(ver, FallbackResult) else ver.output.pleomorphism_score
         fields_out.append({
             **_sample_dict(s),
-            "estimate": None if failed else {"pleomorphism_score": res.output.pleomorphism_score},
-            "rationale": None if failed else res.output.rationale,
+            "estimate": None if failed else {"pleomorphism_score": score},
+            "verification": {
+                "producer": estimators.pleo_verifier,
+                "pleomorphism_score": check,
+                "agrees": None if score is None or check is None else score == check,
+                "record_id": str(ver.record_id),
+            },
             "nuclei": None,  # nuclear segmentation is WP-8.3 (deferred, D21)
             "record_id": str(res.record_id),
         })
@@ -259,7 +272,7 @@ def run_grading(stage_exec: StageExecution, db: Session, runtime: StageRuntime) 
     if shortfall["tubule"] > 0 or shortfall["pleo"] > 0 or histotype is None:
         machine_flags.append("needs_human")
 
-    model_versions = {estimators.producer: config.models.version_of(estimators.producer)}
+    model_versions = {key: config.models.version_of(key) for key in (estimators.producer, estimators.pleo_verifier)}
     machine = {
         "schema": MACHINE_SCHEMA,
         "case_id": case_id,
@@ -268,7 +281,10 @@ def run_grading(stage_exec: StageExecution, db: Session, runtime: StageRuntime) 
         "tubule": {"samples": samples_out, "requested": profile.grading.tubule_patches,
                    "estimator": estimator_label("T1", estimators.producer, estimators.tubule_prompt)},
         "pleomorphism": {"fields": fields_out, "requested": profile.grading.pleo_fields, "aggregation": "mode",
-                         "estimator": estimator_label("P1", estimators.producer, estimators.pleo_prompt)},
+                         "estimator": estimator_label("P1", estimators.producer, estimators.pleo_prompt),
+                         "verifier": estimator_label("P1v", estimators.pleo_verifier, estimators.pleo_verifier_prompt),
+                         "agreement": {"n_compared": sum(f["verification"]["agrees"] is not None for f in fields_out),
+                                       "n_agree": sum(f["verification"]["agrees"] is True for f in fields_out)}},
         "histotype": histotype,
         "histotype_estimator": estimator_label("H1", estimators.producer, estimators.histotype_prompt),
         "mitotic": mitotic,

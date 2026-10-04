@@ -15,6 +15,9 @@ interface PleoField {
   image_url: string; stratum: number;
   estimate: { pleomorphism_score: 1 | 2 | 3 } | null;
   nuclei: { n: number; area_p50_um2: number; area_cv: number } | null;   // null until nuclear segmentation (WP-8.3, deferred)
+  // An independent second score by another model, never shown the estimate (owner decision 2026-10-04).
+  // agrees: false flags the field for review; null when either score is missing. The grade uses `estimate`.
+  verification?: { producer: string; pleomorphism_score: 1 | 2 | 3 | null; agrees: boolean | null } | null;
   review: { pleomorphism_score?: 1 | 2 | 3; by: string; at: string } | null;
 }
 

@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     # HARNESS_LEASE_S seconds that the holder renews on every tick.
     HARNESS_TICK_S: float = float(os.getenv("HARNESS_TICK_S", "10"))
     HARNESS_LEASE_S: float = float(os.getenv("HARNESS_LEASE_S", "120"))
+    # A stage still 'running' this long after its claim is taken as orphaned (its worker died) and
+    # queued again. It must exceed the longest stage: grading makes about 100 model calls.
+    STAGE_STALE_AFTER_S: float = float(os.getenv("STAGE_STALE_AFTER_S", "1800"))
     # Run modes whose stages this process's worker executes, comma-separated. A worker that
     # takes 'eval' also drives validation runs. Production: the API worker takes 'clinical' and the
     # oncogemma-eval-worker job takes 'eval', so evaluation load stays off the clinical API.

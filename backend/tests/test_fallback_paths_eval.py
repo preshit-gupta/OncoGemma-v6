@@ -232,7 +232,7 @@ def grading_with_down(*down):
         models = GeminiModels(down=set(down), answers=grading_t.ANSWERS)
         log = DecisionLog()
         runtime = make_runtime(
-            stage, {"vertex_genai": gemini(models)}, config=permissive(grading_t.small_config()), run_mode=RunMode.EVAL, log=log
+            stage, grading_t.with_verifier(gemini(models)), config=permissive(grading_t.small_config()), run_mode=RunMode.EVAL, log=log
         )
         try:
             run_grading(stage, db_session, runtime)
@@ -303,7 +303,7 @@ ROWS = [
     Row("worker/grading.py:495", "tubule failure became tubule_percent=20",
         grading_with_down(schemas.TubuleEstimate), ModelUnavailableError, "tubule_patch"),
     Row("worker/grading.py:507", "pleomorphism failure became pleomorphism_score=2",
-        grading_with_down(schemas.PleoEstimate), ModelUnavailableError, "pleo_field"),
+        grading_with_down(schemas.PleoScore), ModelUnavailableError, "pleo_field"),
     Row("worker/grading.py:519-528", "histologic-type failure became IDC-NST",
         grading_with_down(schemas.HistotypeVerdict), ModelUnavailableError, "histotype"),
     Row("worker/triage.py:600,706-710", "synthetic pink crops sent to the referee and uploaded",
