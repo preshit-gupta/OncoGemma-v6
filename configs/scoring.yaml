@@ -22,15 +22,13 @@ nottingham_grading:
   grade2_max_sum: 7
 
 grading:
-  n_patches: 24
-  patch_size_px: 512
-  resolution_um: 1.0
-  min_tumor_patches: 8
-  max_disp: 0.30 # pleo_high_variance threshold (>30% off-mode)
-  confidence_weights:
-    low: 0.5
-    medium: 1.0
-    high: 1.5
+  # Stage 5 samples (SPEC-07 §4-6); the counts are per specimen profile (specimen_profiles.yaml grading).
+  tubule_sample: {size_um: 512.0, mpp: 1.0} # low power for architecture (SPEC-07 §5.1)
+  pleo_field: {size_um: 128.0, mpp: 0.25} # 40x for nuclei (SPEC-07 §6.1)
+  subdivisions: 8 # a 224 µm tumour tile gives 8 x 8 candidate centres 28 µm apart
+  kmeans_n_init: 4 # weighted k-means restarts (seeded by the slide SHA-256)
+  pleo_tie_break: max # tied pleomorphism mode takes the highest score (owner decision 2026-10-04)
+  override_min_reason_chars: 10 # a component override needs a written reason this long (contract grading_v6)
   # The VLM that estimates each component (configs/models.yaml) and the prompt per task.
   # v5 prompts with strict output schemas and no numeric anchor (SPEC-07 §5.4).
   estimators:

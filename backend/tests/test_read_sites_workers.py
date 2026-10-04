@@ -30,7 +30,8 @@ from tests import test_grading_worker as grading_t
 from tests import test_mitosis_worker as mitosis_t
 from tests import test_triage_worker as triage_t
 from tests.test_grading_worker import db_session  # noqa: F401 - the shared fixture
-from worker.grading import run_grading, select_max_density_hotspot_patches
+from worker.grading import run_grading
+from pipeline.grading import sample_blob
 from worker.mitosis import run_mitosis
 from worker.triage import run_triage
 
@@ -300,9 +301,9 @@ def test_the_estimators_are_shown_normalised_patches_through_the_persisted_profi
     run_grading(stage, db_session, runtime)
     specs = estimator_specs(log)
     assert specs and {s["color"] for s in specs} == {"normalized"}
-    assert all(s["mpp"] == 1.0 and s["size_px"] == [512, 512] for s in specs)
-    patch = png_array(f"cases/{stage.case_id}/grading_patches/p_001.png")
-    assert patch.shape == (512, 512, 3)
+    assert all(s["mpp"] in (1.0, 0.25) and s["size_px"] == [512, 512] for s in specs)
+    for kind, sid in (("tubule", "t_01"), ("pleo", "p_01")):
+        assert png_array(sample_blob(str(stage.case_id), kind, sid)).shape == (512, 512, 3)
 
 
 def test_a_raw_estimator_config_sends_the_slide_as_scanned(db_session, monkeypatch):
@@ -311,7 +312,7 @@ def test_a_raw_estimator_config_sends_the_slide_as_scanned(db_session, monkeypat
     stage_r, log_r, runtime_r = run_seeded_grading(db_session, monkeypatch, color="raw")
     run_grading(stage_r, db_session, runtime_r)
     assert {s["color"] for s in estimator_specs(log_r)} == {"raw"}
-    normalised, raw = png_array(f"cases/{stage_n.case_id}/grading_patches/p_001.png"), png_array(f"cases/{stage_r.case_id}/grading_patches/p_001.png")
+    normalised, raw = png_array(sample_blob(str(stage_n.case_id), "tubule", "t_01")), png_array(sample_blob(str(stage_r.case_id), "tubule", "t_01"))
     assert np.array_equal(normalised, transform_of(db_session, slide_id_of(stage_n, db_session)).apply(raw))  # same tissue, one through the profile
 
 
@@ -327,25 +328,3 @@ def test_grading_stops_on_a_degenerate_fit_only_when_it_needs_normalised_colour(
     assert {s["color"] for s in estimator_specs(log)} == {"raw"}
 
 
-def test_grading_needs_the_registered_mask(db_session, monkeypatch):
-    stage, log, runtime = run_seeded_grading(db_session, monkeypatch)
-    drop_mask(stage.case_id)
-    with pytest.raises(TissueMaskMissingError, match="run the preprocess stage"):
-        run_grading(stage, db_session, runtime)
-
-
-def test_patch_density_is_the_registered_masks_exact_tissue_fraction():
-    """The density of a candidate patch is the tissue fraction of the patch-sized box around it."""
-    cells = np.zeros((500, 500), dtype=bool)
-    cells[:, :250] = True  # 4 mm slide at 8 µm/px: tissue on the left half
-    tissue = TissueMask(cells, 8.0)
-    polygon = [[1000.0, 1000.0], [3000.0, 1000.0], [3000.0, 3000.0], [1000.0, 3000.0]]
-    patches = select_max_density_hotspot_patches(
-        [{"id": "hs_01", "polygon_um": polygon, "prob_mean": 0.9}], tissue, 0.25, "case_x", n_patches=6, patch_size_um=512.0, mpp_y=0.25
-    )
-    assert len(patches) == 6
-    for patch in patches:
-        x, y = patch["center_um"]
-        assert patch["tissue_density"] == pytest.approx(tissue.fraction_in_box_um(x - 256, y - 256, x + 256, y + 256), abs=1e-3)
-    assert patches[0]["source"] == "hotspot_peak" and patches[0]["tissue_density"] == 1.0  # the densest point is fully tissue
-    assert patches[0]["center_um"][0] <= 1744.0  # and lies in the tissue half (box edge at x = 2000)

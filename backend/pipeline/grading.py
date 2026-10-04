@@ -1,87 +1,28 @@
 """
-Pure Zero-LLM Nottingham Histologic Grading Aggregation Engine.
+Stage 5 aggregation in deterministic code (SPEC-07 §5.2, §7.1; WP-8.6). No model computes a number.
 
-All arithmetic, median/mode voting, tie-breaking, and Nottingham grade synthesis
-are strictly calculated in pure deterministic Python code. The LLM never computes
-any numbers or aggregates.
+- T% is the area-weighted mean of the tubule percentages over the samples with tumour present,
+  weighted by each sample's tumour area; a pathologist's value replaces the estimate.
+- P is the mode of the field scores; a tie takes ``scoring.grading.pleo_tie_break`` (owner
+  decision 2026-10-04: the highest).
+- M comes from Stage 4 through ``pipeline/scoring.py`` and is passed in.
+- The grade exists only when T, P and M all exist. There are no confidence weights.
 
-Thresholds and weights come from the injected ``ScoringConfig`` (configs/scoring.yaml) and
-mitotic thresholds from ``MitosisScoringConfig`` (configs/mitosis.yaml), SPEC-01 §3.8.
+Thresholds come from the injected ``ScoringConfig`` (configs/scoring.yaml), SPEC-01 §3.8.
 """
 
-from typing import List, Dict, Any, Tuple, Optional
+from collections import Counter
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from app.core.pipeline_config import MitosisScoringConfig, ScoringConfig
+from app.core.pipeline_config import ScoringConfig
 
-
-def weighted_median(values: List[float], weights: List[float]) -> float:
-    """
-    Compute deterministic weighted median for continuous values.
-    
-    Args:
-        values: List of numeric values (e.g., tubule percentages).
-        weights: Corresponding positive weights.
-        
-    Returns:
-        Weighted median value as float.
-    """
-    if not values:
-        return 0.0
-    if len(values) == 1:
-        return float(values[0])
-    
-    # Pair and sort by value ascending
-    paired = sorted(zip(values, weights), key=lambda x: x[0])
-    total_weight = sum(w for _, w in paired)
-    if total_weight <= 0:
-        return float(values[len(values) // 2])
-    
-    half_weight = total_weight / 2.0
-    cumulative_weight = 0.0
-    
-    for i, (val, w) in enumerate(paired):
-        cumulative_weight += w
-        if cumulative_weight >= half_weight:
-            # Check for exact midpoint tie across distinct values
-            if cumulative_weight == half_weight and i + 1 < len(paired):
-                return float((val + paired[i + 1][0]) / 2.0)
-            return float(val)
-            
-    return float(paired[-1][0])
+# Marks a gradings.machine written by the v6 worker; anything else is a v5 grading (404 in the API).
+MACHINE_SCHEMA = "grading_v6"
 
 
-def weighted_mode(values: List[int], weights: List[float], tie_breaker=max) -> Tuple[Optional[int], float]:
-    """
-    Compute deterministic weighted mode for discrete categories (e.g. pleomorphism scores 1, 2, 3).
-    Ties resolve via tie_breaker (default max: conservative clinical rule favoring worse grade).
-    
-    Args:
-        values: List of discrete scores (e.g. [1, 2, 3]).
-        weights: Corresponding positive weights.
-        tie_breaker: Function to resolve ties among candidate scores with equal max weight.
-        
-    Returns:
-        Tuple of (winning_score, disagreement_ratio). If values is empty, returns (None, 1.0).
-    """
-    if not values:
-        return None, 1.0
-        
-    weight_totals: Dict[int, float] = {}
-    for val, w in zip(values, weights):
-        weight_totals[val] = weight_totals.get(val, 0.0) + w
-        
-    total_weight = sum(weights)
-    if total_weight <= 0:
-        return tie_breaker(values), 0.0
-        
-    max_w = max(weight_totals.values())
-    candidates = [val for val, w in weight_totals.items() if abs(w - max_w) < 1e-9]
-    
-    winning_score = tie_breaker(candidates)
-    winning_weight = weight_totals[winning_score]
-    disagreement_ratio = 1.0 - (winning_weight / total_weight)
-    
-    return winning_score, disagreement_ratio
+def sample_blob(case_id: str, kind: str, sample_id: str) -> str:
+    """The stored image of a Stage 5 sample: ``kind`` is ``tubule`` or ``pleo``."""
+    return f"cases/{case_id}/grading/{kind}/{sample_id}.png"
 
 
 def calculate_tubule_score(tubule_percent: float, cfg: ScoringConfig) -> int:
@@ -158,180 +99,114 @@ def validate_grading_invariants(
         raise ValueError(f"Invariant Violation: grade ({grade}) does not match expected Nottingham Grade ({expected_grade}) for sum {expected_sum}")
 
 
-def calculate_mitotic_score_from_hpfs(
-    hpf_mitotic_counts: List[int],
-    scoring: MitosisScoringConfig,
-    radius_um: float
-) -> Tuple[int, int]:
+def tubule_percent_area_weighted(samples: Sequence[Dict[str, Any]]) -> Tuple[Optional[float], int]:
+    """T% over the samples with ``tumor_present`` and a percentage, weighted by ``tumor_area_um2``.
+
+    Each sample carries its effective ``tumor_present`` and ``tubule_percent`` (review, else
+    estimate). A sample with no tumour area inside the box has no weight. Returns (T% or None, n used).
     """
-    Calculate total mitoses and Nottingham Mitotic Score (1, 2, or 3) across HPFs of
-    ``radius_um`` using area-normalized density (mitoses/mm²) and ``scoring.thresholds``.
-
-    Returns:
-        (total_mitoses, mitotic_score)
-    """
-    total_mitoses = sum(hpf_mitotic_counts)
-    from pipeline.scoring import compute_nottingham_mitotic_score
-    summary = compute_nottingham_mitotic_score(
-        count_total=total_mitoses,
-        n_hpf=len(hpf_mitotic_counts),
-        radius_um=radius_um,
-        scoring=scoring
-    )
-    return total_mitoses, summary["mitotic_score"]
-
-
-def calculate_mitotic_score_from_detections_and_hpfs(
-    detections: List[Dict[str, Any]],
-    hpfs: List[Dict[str, Any]],
-    scoring: MitosisScoringConfig
-) -> Tuple[int, int]:
-    """
-    Calculate total mitoses and Nottingham Mitotic Score (1, 2, or 3) across virtual HPFs,
-    ensuring that mitoses falling inside overlapping HPF circles are counted ONCE (no double counting).
-    Uses standardized area-normalized density (mitoses/mm²).
-    
-    Returns:
-        (unique_total_mitoses, mitotic_score)
-    """
-    from pipeline.scoring import calculate_hpf_mitosis_counts, compute_nottingham_mitotic_score
-    updated_hpfs, unique_total = calculate_hpf_mitosis_counts(detections, hpfs)
-    # Each HPF's own radius gives the area; with no HPFs the score is the zero-field state.
-    summary = compute_nottingham_mitotic_score(
-        count_total=unique_total,
-        n_hpf=len(updated_hpfs),
-        radius_um=None,
-        scoring=scoring,
-        hpfs=updated_hpfs
-    )
-    return unique_total, summary["mitotic_score"]
-
-
-def aggregate_grading_findings(
-    tubule_responses: List[Dict[str, Any]],
-    pleo_responses: List[Dict[str, Any]],
-    mitotic_score: Optional[int],
-    cfg: ScoringConfig
-) -> Dict[str, Any]:
-    """
-    Full end-to-end pure code aggregation pipeline.
-    Handles empty evidence sets gracefully with needs_human flag rather than fabricating scores.
-    
-    Args:
-        tubule_responses: List of per-patch dicts with {tubule_percent, tumor_present, confidence, [user_tubule_percent], [user_tumor_present]}
-        pleo_responses: List of per-patch dicts with {pleomorphism_score, rationale, confidence, [user_pleo_score]}
-        mitotic_score: Confirmed mitotic score (1, 2, or 3), or None when there is none (needs_human)
-        cfg: The scoring configuration (configs/scoring.yaml)
-        
-    Returns:
-        Dict containing:
-            tubule_percent, tubule_score, pleo_score, mitotic_score,
-            nottingham_sum, grade, flags, patch_counts
-    """
-    weights = cfg.grading.confidence_weights
-    min_tumor_patches = cfg.grading.min_tumor_patches
-    max_disp = cfg.grading.max_disp
-
-    def _weight(r: Dict[str, Any], user_key: str) -> float:
-        # A pathologist's value gets the highest weight. A model estimate weighs as its stated
-        # confidence; the v6 estimators state none, so theirs weigh as "medium".
-        if r.get(user_key) is not None:
-            return weights.high
-        confidence = r.get("confidence")
-        return weights.medium if confidence is None else getattr(weights, str(confidence).lower())
-
-    # 0. Gracefully handle empty evidence sets without fabricating scores (#366)
-    if not tubule_responses or not pleo_responses:
-        return {
-            "tubule_percent": None,
-            "tubule_score": None,
-            "pleo_score": None,
-            "mitotic_score": mitotic_score,
-            "nottingham_sum": None,
-            "grade": None,
-            "flags": ["empty_evidence_set", "needs_human"],
-            "tumor_patch_count": 0,
-            "total_patch_count": max(len(tubule_responses), len(pleo_responses)),
-            "pleo_dispersion": 1.0,
-            "needs_human": True
-        }
-
-    # 1. Filter tumor-containing patches for Tubule assessment (accounting for pathologist overrides).
-    # A patch whose estimate failed (None) and has no pathologist value is left out, never defaulted.
-    def _effective(r: Dict[str, Any], user_key: str, model_key: str) -> Any:
-        return r.get(user_key) if r.get(user_key) is not None else r.get(model_key)
-
-    tumor_tubule = [
-        r for r in tubule_responses
-        if _effective(r, "user_tumor_present", "tumor_present") and _effective(r, "user_tubule_percent", "tubule_percent") is not None
+    used = [
+        s for s in samples
+        if s.get("tumor_present") is True and s.get("tubule_percent") is not None and s["tumor_area_um2"] > 0
     ]
+    total_area = sum(s["tumor_area_um2"] for s in used)
+    if not used or total_area <= 0:
+        return None, 0
+    percent = sum(s["tumor_area_um2"] * float(s["tubule_percent"]) for s in used) / total_area
+    return round(percent, 1), len(used)
 
-    if tumor_tubule:
-        tubule_vals = [float(_effective(r, "user_tubule_percent", "tubule_percent")) for r in tumor_tubule]
-        # Pathologist-reviewed/modified patches receive highest confidence weight
-        tubule_w = [_weight(r, "user_tubule_percent") for r in tumor_tubule]
-        derived_tubule_percent = round(weighted_median(tubule_vals, tubule_w), 1)
-        tubule_score = calculate_tubule_score(derived_tubule_percent, cfg)
-    else:
-        derived_tubule_percent = None
-        tubule_score = None
-        
-    # 2. Pleomorphism mode calculation across all valid responses (accounting for pathologist overrides)
-    assessed_pleo = [r for r in pleo_responses if _effective(r, "user_pleo_score", "pleomorphism_score") is not None]
-    pleo_vals = [int(_effective(r, "user_pleo_score", "pleomorphism_score")) for r in assessed_pleo]
-    pleo_w = [_weight(r, "user_pleo_score") for r in assessed_pleo]
 
-    pleo_score, pleo_dispersion = weighted_mode(pleo_vals, pleo_w, tie_breaker=max)
+def pleomorphism_mode(scores: Sequence[int], tie_break: str) -> Tuple[Optional[int], bool]:
+    """The mode of the field scores and whether it was a tie (resolved by ``tie_break``: max or min)."""
+    if not scores:
+        return None, False
+    counts = Counter(scores)
+    top = max(counts.values())
+    tied = sorted(score for score, n in counts.items() if n == top)
+    pick = tied[-1] if tie_break == "max" else tied[0]
+    return pick, len(tied) > 1
 
-    # 3. If no tumor patches exist, pleo could not be assessed or there is no mitotic score,
-    # flag for human review
+
+def near_grade_boundary(total: int, cfg: ScoringConfig) -> bool:
+    """The sum lies on either side of a grade cut-off (5/6 or 7/8 with the Elston-Ellis bands)."""
+    g = cfg.nottingham_grading
+    return total in {g.grade1_max_sum, g.grade1_max_sum + 1, g.grade2_max_sum, g.grade2_max_sum + 1}
+
+
+def aggregate_components(
+    tubule_score: Optional[int], pleo_score: Optional[int], mitotic_score: Optional[int], cfg: ScoringConfig
+) -> Dict[str, Any]:
+    """Total, grade and the boundary flag; all None unless the three components exist (SPEC-07 §7.1)."""
     if tubule_score is None or pleo_score is None or mitotic_score is None:
-        flags: List[str] = ["needs_human"]
-        if mitotic_score is None:
-            flags.append("no_mitotic_score")
-        if len(tumor_tubule) == 0:
-            flags.append("no_tumor_patches")
-        elif len(tumor_tubule) < min_tumor_patches:
-            flags.append("insufficient_tumor_patches")
-        if pleo_dispersion > max_disp:
-            flags.append("pleo_high_variance")
+        return {"total": None, "grade": None, "near_grade_boundary": False}
+    total, grade = calculate_nottingham_grade(tubule_score, pleo_score, mitotic_score, cfg)
+    validate_grading_invariants(tubule_score, pleo_score, mitotic_score, total, grade, cfg=cfg)
+    return {"total": total, "grade": grade, "near_grade_boundary": near_grade_boundary(total, cfg)}
 
-        return {
-            "tubule_percent": derived_tubule_percent,
-            "tubule_score": tubule_score,
-            "pleo_score": pleo_score,
-            "mitotic_score": mitotic_score,
-            "nottingham_sum": None,
-            "grade": None,
-            "flags": flags,
-            "tumor_patch_count": len(tumor_tubule),
-            "total_patch_count": max(len(tubule_responses), len(pleo_responses)),
-            "pleo_dispersion": round(pleo_dispersion, 3),
-            "needs_human": True
-        }
 
-    # 4. Overall Nottingham Grade Calculation
-    nottingham_sum, grade = calculate_nottingham_grade(tubule_score, pleo_score, mitotic_score, cfg)
-    
-    # 5. Quality & Consistency Flags
+def _effective(sample: Dict[str, Any], review: Optional[Dict[str, Any]], key: str) -> Any:
+    """The pathologist's value when the review sets ``key``, else the estimate's (None if it failed)."""
+    if review and review.get(key) is not None:
+        return review[key]
+    estimate = sample.get("estimate")
+    return estimate.get(key) if estimate else None
+
+
+def stage5_result(machine: Dict[str, Any], overrides: Dict[str, Any], cfg: ScoringConfig) -> Dict[str, Any]:
+    """Scores, grade and flags of a v6 grading from its machine output and the pathologist's edits.
+
+    ``machine`` is never changed. ``overrides`` holds ``reviews`` ({"tubule"|"pleo": {sample_id: review}}),
+    component overrides (``tubule_score``, ``pleo_score``, ``histotype``) and their ``reasons``.
+    """
+    reviews = overrides.get("reviews", {})
+    t_reviews, p_reviews = reviews.get("tubule", {}), reviews.get("pleo", {})
+    samples = machine["tubule"]["samples"]
+    fields = machine["pleomorphism"]["fields"]
+
+    effective_t = [
+        {"tumor_present": _effective(s, t_reviews.get(s["id"]), "tumor_present"),
+         "tubule_percent": _effective(s, t_reviews.get(s["id"]), "tubule_percent"),
+         "tumor_area_um2": s["tumor_area_um2"]}
+        for s in samples
+    ]
+    tubule_percent, n_used = tubule_percent_area_weighted(effective_t)
+    tubule_score = calculate_tubule_score(tubule_percent, cfg) if tubule_percent is not None else None
+
+    pleo_scores = [
+        v for v in (_effective(f, p_reviews.get(f["id"]), "pleomorphism_score") for f in fields) if v is not None
+    ]
+    pleo_score, pleo_tie = pleomorphism_mode(pleo_scores, cfg.grading.pleo_tie_break)
+    mitotic_score = machine["mitotic"]["score"]
+
+    eff_t = overrides.get("tubule_score", tubule_score)
+    eff_p = overrides.get("pleo_score", pleo_score)
+    combined = aggregate_components(eff_t, eff_p, mitotic_score, cfg)
+
+    unreviewed_failures = (
+        any(s["estimate"] is None and s["id"] not in t_reviews for s in samples)
+        or any(f["estimate"] is None and f["id"] not in p_reviews for f in fields)
+    )
+    needs_human = (
+        unreviewed_failures
+        or combined["grade"] is None
+        or bool(set(machine.get("flags", [])) & {"needs_human"})
+    )
     flags: List[str] = []
-    if len(tumor_tubule) < min_tumor_patches:
-        flags.append("insufficient_tumor_patches")
-    if pleo_dispersion > max_disp:
-        flags.append("pleo_high_variance")
-        
-    # Validate invariants before returning
-    validate_grading_invariants(tubule_score, pleo_score, mitotic_score, nottingham_sum, grade, cfg=cfg)
-    
+    if needs_human:
+        flags.append("needs_human")
+    if combined["near_grade_boundary"]:
+        flags.append("near_grade_boundary")
+    flags += [f for f in machine["mitotic"].get("flags", []) if f not in flags]
     return {
-        "tubule_percent": derived_tubule_percent,
+        "tubule_percent": tubule_percent,
         "tubule_score": tubule_score,
+        "n_used": n_used,
         "pleo_score": pleo_score,
+        "pleo_tie": pleo_tie,
         "mitotic_score": mitotic_score,
-        "nottingham_sum": nottingham_sum,
-        "grade": grade,
+        "effective_tubule_score": eff_t,
+        "effective_pleo_score": eff_p,
+        "total": combined["total"],
+        "grade": combined["grade"],
         "flags": flags,
-        "tumor_patch_count": len(tumor_tubule),
-        "total_patch_count": max(len(tubule_responses), len(pleo_responses)),
-        "pleo_dispersion": round(pleo_dispersion, 3)
     }

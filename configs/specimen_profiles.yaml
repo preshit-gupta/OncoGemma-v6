@@ -44,6 +44,9 @@ profiles:
       gap_um: 0.0 # Chebyshev gap
       k_max: 10 # top hotspots count
       ranking_arm: H1 # mean p_tumor_cal in the window
+    grading:
+      tubule_patches: 48 # SPEC-07 §5.1; drawn inside the confirmed hotspots (owner decision 2026-10-02), may overlap
+      pleo_fields: 48 # SPEC-07 §6.1; non-overlapping, inside a hotspot
 
   core_biopsy:
     tissue_mask:
@@ -86,3 +89,6 @@ profiles:
       gap_um: 0.0 # Chebyshev gap
       k_max: 10 # top hotspots count
       ranking_arm: H1 # mean p_tumor_cal in the window
+    grading:
+      tubule_patches: 24 # SPEC-07 §5.1
+      pleo_fields: 32 # SPEC-07 §6.1

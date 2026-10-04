@@ -197,7 +197,7 @@ def test_mitosis_models_must_exist_in_the_registry(tmp_path, edit, message):
     [
         (lambda d: d["grading"]["estimators"].update(producer="tumor_head"), "must be a VLM"),
         (lambda d: d["grading"]["estimators"].update(pleo_prompt="pleo@v2.md"), "pleo_prompt 'pleo@v2.md' is not in configs/prompts"),
-        (lambda d: d["grading"]["estimators"].update(histotype_images=30), "must not exceed n_patches"),
+        (lambda d: d["grading"]["estimators"].update(histotype_images=30), "must not exceed core_biopsy grading.tubule_patches"),
         (lambda d: d["grading"]["estimators"].pop("tubule_prompt"), "tubule_prompt"),
     ],
 )

@@ -6,12 +6,14 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.pipeline_config import get_pipeline_config
 from pipeline.grading import (
-    weighted_median,
-    weighted_mode,
+    aggregate_components,
     calculate_tubule_score,
     calculate_nottingham_grade,
+    near_grade_boundary,
+    pleomorphism_mode,
+    stage5_result,
+    tubule_percent_area_weighted,
     validate_grading_invariants,
-    aggregate_grading_findings,
 )
 from app.models.case import Case
 from app.models.grading import Grading
@@ -22,43 +24,25 @@ def cfg():
     return get_pipeline_config().scoring
 
 
-def test_weighted_median_basic():
-    # Simple unweighted equal cases
-    vals = [10.0, 20.0, 30.0]
-    weights = [1.0, 1.0, 1.0]
-    assert weighted_median(vals, weights) == 20.0
-
-    # Skewed weights pulling median towards higher values
-    vals = [10.0, 20.0, 80.0]
-    weights = [0.5, 0.5, 3.0]
-    assert weighted_median(vals, weights) == 80.0
-
-    # Single value
-    assert weighted_median([45.0], [1.0]) == 45.0
-    # Empty
-    assert weighted_median([], []) == 0.0
+def test_tubule_percent_is_the_tumour_area_weighted_mean():
+    samples = [
+        {"tumor_present": True, "tubule_percent": 40, "tumor_area_um2": 200000.0},
+        {"tumor_present": True, "tubule_percent": 10, "tumor_area_um2": 100000.0},
+        {"tumor_present": False, "tubule_percent": 90, "tumor_area_um2": 262144.0},  # no tumour: left out
+        {"tumor_present": True, "tubule_percent": None, "tumor_area_um2": 262144.0},  # failed estimate: left out
+        {"tumor_present": True, "tubule_percent": 80, "tumor_area_um2": 0.0},  # no tumour area: no weight
+    ]
+    assert tubule_percent_area_weighted(samples) == (30.0, 2)
+    assert tubule_percent_area_weighted(samples[2:]) == (None, 0)
+    assert tubule_percent_area_weighted([]) == (None, 0)
 
 
-def test_weighted_mode_and_tie_breaking():
-    # Clear majority
-    vals = [1, 2, 2, 3]
-    weights = [1.0, 1.0, 1.0, 1.0]
-    winning_score, disp = weighted_mode(vals, weights, tie_breaker=max)
-    assert winning_score == 2
-    assert disp == 0.5
-
-    # Exact tie between Score 1 and Score 3: conservative tie_breaker resolves to Score 3 (worse grade)
-    vals = [1, 3]
-    weights = [1.5, 1.5]
-    winning_score, disp = weighted_mode(vals, weights, tie_breaker=max)
-    assert winning_score == 3
-    assert disp == 0.5
-
-    # Exact tie between Score 2 and Score 3: resolves to Score 3
-    vals = [2, 3]
-    weights = [1.0, 1.0]
-    winning_score, _ = weighted_mode(vals, weights, tie_breaker=max)
-    assert winning_score == 3
+def test_pleomorphism_mode_and_ties():
+    assert pleomorphism_mode([3, 3, 2], "max") == (3, False)
+    assert pleomorphism_mode([1, 2, 2, 1], "max") == (2, True)  # owner decision 2026-10-04
+    assert pleomorphism_mode([1, 2, 2, 1], "min") == (1, True)
+    assert pleomorphism_mode([1, 2, 3], "max") == (3, True)
+    assert pleomorphism_mode([], "max") == (None, False)
 
 
 def test_tubule_boundary_cutoffs():
@@ -118,33 +102,37 @@ def test_invariant_validation_failure():
         validate_grading_invariants(1, 1, 1, 3, 2, cfg())  # sum 3 must be Grade 1, not 2
 
 
-def test_aggregate_grading_findings_flow():
-    tubule_responses = [
-        {"tubule_percent": 25, "tumor_present": True, "confidence": "high"},
-        {"tubule_percent": 20, "tumor_present": True, "confidence": "medium"},
-        {"tubule_percent": 30, "tumor_present": True, "confidence": "medium"},
-        {"tubule_percent": 0, "tumor_present": False, "confidence": "low"},  # Non-tumor patch filtered
-    ] + [{"tubule_percent": 22, "tumor_present": True, "confidence": "medium"} for _ in range(8)]
+def test_grade_needs_all_three_components_and_flags_the_boundary():
+    assert aggregate_components(2, 3, None, cfg()) == {"total": None, "grade": None, "near_grade_boundary": False}
+    assert aggregate_components(2, 3, 3, cfg()) == {"total": 8, "grade": 3, "near_grade_boundary": True}
+    assert aggregate_components(1, 1, 1, cfg()) == {"total": 3, "grade": 1, "near_grade_boundary": False}
+    assert [t for t in range(3, 10) if near_grade_boundary(t, cfg())] == [5, 6, 7, 8]
 
-    pleo_responses = [
-        {"pleomorphism_score": 3, "rationale": "Marked nucleomegaly", "confidence": "high"},
-        {"pleomorphism_score": 3, "rationale": "Prominent nucleoli", "confidence": "medium"},
-        {"pleomorphism_score": 2, "rationale": "Moderate atypia", "confidence": "low"},
-    ] + [{"pleomorphism_score": 3, "rationale": "Atypia", "confidence": "medium"} for _ in range(8)]
 
-    result = aggregate_grading_findings(
-        tubule_responses=tubule_responses,
-        pleo_responses=pleo_responses,
-        mitotic_score=3,
-        cfg=cfg()
-    )
+def test_stage5_result_uses_reviews_and_overrides_but_never_confidences():
+    machine = {
+        "tubule": {"samples": [
+            {"id": "t_01", "tumor_area_um2": 1.0e5, "estimate": {"tumor_present": True, "tubule_percent": 22, "confidence": "low"}},
+            {"id": "t_02", "tumor_area_um2": 1.0e5, "estimate": None},
+        ]},
+        "pleomorphism": {"fields": [
+            {"id": "p_01", "estimate": {"pleomorphism_score": 3}},
+            {"id": "p_02", "estimate": {"pleomorphism_score": 2}},
+        ]},
+        "mitotic": {"score": 3, "flags": ["hpf_count_lt_10"]},
+        "flags": [],
+    }
+    result = stage5_result(machine, {}, cfg())
+    assert (result["tubule_percent"], result["tubule_score"], result["pleo_score"], result["pleo_tie"]) == (22.0, 2, 3, True)
+    assert result["total"] == 8 and result["grade"] == 3
+    assert result["flags"] == ["needs_human", "near_grade_boundary", "hpf_count_lt_10"]  # t_02 failed, unreviewed
 
-    assert result["tubule_score"] == 2  # ~22% tubule -> Score 2
-    assert result["pleo_score"] == 3    # Score 3 dominant
-    assert result["mitotic_score"] == 3
-    assert result["nottingham_sum"] == 8 # 2 + 3 + 3 = 8
-    assert result["grade"] == 3         # Sum 8 -> Grade 3
-    assert result["flags"] == []        # >8 tumor patches, low dispersion
+    overrides = {"reviews": {"tubule": {"t_02": {"tumor_present": True, "tubule_percent": 2}},
+                             "pleo": {"p_01": {"pleomorphism_score": 2}}},
+                 "tubule_score": 1, "reasons": {"tubule": "glands throughout"}}
+    result = stage5_result(machine, overrides, cfg())
+    assert result["tubule_percent"] == 12.0 and result["tubule_score"] == 2 and result["effective_tubule_score"] == 1
+    assert result["pleo_score"] == 2 and result["total"] == 6 and result["flags"] == ["near_grade_boundary", "hpf_count_lt_10"]
 
 
 def test_database_check_constraint_enforcement():
@@ -193,23 +181,16 @@ def test_database_check_constraint_enforcement():
 
 
 def test_mitotic_score_no_double_counting_in_overlapping_hpfs():
-    """
-    Verify Finding #357: Mitoses falling within overlapping HPF circles are counted once,
-    preventing double-counting in Nottingham score calculation.
-    """
-    from pipeline.grading import calculate_mitotic_score_from_detections_and_hpfs
+    """Finding #357: a figure inside two overlapping HPFs counts once (pipeline/scoring.py, the single implementation)."""
+    from pipeline.scoring import summarize_stage4
 
-    # Two overlapping HPFs
     hpfs = [
         {"seq": 1, "center_um": [1000.0, 1000.0], "radius_um": 262.0},
         {"seq": 2, "center_um": [1200.0, 1000.0], "radius_um": 262.0}
     ]
-
-    # One mitosis right in the intersection
-    detections = [
-        {"id": "m_overlap_01", "centroid_um": [1100.0, 1000.0], "counted": True}
-    ]
-
-    unique_total, score = calculate_mitotic_score_from_detections_and_hpfs(detections, hpfs, get_pipeline_config().mitosis.scoring)
-    assert unique_total == 1  # Not 2! Counted once despite being in both HPF 1 and HPF 2
-    assert score == 1
+    detections = [{"id": "m_overlap_01", "centroid_um": [1100.0, 1000.0], "counted": True,
+                   "final_decision": "mitosis", "review_label": None}]
+    cfg_m = get_pipeline_config().mitosis
+    _, summary = summarize_stage4(detections, hpfs, scoring=cfg_m.scoring, hpf_count=cfg_m.hpf.count)
+    assert summary["count_total"] == 1  # Not 2! Counted once despite being in both HPF 1 and HPF 2
+    assert summary["mitotic_score"] == 1
