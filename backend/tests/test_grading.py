@@ -207,7 +207,7 @@ def test_mitotic_score_no_double_counting_in_overlapping_hpfs():
 
     # One mitosis right in the intersection
     detections = [
-        {"id": "m_overlap_01", "centroid_um": [1100.0, 1000.0], "label": "mitosis"}
+        {"id": "m_overlap_01", "centroid_um": [1100.0, 1000.0], "counted": True}
     ]
 
     unique_total, score = calculate_mitotic_score_from_detections_and_hpfs(detections, hpfs, get_pipeline_config().mitosis.scoring)

@@ -19,14 +19,14 @@ def test_hpf_containment_counting():
 
     candidates = [
         # Inside HPF 1
-        {"id": "m1", "centroid_um": [110.0, 110.0], "label": "mitosis"},
-        {"id": "m2", "centroid_um": [130.0, 100.0], "label": "mitosis"},
+        {"id": "m1", "centroid_um": [110.0, 110.0], "counted": True},
+        {"id": "m2", "centroid_um": [130.0, 100.0], "counted": True},
         # Outside HPF 1 (rejected candidate inside HPF 1)
-        {"id": "m3", "centroid_um": [105.0, 105.0], "label": "not_mitosis"},
+        {"id": "m3", "centroid_um": [105.0, 105.0], "counted": False},
         # Inside HPF 2
-        {"id": "m4", "centroid_um": [310.0, 300.0], "label": "mitosis"},
+        {"id": "m4", "centroid_um": [310.0, 300.0], "counted": True},
         # Outside both HPFs
-        {"id": "m5", "centroid_um": [500.0, 500.0], "label": "mitosis"}
+        {"id": "m5", "centroid_um": [500.0, 500.0], "counted": True}
     ]
 
     updated_hpfs, total_count = calculate_hpf_mitosis_counts(candidates, hpfs)

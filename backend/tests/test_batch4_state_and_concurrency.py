@@ -252,7 +252,9 @@ def test_cascade_delete_case_cleans_all_child_records(db_session):
     det = Detection(
         id="det_001",
         case_id=case_id,
-        centroid_um=[50, 50]
+        centroid_um=[50, 50],
+        final_decision="mitosis",
+        decision_path="A"
     )
     hpf = HpfSite(
         case_id=case_id,

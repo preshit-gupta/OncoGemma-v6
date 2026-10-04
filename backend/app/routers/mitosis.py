@@ -296,12 +296,12 @@ def get_hpf_thumbnail(
         return Response(content=hpf_bytes, media_type=media_type, headers={"Cache-Control": "public, max-age=86400"})
 
     case_uid = to_uuid(case_id)
-    hpf_site = db.scalars(select(HpfSite).where(HpfSite.case_id == case_uid, HpfSite.seq == seq)).first()
-    if hpf_site is None:
-        raise HTTPException(status_code=404, detail=f"HPF #{seq} not found for case {case_id}")
     slide_obj = db.scalars(select(Slide).where(Slide.case_id == case_uid).limit(1)).first()
     if not slide_obj or not slide_obj.mpp_x or slide_obj.mpp_x <= 0 or not slide_obj.mpp_y or slide_obj.mpp_y <= 0:
         raise HTTPException(status_code=400, detail="Slide is missing valid MPP (status='needs_mpp'). Cannot extract HPF thumbnail.")
+    hpf_site = db.scalars(select(HpfSite).where(HpfSite.case_id == case_uid, HpfSite.seq == seq)).first()
+    if hpf_site is None:
+        raise HTTPException(status_code=404, detail=f"HPF #{seq} not found for case {case_id}")
     cx_um, cy_um = hpf_site.center_um[0], hpf_site.center_um[1]
 
     # Review image width calibrated to the frontend HPF reticle canvas (r=236 px -> radius_um=262.0)

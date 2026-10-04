@@ -373,7 +373,8 @@ def test_negative_and_zero_mpp_rejected_by_all_workers(db_session):
 
 def test_mitosis_router_endpoints_reject_missing_mpp(db_session):
     """
-    Verify candidate crop and HPF thumbnail endpoints reject with HTTP 400 when MPP is missing.
+    Verify the HPF thumbnail endpoint rejects with HTTP 400 when MPP is missing. Candidate images are
+    the stored contract crops (WP-7.6a): a missing one is a 404, never extracted on demand.
     """
     case_id = uuid.uuid4()
     slide_id = uuid.uuid4()
@@ -395,8 +396,8 @@ def test_mitosis_router_endpoints_reject_missing_mpp(db_session):
         f"/api/v1/stages/mitosis/{case_id}/candidates/{cand_id}/crop",
         headers={"X-Test-Role": "pathologist"}
     )
-    assert res_crop.status_code == 400
-    assert "missing valid MPP" in res_crop.json()["detail"]
+    assert res_crop.status_code == 404
+    assert res_crop.json()["error"] == "image_not_found"
 
     res_hpf = client.get(
         f"/api/v1/stages/mitosis/{case_id}/hpfs/1/thumbnail",
