@@ -11,13 +11,14 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.gcs import get_bucket, parse_gcs_uri
+from app.core.slide_source import SlideSourceMissingError
+from app.core.slide_source import slide_size_bytes as source_size_bytes
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
 
 
-class SlideObjectMissing(FileNotFoundError):
-    """The slide row points at a GCS object that does not exist."""
+class SlideObjectMissing(SlideSourceMissingError):
+    """The slide row points at a GCS object (or DICOM series) that does not exist."""
 
 
 @dataclass(frozen=True)
@@ -28,15 +29,14 @@ class ScratchCheck:
 
 
 def slide_size_bytes(session: Session, execution: StageExecution) -> int | None:
-    """Size of the case's slide object; None when the case has no slide yet or it is not in GCS."""
+    """Size of the case's slide (a DICOM series sums its instances); None when the case has no slide yet or it is not in GCS."""
     slide = session.scalars(select(Slide).where(Slide.case_id == execution.case_id)).first()
     if slide is None or not (slide.gcs_uri_original or "").startswith("gs://"):
         return None
-    bucket, name = parse_gcs_uri(slide.gcs_uri_original)
-    blob = get_bucket(bucket).get_blob(name)
-    if blob is None:
-        raise SlideObjectMissing(f"{slide.gcs_uri_original} does not exist")
-    return int(blob.size)
+    try:
+        return source_size_bytes(slide.gcs_uri_original)
+    except SlideSourceMissingError as exc:
+        raise SlideObjectMissing(str(exc)) from exc
 
 
 def check_scratch(session: Session, execution: StageExecution, factor: float) -> ScratchCheck:

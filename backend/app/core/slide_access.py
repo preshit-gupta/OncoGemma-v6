@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.gcs import download_blob_to_filename, parse_gcs_uri, resolve_slide_raw_uri
+from app.core.slide_source import download_slide, is_series_uri
 from app.core.pipeline_config import get_pipeline_config
 from app.core.stain_profiles import stain_transform_for_slide
 from pipeline.errors import (
@@ -37,6 +38,16 @@ def cached_slide_path(case_id, slide) -> str:
     bucket_name, blob_name = parse_gcs_uri(gcs_uri)
     cache_dir = os.path.join(tempfile.gettempdir(), "oncogemma_slides")
     os.makedirs(cache_dir, exist_ok=True)
+    if is_series_uri(gcs_uri):
+        # A DICOM series: its own directory, with a marker naming the instance to open once complete.
+        series_dir = os.path.join(cache_dir, f"{bucket_name}_{blob_name.strip('/').replace('/', '_')}")
+        marker = os.path.join(series_dir, "open_path.txt")
+        if not os.path.exists(marker):
+            path = download_slide(gcs_uri, series_dir)
+            with open(marker, "w", encoding="utf-8") as f:
+                f.write(path)
+        with open(marker, encoding="utf-8") as f:
+            return f.read()
     target_path = os.path.join(cache_dir, blob_name.replace("/", "_"))
     if not os.path.exists(target_path) or os.path.getsize(target_path) == 0:
         download_blob_to_filename(bucket_name, blob_name, target_path)

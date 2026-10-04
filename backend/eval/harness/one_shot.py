@@ -7,7 +7,6 @@ this process (``execute_stage``); with ``in_process=False`` the app's workers ru
 from __future__ import annotations
 
 import json
-import os
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -18,7 +17,7 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.gcs import download_blob_to_filename, parse_gcs_uri
+from app.core.slide_source import download_slide, local_slide_sha256
 from app.core.pipeline_config import get_config_hash, get_pipeline_config
 from app.models.decision_record import DecisionRecord
 from app.models.detection import Detection
@@ -30,19 +29,16 @@ from app.services import stages as stage_service
 from eval.datasets.manifest import MANIFEST_COLUMNS
 from eval.harness.controller import RunController
 from eval.harness.documents import Decision, OneShotResult, StageResult
-from eval.harness.runs import ADHOC, create_adhoc_run, sha256_file
+from eval.harness.runs import ADHOC, create_adhoc_run
 from worker.execution import StageFailedError, execute_stage, mark_running
 
 EXIT_OK, EXIT_STAGE_FAILED = 0, 2
 
 
 def slide_sha256(slide_uri: str) -> str:
-    """Streaming SHA-256 of the slide (8 MiB chunks), from a scratch copy that is deleted afterwards."""
-    bucket, blob = parse_gcs_uri(slide_uri)
+    """The slide's SHA-256 as ingest records it (a DICOM series hashes its instances), from a scratch copy."""
     with tempfile.TemporaryDirectory(prefix="og_one_shot_") as scratch:
-        local = os.path.join(scratch, "slide")
-        download_blob_to_filename(bucket, blob, local)
-        return sha256_file(Path(local))
+        return local_slide_sha256(download_slide(slide_uri, scratch), slide_uri)
 
 
 def write_one_row_manifest(path: Path, slide_uri: str, sha256: str, specimen_type: str, mpp: float | None) -> None:

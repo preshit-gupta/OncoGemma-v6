@@ -13,7 +13,6 @@ Every read goes through read_region_at_mpp: detector tiles are resampled to the 
 resolution (a 20x scan is upsampled and reported as such), tissue comes from the registered
 mask and colour from the slide's persisted stain profile (SPEC-04).
 """
-import os
 import io
 import json
 import math
@@ -28,11 +27,10 @@ from sqlalchemy import select, delete
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.slide_source import download_slide
 from app.core.gcs import (
-    parse_gcs_uri,
     upload_blob_from_bytes,
-    download_blob_to_filename,
-    resolve_slide_raw_uri
+    resolve_slide_raw_uri,
 )
 from app.core.stain_profiles import usable_stain_transform
 from app.core.run_context import RunMode
@@ -162,12 +160,9 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
 
         # Download raw slide from GCS to transient scratch file for tile & crop sampling
         gcs_uri_original = resolve_slide_raw_uri(case_id, slide_obj) or slide_obj.gcs_uri_original or f"gs://{settings.GCS_RAW_BUCKET}/cases/{case_id}/{slide_id}.svs"
-        raw_bucket_name, blob_name = parse_gcs_uri(gcs_uri_original)
-        ext = os.path.splitext(blob_name)[1] or ".svs"
-        local_slide_path = os.path.join(scratch_dir, f"slide{ext}")
 
         try:
-            download_blob_to_filename(raw_bucket_name, blob_name, local_slide_path)
+            local_slide_path = download_slide(gcs_uri_original, scratch_dir)
         except OSError as exc:
             raise SlideReadError(f"could not download slide {gcs_uri_original} for case {case_id}: {exc}") from exc
         reader = SlideReader.from_slide_row(local_slide_path, slide_obj)
