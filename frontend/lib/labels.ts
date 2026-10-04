@@ -325,6 +325,13 @@ export const L = {
     neoplasticCell: "Neoplastic cell",
     mimic: "Mimic",
     decisionPath: "Path",
+    tumorGate: "Tumor gate",
+    tumorGateNotApplied: "Not applied",
+    inTumor: "In tumor",
+    outsideTumor: "Outside tumor",
+    hpfTissue: "Tissue",
+    hpfLabel: "HPF",
+    noMitoticScore: "No score (no HPFs)",
     hotkey: "Hotkey",
     definition: "Definition",
     tubulePercent: "Tubules",
@@ -386,7 +393,10 @@ export const L = {
     pointsCount: (n: number) => `(${n} pts)`,
     areaMm2: (area: number) => `${area.toFixed(2)} mm²`,
     domainAccount: (domain: string) => `Use your ${domain} Google account`,
-    summaryMitosis: (count: number, mm2: number, score: number) =>
-      `${count} mitoses / ${mm2.toFixed(2)} mm² · Score ${score}`,
+    summaryMitosis: (count: number, mm2: number, score: number | null) =>
+      score === null
+        ? `${count} mitoses / ${mm2.toFixed(2)} mm² · No score (no HPFs)`
+        : `${count} mitoses / ${mm2.toFixed(2)} mm² · Score ${score}`,
+    percent: (fraction: number) => `${Math.round(fraction * 100)}%`,
   },
 } as const;
