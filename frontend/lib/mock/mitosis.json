@@ -51,6 +51,21 @@
       "context_url": "/mock/ctx_m2.png"
     },
     {
+      "id": "m_0004",
+      "hotspot_id": "hs_01",
+      "centroid_um": [6100.0, 5900.0],
+      "p_a": 0.83,
+      "p_b": null,
+      "vlm": null,
+      "in_tumor": null,
+      "final_decision": "mitosis",
+      "decision_path": "A",
+      "review_label": null,
+      "counted": true,
+      "crop_url": "/mock/crop_m1.png",
+      "context_url": "/mock/ctx_m1.png"
+    },
+    {
       "id": "m_0003",
       "hotspot_id": "hs_02",
       "centroid_um": [5010.0, 5200.0],

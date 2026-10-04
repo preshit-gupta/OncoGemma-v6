@@ -29,7 +29,7 @@ export interface Candidate {
   p_a: number | null;
   p_b: number | null;
   vlm: VlmVerdict | null;
-  in_tumor: boolean;
+  in_tumor: boolean | null; // null: the tumour gate did not run; the candidate is eligible
   final_decision: "mitosis" | "not_mitosis" | "equivocal";
   decision_path: "A" | "AB" | "ABC" | "human";
   review_label: "mitosis" | "not_mitosis" | null;
@@ -44,7 +44,7 @@ export interface Hpf {
   radius_um: number;
   count: number;
   tissue_coverage: number;
-  tumor_fraction: number;
+  tumor_fraction: number | null;
 }
 
 export interface MitosisSummary {
@@ -52,7 +52,7 @@ export interface MitosisSummary {
   n_hpf: number;
   area_mm2: number;
   per_mm2: number;
-  mitotic_score: 1 | 2 | 3;
+  mitotic_score: 1 | 2 | 3 | null; // null when n_hpf = 0
   n_equivocal: number;
   flags: ("hpf_count_lt_10")[];
 }
@@ -99,12 +99,12 @@ function isInsideAnyHpf(candidate: Candidate, hpfs: Hpf[]): boolean {
 
 function recomputeMockState() {
   // Recompute candidate.counted per contract:
-  // counted using review_label ?? (final_decision == "mitosis" && in_tumor)
+  // counted using review_label ?? (final_decision == "mitosis" && (in_tumor ?? true))
   for (const c of mockState.candidates) {
     if (c.review_label !== null) {
       c.counted = c.review_label === "mitosis";
     } else {
-      c.counted = c.final_decision === "mitosis" && c.in_tumor;
+      c.counted = c.final_decision === "mitosis" && (c.in_tumor ?? true);
     }
   }
 
@@ -124,12 +124,13 @@ function recomputeMockState() {
     }
   }
 
-  const areaMm2 = mockState.summary.area_mm2 || 0.216;
-  const perMm2 = Number((countInHpfs / areaMm2).toFixed(2));
-  let score: 1 | 2 | 3 = 1;
-  if (perMm2 >= 7.30) {
+  // With no HPF there is no area and no score (contract: mitotic_score null when n_hpf = 0).
+  const areaMm2 = mockState.summary.area_mm2;
+  const perMm2 = mockState.summary.n_hpf > 0 ? Number((countInHpfs / areaMm2).toFixed(2)) : 0;
+  let score: 1 | 2 | 3 | null = mockState.summary.n_hpf > 0 ? 1 : null;
+  if (score !== null && perMm2 >= 7.30) {
     score = 3;
-  } else if (perMm2 >= 3.65) {
+  } else if (score !== null && perMm2 >= 3.65) {
     score = 2;
   }
 
@@ -139,8 +140,22 @@ function recomputeMockState() {
   mockState.summary.n_equivocal = equivocalInHpfs;
 }
 
+// Mock case with no HPF placed: the zero-HPF summary (no score) of the contract.
+export const MOCK_NO_HPF_CASE_ID = "c_demo_no_hpf";
+
+function mockNoHpfState(): MitosisStageV6 {
+  const state: MitosisStageV6 = JSON.parse(JSON.stringify(mockMitosisData));
+  state.case_id = MOCK_NO_HPF_CASE_ID;
+  state.hpfs = [];
+  state.summary = {
+    count_total: 0, n_hpf: 0, area_mm2: 0, per_mm2: 0, mitotic_score: null, n_equivocal: 0, flags: ["hpf_count_lt_10"],
+  };
+  return state;
+}
+
 export async function getMitosis(caseId: string): Promise<MitosisStageV6> {
   if (process.env.NEXT_PUBLIC_API_MOCK === "1") {
+    if (caseId === MOCK_NO_HPF_CASE_ID) return mockNoHpfState();
     return JSON.parse(JSON.stringify(mockState));
   }
 

@@ -64,10 +64,10 @@ export function MitosisViewer({
   const [hpfs, setHpfs] = useState<Hpf[]>([]);
   const [summary, setSummary] = useState<MitosisSummary>({
     count_total: 0,
-    n_hpf: 1,
-    area_mm2: 0.216,
-    per_mm2: 0.0,
-    mitotic_score: 1,
+    n_hpf: 0,
+    area_mm2: 0,
+    per_mm2: 0,
+    mitotic_score: null,
     n_equivocal: 0,
     flags: [],
   });
@@ -292,7 +292,7 @@ export function MitosisViewer({
                   : "bg-emerald-950 text-emerald-300 border border-emerald-800"
               }`}
             >
-              {L.field.grade} {summary.mitotic_score}
+              {summary.mitotic_score === null ? L.field.noMitoticScore : `${L.field.grade} ${summary.mitotic_score}`}
             </span>
           </div>
 
@@ -361,6 +361,18 @@ export function MitosisViewer({
           <div className="px-6 py-2 bg-amber-950/80 border-b border-amber-800 text-amber-200 text-xs flex items-center space-x-2">
             <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
             <span>{L.help.hpfCountWarning}</span>
+          </div>
+        )}
+
+        {/* Placed HPFs: count, tissue coverage and tumour fraction (server values) */}
+        {hpfs.length > 0 && (
+          <div className="px-6 py-1.5 bg-slate-900/80 border-b border-slate-800 text-[11px] text-slate-300 flex flex-wrap gap-1.5">
+            {hpfs.map((h) => (
+              <span key={h.seq} className="px-2 py-0.5 rounded bg-slate-950 border border-slate-800 font-mono">
+                {L.field.hpfLabel} {h.seq} · {h.count} · {L.field.hpfTissue} {L.fmt.percent(h.tissue_coverage)} ·{" "}
+                {L.field.tumorFraction} {h.tumor_fraction === null ? "—" : L.fmt.percent(h.tumor_fraction)}
+              </span>
+            ))}
           </div>
         )}
 
@@ -493,6 +505,17 @@ export function MitosisViewer({
                     {selectedCandidate.p_b != null ? selectedCandidate.p_b.toFixed(2) : "—"}
                   </div>
                 </div>
+              </div>
+
+              <div className="flex items-center justify-between text-xs text-slate-400">
+                <span>{L.field.tumorGate}:</span>
+                <span className="font-mono text-slate-200 font-bold">
+                  {selectedCandidate.in_tumor === null
+                    ? L.field.tumorGateNotApplied
+                    : selectedCandidate.in_tumor
+                    ? L.field.inTumor
+                    : L.field.outsideTumor}
+                </span>
               </div>
 
               <div className="flex items-center justify-between text-xs text-slate-400">
