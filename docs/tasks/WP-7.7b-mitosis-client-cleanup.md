@@ -11,6 +11,8 @@ Two follow-ups to WP-7.7 after the backend serves `mitosis_v6` (WP-7.6a):
 - delete the v5 mitosis functions still in `frontend/lib/api.ts`;
 - render the contract's new nullable fields: `in_tumor`, `tumor_fraction` and `mitotic_score`.
 
+PR #44 (2026-10-03) already guards `p_a` / `p_b` with `!= null` in `MitosisViewer.tsx` and `MitosisGallery.tsx`. Keep those guards: both fields are nullable in the contract.
+
 ## Read first (only these)
 
 - `docs/contracts/mitosis_v6.md` (as changed by WP-7.6a)

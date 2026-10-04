@@ -10,6 +10,8 @@ Make the deployed Stage 4 work end to end with the baseline: KongNet at `det_thr
 
 **Why this is urgent.** The WP-7.7 viewer calls `/api/v1/stages/mitosis/{review,add,replace-hpfs,confirm}` and reads `p_a`, `final_decision` and `counted`. The backend still serves the v5 shape (`det_conf`, `label`, `medgemma_*`) and the v5 routes (`/recompute`, `/add_candidate`, `/bulk_action`, `/re_place_hpfs`). Outside mock mode, the Stage 4 review screen cannot load or save.
 
+**Stopgap on `main` since this card was written (PR #44, 2026-10-03).** `routers/mitosis.py::_add_v6_candidate_fields` adds the v6 fields to the v5 `GET` payload so the review screen loads: `p_a = det_conf`, `p_b = ver_conf`, `in_tumor = True`, every unreviewed model candidate shown as `equivocal`, `counted` derived from `label`, `crop_url` = the 128 px referee crop (`?stain=norm`) and `context_url` = the same crop in original colour (`?stain=orig`). Saving still fails (the v5 routes). This WP deletes the shim and serves real columns. Note what it got wrong so the tests catch it: an unreviewed candidate above τ is `mitosis` (not `equivocal`) in the baseline, `in_tumor` is `null` while the gate is off, and `context_url` must be the 256 µm context, not the crop.
+
 Split from WP-7.6 (plan §2.2). The tumour-cell gate is WP-7.6b. Classifier B, the referee and the Stage-A cache are deferred (D19).
 
 ## Read first (only these)
@@ -22,7 +24,7 @@ Split from WP-7.6 (plan §2.2). The tumour-cell gate is WP-7.6b. Classifier B, t
 
 ## Files you may touch
 
-- `backend/alembic/versions/0016_detections_v6.py` (create), `backend/app/models/detection.py`
+- `backend/alembic/versions/0016_detections_v6.py` (create; `0015` is the latest on `main`. If another PR has taken `0016` by the time you start, use the next free number), `backend/app/models/detection.py`
 - `backend/worker/mitosis.py`, `backend/pipeline/detect.py`, `backend/pipeline/hpf.py`, `backend/pipeline/scoring.py`
 - `backend/app/routers/mitosis.py`, `backend/app/routers/grading.py`, `backend/app/services/stages.py`, `backend/app/core/rehydrate.py`
 - `backend/app/core/pipeline_config.py` and `configs/mitosis.yaml`: the `mitosis` section only
@@ -46,6 +48,8 @@ Split from WP-7.6 (plan §2.2). The tumour-cell gate is WP-7.6b. Classifier B, t
    - `decision_path = 'A'`, `in_tumor = NULL` (gate off), `record_ids = [detect record id]`.
    - The referee stays off (D17, D19). Do not extend its code path. Stop computing referee images when it is off. If `referee.enabled` were set to true, `EQUIVOCAL` must map to `final_decision = 'equivocal'`, never to `'mitosis'`.
 3. **Crops for the contract.** Write `crop` = 64 µm at 0.25 µm/px (256 px) and `context` = 256 µm at 1.0 µm/px (256 px), both PNG, raw colour, for every persisted candidate. They are independent of the referee's inputs. Serve them as `crop_url` / `context_url` the frontend can load with its session cookie.
+   - The current `GET /{case_id}/candidates/{candidate_id}/crop` serves the referee crop and its `?stain=norm|orig` variants, and silently extracts a crop from the slide when the stored PNG is missing or under 1,000 bytes. Replace it: serve the stored contract crop and context, and answer `404` when one is missing (no on-demand substitute; AGENTS rule 4).
+   - `detections.crop_uri` / `crop_orig_uri` become the contract crop and context URIs (rename them in `0016`, or drop them and derive the blob names from the candidate id; say which in the PR).
 4. **NMS** (§5.7). Run it once, after decisions, ordered by `p_b ?? p_a` descending, with no label rank. Add `test_nms.py::test_dividing_cell_counts_once`: two detections 6 µm apart on one synthetic telophase figure, with `r_nms` 7.5 µm, yield one. If WP-7.8 finds that MIDOG++ documents a different daughter-group separation, the test follows it.
 5. **HPFs** (§5.8):
    - build the density map from `counted` candidates only, with no `unreviewed` weighting and no 0.5 cut-off;
@@ -59,7 +63,7 @@ Split from WP-7.6 (plan §2.2). The tumour-cell gate is WP-7.6b. Classifier B, t
    - `/confirm` refuses with `409 equivocal_unreviewed` while an `equivocal` candidate inside an HPF has no `review_label`. This replaces `review.gate_min_conf`; delete it.
    - Remove the invented slide size: today `GET` falls back to `width_px`/`height_px` = 20000 when there is no slide. Return the contract error instead.
 7. **Downstream readers.** Grading counts `counted`, not `label == 'mitosis'`. Update `services/stages.py` and `core/rehydrate.py` to the new columns.
-8. **`mitosis_count` DecisionRecord** (AC8). One record per Stage 4 run and per recompute, with the summary, the candidate ids and the `scoring.py` thresholds as params, linked to the detect records. Add the record writer to `records.py` if no non-model record exists yet.
+8. **`mitosis_count` DecisionRecord** (AC8). One record per Stage 4 run and per recompute, with the summary, the candidate ids and the `scoring.py` thresholds as params, linked to the detect records. Add the record writer to `records.py` if no non-model record exists yet. `Task.MITOSIS_COUNT` is already in `app/core/tasks.py`; WP-6.3's `hotspot_select` record is the pattern for a non-model record.
 
 ## Contract changes (update `docs/contracts/mitosis_v6.md` in this PR)
 
