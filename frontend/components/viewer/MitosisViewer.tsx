@@ -78,10 +78,11 @@ export function MitosisViewer({
   const [showDefinitionPanel, setShowDefinitionPanel] = useState<boolean>(false);
   const [isReplacingHpfs, setIsReplacingHpfs] = useState<boolean>(false);
 
-  // Load stage data
-  const loadStageData = useCallback(async (silent: boolean = false) => {
+  // Load stage data once per case. It must not depend on `data` or the selection:
+  // each fetch would then re-create it and the effect below would fetch again, forever.
+  const loadStageData = useCallback(async () => {
     try {
-      if (!silent && !data) setLoading(true);
+      setLoading(true);
       setError(null);
       const stageData = await getMitosis(caseId);
       setData(stageData);
@@ -89,19 +90,20 @@ export function MitosisViewer({
       setHpfs(stageData.hpfs || []);
       setSummary(stageData.summary);
 
-      if (stageData.candidates && stageData.candidates.length > 0 && !selectedCandidateId) {
-        // Priority: select first equivocal, else first candidate
+      // Keep the pathologist's selection; otherwise select the first equivocal, else the first candidate
+      setSelectedCandidateId((current) => {
+        if (current || !stageData.candidates || stageData.candidates.length === 0) return current;
         const firstEquivocal = stageData.candidates.find(
           (c) => c.final_decision === "equivocal" && c.review_label === null
         );
-        setSelectedCandidateId(firstEquivocal ? firstEquivocal.id : stageData.candidates[0].id);
-      }
+        return firstEquivocal ? firstEquivocal.id : stageData.candidates[0].id;
+      });
     } catch (err: any) {
-      if (!silent) setError(err.message || L.error.genericError);
+      setError(err.message || L.error.genericError);
     } finally {
-      if (!silent) setLoading(false);
+      setLoading(false);
     }
-  }, [caseId, data, selectedCandidateId]);
+  }, [caseId]);
 
   useEffect(() => {
     loadStageData();
