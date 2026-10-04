@@ -334,5 +334,6 @@ def test_the_same_policy_lets_a_clinical_run_survive(db_session, monkeypatch):
     stage, runtime, log, _ = mitosis_with(db_session, monkeypatch, referee_down=True, run_mode=RunMode.CLINICAL)
     run_mitosis(stage, db_session, runtime)
     found = db_session.scalars(select(Detection).where(Detection.case_id == stage.case_id)).all()
-    assert found and all(d.label == "unreviewed" for d in found)
+    # v5 "unreviewed" is v6 final_decision "equivocal" with no review_label (WP-7.6a, migration 0016).
+    assert found and all(d.final_decision == "equivocal" and d.review_label is None for d in found)
     assert {r["task"] for r in log.pending() if r["producer_kind"] == "fallback"} == {"mitosis_referee"}
