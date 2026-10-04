@@ -27,11 +27,14 @@ def worker_run_modes() -> list[str]:
         raise ValueError(f"WORKER_RUN_MODES must list clinical, eval or shadow, got {settings.WORKER_RUN_MODES!r}")
     return modes
 
-def reset_stuck_running_stages(timeout_seconds: int = 1800):
+def reset_stuck_running_stages(timeout_seconds: float | None = None):
     """
-    Reset orphan stages left in 'running' state exceeding timeout_seconds (default: 30 minutes / Cloud Run timeout).
-    Prevents resetting actively executing sibling worker tasks on worker startup.
+    Queue again the stages left 'running' longer than ``timeout_seconds`` (settings.STAGE_STALE_AFTER_S):
+    their worker died. Only stages of this worker's run modes are touched, so the clinical API never
+    re-queues an eval stage that the eval worker is still executing (2026-10-04: the API's 300 s reset
+    re-queued a running grading stage, and a second eval worker ran it again).
     """
+    timeout_seconds = settings.STAGE_STALE_AFTER_S if timeout_seconds is None else timeout_seconds
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=timeout_seconds)
     db = SessionLocal()
     try:
@@ -39,6 +42,7 @@ def reset_stuck_running_stages(timeout_seconds: int = 1800):
             update(StageExecution)
             .where(
                 StageExecution.status == "running",
+                StageExecution.run_mode.in_(worker_run_modes()),
                 (StageExecution.started_at <= cutoff) | (StageExecution.started_at.is_(None))
             )
             .values(status="queued", started_at=None)
@@ -133,7 +137,7 @@ def poll_and_execute_single_task():
 def run_worker_loop():
     init_pipeline_config()
     print(f"[Worker] Starting OncoGemma stage worker poll loop. Engine: {engine.dialect.name}. Handlers: {list(HANDLERS.keys())}")
-    reset_stuck_running_stages(timeout_seconds=1800)
+    reset_stuck_running_stages()
     last_reset_check = time.time()
     last_harness_tick = 0.0
     last_activity = time.time()
@@ -143,7 +147,7 @@ def run_worker_loop():
     while True:
         try:
             if time.time() - last_reset_check > 60.0:
-                reset_stuck_running_stages(timeout_seconds=1800)
+                reset_stuck_running_stages()
                 last_reset_check = time.time()
 
             # Validation runs and batches: an eval worker drives the runs it holds a lease on (SPEC-02 §6).

@@ -660,3 +660,33 @@ def test_retry_preprocess_when_done_or_failed(client, db_session):
     assert retried_prep.attempt == 2
     assert retried_prep.status == "queued"
 
+
+
+def test_reset_touches_only_the_workers_run_modes(db_session, monkeypatch):
+    """The clinical API worker never re-queues an eval stage the eval worker is running (2026-10-04)."""
+    from app.core.config import settings
+
+    now = datetime.now(timezone.utc)
+    case_id = uuid.uuid4()
+    db_session.add(Case(id=case_id, created_by="worker_test"))
+    eval_exec = StageExecution(id=uuid.uuid4(), case_id=case_id, stage="grading", attempt=1, status="running",
+                               run_mode="eval", started_at=now - timedelta(minutes=40))
+    clinical_exec = StageExecution(id=uuid.uuid4(), case_id=case_id, stage="triage", attempt=1, status="running",
+                                   run_mode="clinical", started_at=now - timedelta(minutes=40))
+    fresh_exec = StageExecution(id=uuid.uuid4(), case_id=case_id, stage="mitosis", attempt=1, status="running",
+                                run_mode="clinical", started_at=now - timedelta(minutes=10))
+    db_session.add_all([eval_exec, clinical_exec, fresh_exec])
+    db_session.commit()
+
+    monkeypatch.setattr(settings, "WORKER_RUN_MODES", "clinical")
+    monkeypatch.setattr(settings, "STAGE_STALE_AFTER_S", 1800.0)
+    with patch("worker.main.SessionLocal", TestingSessionLocal):
+        reset_stuck_running_stages()
+
+    check = TestingSessionLocal()
+    try:
+        assert check.get(StageExecution, eval_exec.id).status == "running"  # not this worker's mode
+        assert check.get(StageExecution, clinical_exec.id).status == "queued"  # stale, its own mode
+        assert check.get(StageExecution, fresh_exec.id).status == "running"  # 10 min < 30 min: a long stage, not orphaned
+    finally:
+        check.close()

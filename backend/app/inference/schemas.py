@@ -116,6 +116,25 @@ class PleoEstimate(StrictModel):
         return v
 
 
+class PleoScore(StrictModel):
+    """The Stage 5 pleomorphism field answer: the score only.
+
+    Asked for a free-text rationale on a 128 µm field at 0.25 µm/px, gemini-2.5-flash degenerates
+    into repeated text until the server deadline. Live check 2026-10-04: 44 of 45 pipeline calls and
+    3 of 3 direct calls hit the 504; with the score-only schema 3 of 3 answered in about 10 s.
+    ``maxLength`` on the rationale is not honoured. The contract shows no rationale for a field.
+    """
+
+    pleomorphism_score: Literal[1, 2, 3]
+
+    @field_validator("pleomorphism_score", mode="before")
+    @classmethod
+    def validate_score(cls, v: Any) -> Any:
+        if isinstance(v, bool) or not isinstance(v, int):
+            raise ValueError(f"pleomorphism_score must be an integer (1, 2, or 3), got {type(v).__name__}: {v!r}")
+        return v
+
+
 class HistotypeVerdict(StrictModel):
     type: Literal[
         "IDC-NST", "ILC", "mixed_ductal_lobular", "mucinous", "tubular", "papillary",

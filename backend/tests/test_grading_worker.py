@@ -37,7 +37,7 @@ EXCLUDED = [[3200.0, 3200.0], [3800.0, 3200.0], [3800.0, 3800.0], [3200.0, 3800.
 
 ANSWERS = {
     schemas.TubuleEstimate: {"tumor_present": True, "tubule_percent": 40, "rationale": "tubules in a third"},
-    schemas.PleoEstimate: {"pleomorphism_score": 3, "rationale": "marked variation"},
+    schemas.PleoScore: {"pleomorphism_score": 3},
     schemas.HistotypeVerdict: {"type": "ILC", "rationale": "single files"},
 }
 
@@ -138,6 +138,9 @@ def test_grading_estimates_come_from_the_gateway_and_aggregate_deterministically
     # SPEC-07 AC6: tubule samples at 1.0 µm/px, pleomorphism fields at 0.25 µm/px, 512 px each.
     assert all(s["mpp"] == 1.0 and s["size_px"] == [512, 512] for r in tubule for s in r["input_spec"]["images"])
     assert all(s["mpp"] == 0.25 and s["size_px"] == [512, 512] for r in pleo for s in r["input_spec"]["images"])
+    # A field is asked for its score only: with a free-text rationale Gemini loops until the deadline.
+    pleo_requests = [req for _, req, _ in vlm.calls if req.output_model is schemas.PleoScore]
+    assert len(pleo_requests) == N_PLEO and "rationale" not in schemas.PleoScore.model_json_schema()["properties"]
 
     grading = grading_row(db_session, stage)
     assert grading.tubule_percent == 40.0 and grading.tubule_score == 2
@@ -238,7 +241,7 @@ def test_failed_field_estimates_are_left_out_of_the_aggregate(db_session, monkey
     calls, lock = {"pleo": 0}, threading.Lock()  # estimates run on several threads
 
     def first_pleo_down(request):
-        if request.output_model is schemas.PleoEstimate:
+        if request.output_model is schemas.PleoScore:
             with lock:
                 calls["pleo"] += 1
                 first = calls["pleo"] == 1
@@ -254,7 +257,7 @@ def test_failed_field_estimates_are_left_out_of_the_aggregate(db_session, monkey
 
     output = output_json(stage)
     failed = [f for f in output["pleomorphism"]["fields"] if f["estimate"] is None]
-    assert len(failed) == 1 and failed[0]["rationale"] is None
+    assert len(failed) == 1 and "rationale" not in failed[0]
     assert "needs_human" in output["result"]["flags"]
     # The remaining fields still grade: no default 2 was voted in for the failed one.
     assert grading_row(db_session, stage).pleo_score == 3

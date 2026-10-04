@@ -39,7 +39,7 @@ from app.core.gcs import (
 from app.core.stain_profiles import usable_stain_transform
 from app.core.tasks import EntityType, Task
 from app.inference.gateway import EntityRef, FallbackResult, ImageInput, InputSpec, ModelInputs
-from app.inference.schemas import HistotypeVerdict, PleoEstimate, TubuleEstimate
+from app.inference.schemas import HistotypeVerdict, PleoScore, TubuleEstimate
 from app.models.audit import AuditEvent
 from app.models.case import Case
 from app.models.detection import Detection
@@ -214,7 +214,7 @@ def run_grading(stage_exec: StageExecution, db: Session, runtime: StageRuntime) 
 
         jobs = [(Task.TUBULE_PATCH, estimators.tubule_prompt, (img,), EntityRef(EntityType.PATCH, s.id), TubuleEstimate)
                 for s, img in zip(plan.tubule, tubule_images)]
-        jobs += [(Task.PLEO_FIELD, estimators.pleo_prompt, (img,), EntityRef(EntityType.FIELD, s.id), PleoEstimate)
+        jobs += [(Task.PLEO_FIELD, estimators.pleo_prompt, (img,), EntityRef(EntityType.FIELD, s.id), PleoScore)
                  for s, img in zip(plan.pleo, pleo_images)]
         jobs.append((Task.HISTOTYPE, estimators.histotype_prompt, tuple(tubule_images[:estimators.histotype_images]),
                      EntityRef(EntityType.SLIDE, slide_id), HistotypeVerdict))
@@ -242,7 +242,6 @@ def run_grading(stage_exec: StageExecution, db: Session, runtime: StageRuntime) 
         fields_out.append({
             **_sample_dict(s),
             "estimate": None if failed else {"pleomorphism_score": res.output.pleomorphism_score},
-            "rationale": None if failed else res.output.rationale,
             "nuclei": None,  # nuclear segmentation is WP-8.3 (deferred, D21)
             "record_id": str(res.record_id),
         })

@@ -42,12 +42,12 @@ async def background_pipeline_worker():
     Self-healing, always-on background worker daemon running inside Cloud Run.
     Continuously monitors the database for any 'queued' pipeline stages and executes
     them immediately without relying on external task queues.
-    Periodically checks for and recovers any orphaned 'running' stages (> 300s).
+    Periodically queues again the orphaned 'running' stages of its run modes (settings.STAGE_STALE_AFTER_S).
     """
     logger.info("[Always-On Worker] Initializing in-process pipeline worker daemon...")
     from worker.main import poll_and_execute_single_task, reset_stuck_running_stages
     try:
-        await asyncio.to_thread(reset_stuck_running_stages, 300)
+        await asyncio.to_thread(reset_stuck_running_stages)
     except Exception as e:
         logger.warning(f"[Always-On Worker Reset Note] {e}")
 
@@ -57,7 +57,7 @@ async def background_pipeline_worker():
             # Self-healing watchdog: recover stages stuck in 'running' after container restarts or crashes
             if time.time() - last_reset_check > 60.0:
                 try:
-                    await asyncio.to_thread(reset_stuck_running_stages, 300)
+                    await asyncio.to_thread(reset_stuck_running_stages)
                 except Exception as r_err:
                     logger.warning(f"[Always-On Worker Periodic Reset Note] {r_err}")
                 last_reset_check = time.time()
