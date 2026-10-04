@@ -313,6 +313,8 @@ class GradingEstimatorsConfig(StrictModel):
     producer: RegistryKey
     tubule_prompt: PromptFileName
     pleo_prompt: PromptFileName
+    pleo_verifier: RegistryKey
+    pleo_verifier_prompt: PromptFileName
     histotype_prompt: PromptFileName
     histotype_images: PositiveInt
     color: ColorPolicy
@@ -734,7 +736,12 @@ class PipelineConfig(StrictModel):
             vlm is not None and vlm.kind == "vlm",
             f"scoring.yaml grading.estimators.producer {estimators.producer!r} must be a VLM in models.yaml",
         )
-        for field in ("tubule_prompt", "pleo_prompt", "histotype_prompt"):
+        verifier = self.models.models.get(estimators.pleo_verifier)
+        _require(
+            verifier is not None and verifier.kind == "vlm",
+            f"scoring.yaml grading.estimators.pleo_verifier {estimators.pleo_verifier!r} must be a VLM in models.yaml",
+        )
+        for field in ("tubule_prompt", "pleo_prompt", "pleo_verifier_prompt", "histotype_prompt"):
             prompt = getattr(estimators, field)
             _require(
                 prompt in self.prompts,

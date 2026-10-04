@@ -51,9 +51,12 @@ def tubule(sid, pct, area, present=True, failed=False):
             "rationale": None if failed else "r", "record_id": str(uuid.uuid4())}
 
 
-def field(sid, score, failed=False):
+def field(sid, score, failed=False, check=None):
+    check = score if check is None else check
     return {"id": sid, "center_um": [1000.0, 1000.0], "size_um": 128.0, "mpp": 0.25, "stratum": 0, "hotspot_id": "hs_01",
             "tumor_area_um2": 16384.0, "estimate": None if failed else {"pleomorphism_score": score}, "nuclei": None,
+            "verification": {"producer": "medgemma", "pleomorphism_score": check,
+                             "agrees": None if failed else check == score, "record_id": str(uuid.uuid4())},
             "rationale": None if failed else "r", "record_id": str(uuid.uuid4())}
 
 
@@ -282,3 +285,16 @@ def test_every_estimator_type_can_be_confirmed(client):
         case_id = seed(histotype=histotype)
         resp = post(client, "histotype/confirm", {"case_id": case_id, "type": histotype})
         assert resp.status_code == 200 and resp.json()["histotype"]["type"] == histotype, histotype
+
+
+def test_each_field_carries_the_verifiers_independent_score(client):
+    """Owner decision 2026-10-04: a second model scores each field; a disagreement is shown, the grade is unchanged."""
+    fields = [field("p_01", 2, check=3), field("p_02", 3), field("p_03", 3)]
+    case_id = seed(machine=v6_machine(copy.deepcopy(DEFAULT_SAMPLES), fields))
+    body = client.get(f"{BASE}/{case_id}").json()
+    assert [f["verification"] for f in body["pleomorphism"]["fields"]] == [
+        {"producer": "medgemma", "pleomorphism_score": 3, "agrees": False},
+        {"producer": "medgemma", "pleomorphism_score": 3, "agrees": True},
+        {"producer": "medgemma", "pleomorphism_score": 3, "agrees": True},
+    ]
+    assert body["pleomorphism"]["score"] == 3 and body["grade"] == 2  # from the estimates, as before

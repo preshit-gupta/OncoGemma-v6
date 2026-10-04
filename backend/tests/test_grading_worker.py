@@ -46,6 +46,15 @@ def answer_by_schema(request):
     return json_text(ANSWERS[request.output_model])
 
 
+VERIFIER_SCORE = 2  # the fake verifier disagrees with the estimator's 3
+
+
+def with_verifier(vlm, verifier=None):
+    """Adapters for a grading run: the estimator (Gemini) and the pleomorphism verifier (MedGemma's provider)."""
+    return {"vertex_genai": vlm,
+            "vertex_endpoint_predict": verifier or FakeAdapter(then=lambda r: json_text({"pleomorphism_score": VERIFIER_SCORE}))}
+
+
 def small_config(**fallback_tasks):
     """Six tubule samples and four fields instead of 48 + 48 keep the test fast; optional clinical fallbacks per task."""
     config = get_pipeline_config()
@@ -120,16 +129,19 @@ def test_grading_estimates_come_from_the_gateway_and_aggregate_deterministically
     install_fake_slide(monkeypatch, FakeOpenSlide(SIDE_PX, SIDE_PX), raw_uri)
     vlm, log = FakeAdapter(then=answer_by_schema), DecisionLog()
 
-    output_ref, model_versions = run_grading(stage, db_session, make_runtime(stage, {"vertex_genai": vlm}, config=small_config(), log=log))
+    output_ref, model_versions = run_grading(stage, db_session, make_runtime(stage, with_verifier(vlm), config=small_config(), log=log))
 
     config = get_pipeline_config()
     assert stage.status == "awaiting_review"
     assert output_ref.endswith(f"cases/{stage.case_id}/grading/output.json")
-    assert model_versions == {"gemini_referee": config.models.version_of("gemini_referee")}
+    assert model_versions == {key: config.models.version_of(key) for key in ("gemini_referee", "medgemma")}
     rows = log.pending()
     assert {r["status"] for r in rows} == {"ok"}
     tubule = [r for r in rows if r["task"] == "tubule_patch"]
-    pleo = [r for r in rows if r["task"] == "pleo_field"]
+    pleo = [r for r in rows if r["task"] == "pleo_field" and r["producer_id"] == "gemini_referee"]
+    verify = [r for r in rows if r["task"] == "pleo_field" and r["producer_id"] == "medgemma"]
+    assert len(verify) == N_PLEO and {r["prompt_id"] for r in verify} == {"pleo_verify@v1.md"}
+    assert all(s["mpp"] == 0.25 for r in verify for s in r["input_spec"]["images"])
     (histotype,) = [r for r in rows if r["task"] == "histotype"]
     assert len(tubule) == N_TUBULE and len(pleo) == N_PLEO
     assert {r["prompt_id"] for r in tubule} == {"tubule@v1.md"} and {r["prompt_id"] for r in pleo} == {"pleo@v1.md"}
@@ -163,7 +175,13 @@ def test_grading_estimates_come_from_the_gateway_and_aggregate_deterministically
     record_ids = {str(r["id"]) for r in tubule + pleo}
     for s in machine["tubule"]["samples"] + machine["pleomorphism"]["fields"]:
         assert s["record_id"] in record_ids and s["hotspot_id"] == "hs_01" and s["tumor_area_um2"] > 0
+    # The verifier's independent score is stored next to the estimate; a disagreement flags the field only.
+    assert machine["pleomorphism"]["agreement"] == {"n_compared": N_PLEO, "n_agree": 0}
+    assert machine["pleomorphism"]["verifier"] == "P1v:medgemma@pleo_verify@v1"
+    verify_ids = {str(r["id"]) for r in verify}
     for f in machine["pleomorphism"]["fields"]:
+        assert f["verification"]["pleomorphism_score"] == VERIFIER_SCORE and f["verification"]["agrees"] is False
+        assert f["verification"]["record_id"] in verify_ids
         assert f["nuclei"] is None
         assert blob_exists(settings.GCS_ARTIFACTS_BUCKET, sample_blob(str(stage.case_id), "pleo", f["id"]))
     assert all(blob_exists(settings.GCS_ARTIFACTS_BUCKET, sample_blob(str(stage.case_id), "tubule", s["id"]))
@@ -173,19 +191,19 @@ def test_grading_estimates_come_from_the_gateway_and_aggregate_deterministically
 def test_sampling_needs_a_confirmed_triage(db_session):
     stage, _ = seed(db_session, triage_status="awaiting_review")
     with pytest.raises(SamplingFrameEmptyError, match="confirmed Stage 3"):
-        run_grading(stage, db_session, make_runtime(stage, {"vertex_genai": FakeAdapter(then=answer_by_schema)}, config=small_config()))
+        run_grading(stage, db_session, make_runtime(stage, with_verifier(FakeAdapter(then=answer_by_schema)), config=small_config()))
 
 
 def test_sampling_needs_the_stage_3_tiles(db_session):
     stage, _ = seed(db_session, with_tiles=False)
     with pytest.raises(TriageOutputMissingError, match="tiles.parquet"):
-        run_grading(stage, db_session, make_runtime(stage, {"vertex_genai": FakeAdapter(then=answer_by_schema)}, config=small_config()))
+        run_grading(stage, db_session, make_runtime(stage, with_verifier(FakeAdapter(then=answer_by_schema)), config=small_config()))
 
 
 def test_no_stage_4_hpf_means_no_mitotic_score_and_no_grade(db_session, monkeypatch):
     stage, raw_uri = seed(db_session, with_hpfs=False)
     install_fake_slide(monkeypatch, FakeOpenSlide(SIDE_PX, SIDE_PX), raw_uri)
-    run_grading(stage, db_session, make_runtime(stage, {"vertex_genai": FakeAdapter(then=answer_by_schema)}, config=small_config()))
+    run_grading(stage, db_session, make_runtime(stage, with_verifier(FakeAdapter(then=answer_by_schema)), config=small_config()))
     grading = grading_row(db_session, stage)
     assert grading.mitotic_score is None and grading.grade is None and grading.nottingham_sum is None
     assert grading.tubule_score == 2 and grading.pleo_score == 3
@@ -195,7 +213,7 @@ def test_no_stage_4_hpf_means_no_mitotic_score_and_no_grade(db_session, monkeypa
 def test_estimator_outage_fails_the_stage_without_a_grade(db_session, monkeypatch):
     stage, raw_uri = seed(db_session)
     install_fake_slide(monkeypatch, FakeOpenSlide(SIDE_PX, SIDE_PX), raw_uri)
-    runtime = make_runtime(stage, {"vertex_genai": FakeAdapter(then=TransientCallError("503"))}, config=small_config())
+    runtime = make_runtime(stage, with_verifier(FakeAdapter(then=TransientCallError("503"))), config=small_config())
     with pytest.raises(ModelUnavailableError):
         run_grading(stage, db_session, runtime)
     assert grading_row(db_session, stage) is None
@@ -212,7 +230,7 @@ def test_v5_shaped_tubule_answer_fails_the_stage(db_session, monkeypatch):
         return answer_by_schema(request)
 
     with pytest.raises(SchemaInvalidError):
-        run_grading(stage, db_session, make_runtime(stage, {"vertex_genai": FakeAdapter(then=v5_shaped)}, config=small_config()))
+        run_grading(stage, db_session, make_runtime(stage, with_verifier(FakeAdapter(then=v5_shaped)), config=small_config()))
 
 
 def test_allowed_outages_leave_components_unassessed_never_defaulted(db_session, monkeypatch):
@@ -226,7 +244,7 @@ def test_allowed_outages_leave_components_unassessed_never_defaulted(db_session,
 
     config = small_config(histotype=["ModelUnavailableError"])
     log = DecisionLog()
-    run_grading(stage, db_session, make_runtime(stage, {"vertex_genai": FakeAdapter(then=histotype_down)}, config=config, log=log))
+    run_grading(stage, db_session, make_runtime(stage, with_verifier(FakeAdapter(then=histotype_down)), config=config, log=log))
 
     grading = grading_row(db_session, stage)
     assert grading.histologic_type is None  # v5 wrote IDC-NST here
@@ -253,7 +271,7 @@ def test_failed_field_estimates_are_left_out_of_the_aggregate(db_session, monkey
     config = config.model_copy(update={"models": config.models.model_copy(update={
         "models": {**config.models.models, "gemini_referee": config.models.models["gemini_referee"].model_copy(update={"max_attempts": 1})}
     })})
-    run_grading(stage, db_session, make_runtime(stage, {"vertex_genai": FakeAdapter(then=first_pleo_down)}, config=config))
+    run_grading(stage, db_session, make_runtime(stage, with_verifier(FakeAdapter(then=first_pleo_down)), config=config))
 
     output = output_json(stage)
     failed = [f for f in output["pleomorphism"]["fields"] if f["estimate"] is None]
@@ -270,4 +288,4 @@ def test_unreadable_slide_fails_the_stage(db_session, monkeypatch):
     install_fake_slide(monkeypatch, FakeOpenSlide(SIDE_PX, SIDE_PX), raw_uri)
     monkeypatch.setattr(openslide, "OpenSlide", lambda path: (_ for _ in ()).throw(openslide.OpenSlideError("corrupt")))
     with pytest.raises(SlideReadError, match="corrupt"):
-        run_grading(stage, db_session, make_runtime(stage, {"vertex_genai": FakeAdapter(then=answer_by_schema)}, config=small_config()))
+        run_grading(stage, db_session, make_runtime(stage, with_verifier(FakeAdapter(then=answer_by_schema)), config=small_config()))

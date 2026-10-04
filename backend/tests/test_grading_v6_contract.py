@@ -62,6 +62,12 @@ class PleoReview(Strict):
     at: str
 
 
+class Verification(Strict):
+    producer: str
+    pleomorphism_score: Optional[Score]
+    agrees: Optional[bool]
+
+
 class PleoField(Strict):
     id: str
     center_um: Tuple[float, float]
@@ -72,6 +78,7 @@ class PleoField(Strict):
     estimate: Optional[PleoEstimate]
     nuclei: Optional[Nuclei]
     review: Optional[PleoReview]
+    verification: Optional[Verification] = None
 
 
 class SlideGeom(Strict):

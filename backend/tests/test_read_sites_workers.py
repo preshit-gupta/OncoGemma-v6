@@ -289,7 +289,7 @@ def run_seeded_grading(db, monkeypatch, color=None):
         config = config.model_copy(update={"scoring": config.scoring.model_copy(update={"grading": grading})})
     log = DecisionLog()
     vlm = FakeAdapter(then=grading_t.answer_by_schema)
-    return stage, log, make_runtime(stage, {"vertex_genai": vlm}, config=config, log=log)
+    return stage, log, make_runtime(stage, grading_t.with_verifier(vlm), config=config, log=log)
 
 
 def estimator_specs(log):

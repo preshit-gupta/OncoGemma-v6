@@ -232,7 +232,7 @@ def grading_with_down(*down):
         models = GeminiModels(down=set(down), answers=grading_t.ANSWERS)
         log = DecisionLog()
         runtime = make_runtime(
-            stage, {"vertex_genai": gemini(models)}, config=permissive(grading_t.small_config()), run_mode=RunMode.EVAL, log=log
+            stage, grading_t.with_verifier(gemini(models)), config=permissive(grading_t.small_config()), run_mode=RunMode.EVAL, log=log
         )
         try:
             run_grading(stage, db_session, runtime)

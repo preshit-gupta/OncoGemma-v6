@@ -118,6 +118,14 @@ def _image_url(case_id: str, kind: str, sample_id: str) -> str:
     return f"/api/v1/stages/grading/{case_id}/{kind}/{sample_id}/image"
 
 
+def _verification(field: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The verifier's independent score of a field (owner decision 2026-10-04); None for gradings without one."""
+    v = field.get("verification")
+    if v is None:
+        return None
+    return {"producer": v["producer"], "pleomorphism_score": v["pleomorphism_score"], "agrees": v["agrees"]}
+
+
 def _contract_overrides(overrides: Dict[str, Any]) -> Dict[str, Any]:
     out = {k: overrides[k] for k in ("tubule_score", "pleo_score", "histotype") if k in overrides}
     out["reasons"] = dict(overrides.get("reasons", {}))
@@ -140,7 +148,8 @@ def _view(db: Session, case: Case, stage_exec: StageExecution, grading: Grading)
     fields = [
         {"id": f["id"], "center_um": f["center_um"], "size_um": f["size_um"], "mpp": f["mpp"],
          "image_url": _image_url(case_id, "pleo", f["id"]), "stratum": f["stratum"],
-         "estimate": f["estimate"], "nuclei": f["nuclei"], "review": reviews.get("pleo", {}).get(f["id"])}
+         "estimate": f["estimate"], "nuclei": f["nuclei"], "review": reviews.get("pleo", {}).get(f["id"]),
+         "verification": _verification(f)}
         for f in machine["pleomorphism"]["fields"]
     ]
     proposed = machine["histotype"]

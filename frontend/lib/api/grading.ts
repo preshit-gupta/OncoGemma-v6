@@ -22,6 +22,7 @@ export interface PleoField {
   stratum: number;
   estimate: { pleomorphism_score: 1 | 2 | 3 } | null;
   nuclei: { n: number; area_p50_um2: number; area_cv: number } | null;
+  verification?: { producer: string; pleomorphism_score: 1 | 2 | 3 | null; agrees: boolean | null } | null;
   review: { pleomorphism_score?: 1 | 2 | 3; by: string; at: string } | null;
 }
 
