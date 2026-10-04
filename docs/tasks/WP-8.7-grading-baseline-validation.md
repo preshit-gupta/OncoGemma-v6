@@ -31,16 +31,17 @@ The laptop only creates the run in the production database. The Cloud Run eval w
 ```powershell
 cd "D:\Projects\OncoGemma v6"; git checkout main; git pull
 # Terminal 1: a local tunnel to Cloud SQL (Cloud SQL Auth Proxy, signed in with gcloud)
-cloud-sql-proxy <PROJECT_ID>:us-central1:oncogemma-dev-psql --port 5433
+cloud-sql-proxy oncogemma:us-central1:oncogemma-dev-psql --port 5433 --gcloud-auth
 # Terminal 2, from backend/ (eval is a package inside backend):
 cd backend
-$env:DATABASE_URL = "postgresql+psycopg2://oncogemma:<DB_PASSWORD>@127.0.0.1:5433/oncogemma_db"
+$pw = [uri]::EscapeDataString((gcloud secrets versions access latest --secret=og-db-password))
+$env:DATABASE_URL = "postgresql+psycopg2://oncogemma:$pw@127.0.0.1:5433/oncogemma_db"
 python -m eval.cli run --manifest eval/manifests/tcga_brca_idc_val.parquet --split val --stages ingest,preprocess,qc,triage,mitosis,grading --concurrency 8 --name tcga-val-grading-baseline --no-wait
 gcloud run jobs execute oncogemma-eval-worker --region=us-central1 --tasks=8
-python -m eval.cli status --run <run_id>
+python -m eval.cli status --run RUN_ID   # RUN_ID: the id that `run` printed
 ```
 
-- `<DB_PASSWORD>` is the latest version of the Secret Manager secret `og-db-password`.
+- The password is read from Secret Manager (`og-db-password`) and URL-encoded; it is never typed or saved. `--gcloud-auth` makes the proxy use your `gcloud` sign-in. Leave terminal 1 running.
 - `--no-wait` exits after creating the run; eval workers drive it under a lease.
 - Each job task is one worker, and a task stops after 15 idle minutes or 24 h, so run `execute` again if items are still pending.
 - **Smoke test first:** run one small slide end to end (`TCGA-OL-A5S0-01Z-00-DX1`, 35 MB, 20×) and check the runtime and cost before the full run. One-shot hashes the slide locally first, so pick a small one:
