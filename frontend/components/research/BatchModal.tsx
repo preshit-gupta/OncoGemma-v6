@@ -1,8 +1,21 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { L } from "@/lib/labels";
-import { createBatch, cancelBatch, retryBatch } from "@/lib/api/research";
+import { useAuth } from "@/lib/auth/AuthProvider";
+import {
+  BatchEvent,
+  BatchStatus,
+  CreateBatchPayload,
+  PIPELINE_STAGES,
+  RUN_END_STAGES,
+  RunEndStage,
+  createBatch,
+  cancelBatch,
+  retryBatch,
+  stagesThrough,
+  subscribeBatchEvents,
+} from "@/lib/api/research";
 
 interface BatchModalProps {
   isOpen: boolean;
@@ -10,66 +23,70 @@ interface BatchModalProps {
   onSuccess?: () => void;
 }
 
+type Split = "train" | "val" | "test";
+
+const BATCH_STATUS_LABEL: Record<BatchStatus, string> = {
+  created: L.status.pending,
+  running: L.status.running,
+  completed: L.status.done,
+  cancelled: L.status.cancelled,
+  failed: L.status.failed,
+};
+
 export function BatchModal({ isOpen, onClose, onSuccess }: BatchModalProps) {
-  const [name, setName] = useState<string>("TCGA Evaluation Batch");
-  const [manifestUri, setManifestUri] = useState<string>("gs://oncogemma-eval/manifests/val_v2.json");
-  const [stages, setStages] = useState<string[]>(["triage", "mitosis", "grading"]);
-  const [mode, setMode] = useState<string>("clinical");
-  const [concurrency, setConcurrency] = useState<number>(4);
+  const { can } = useAuth();
+  const [name, setName] = useState<string>("");
+  const [manifestUri, setManifestUri] = useState<string>("");
+  const [split, setSplit] = useState<Split>("val");
+  const [testAccessReason, setTestAccessReason] = useState<string>("");
+  const [endStage, setEndStage] = useState<RunEndStage>("grading");
+  const [mode, setMode] = useState<"auto" | "manual">("auto");
+  const [concurrency, setConcurrency] = useState<number>(1);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
-  const [batchProgress, setBatchProgress] = useState<{
-    succeeded: number;
-    failed: number;
-    running: number;
-    total: number;
-  } | null>(null);
+  const [batchEvent, setBatchEvent] = useState<BatchEvent | null>(null);
+  const unsubscribeRef = useRef<(() => void) | null>(null);
+
+  const stopProgress = () => {
+    unsubscribeRef.current?.();
+    unsubscribeRef.current = null;
+  };
+
+  const watchProgress = (batchId: string) => {
+    stopProgress();
+    unsubscribeRef.current = subscribeBatchEvents(batchId, setBatchEvent, setError);
+  };
+
+  useEffect(() => stopProgress, []);
 
   if (!isOpen) return null;
 
-  const handleStageToggle = (stage: string) => {
-    if (stages.includes(stage)) {
-      setStages(stages.filter((s) => s !== stage));
-    } else {
-      setStages([...stages, stage]);
-    }
-  };
+  const stages = stagesThrough(endStage);
+  const manifestValid = manifestUri.trim().startsWith("gs://");
+  const testReasonValid = split !== "test" || testAccessReason.trim().length > 0;
+  const canSubmit = !loading && name.trim().length > 0 && manifestValid && testReasonValid;
 
   const handleStartBatch = async () => {
-    if (!name.trim()) return;
+    if (!canSubmit) return;
     setLoading(true);
     setError(null);
     try {
-      const res = await createBatch({
-        name,
-        source: { manifest_uri: manifestUri },
+      const payload: CreateBatchPayload = {
+        name: name.trim(),
+        source:
+          split === "test"
+            ? { manifest_uri: manifestUri.trim(), split, confirm_test_access: testAccessReason.trim() }
+            : { manifest_uri: manifestUri.trim(), split },
         stages,
         mode,
         concurrency,
-      });
+      };
+      const res = await createBatch(payload);
       setActiveBatchId(res.batch_id);
-      setBatchProgress({ succeeded: 0, failed: 0, running: 10, total: 10 });
-
-      // Simulated SSE progress in mock mode
-      let succ = 0;
-      let fail = 0;
-      const interval = setInterval(() => {
-        succ += 2;
-        if (succ + fail >= 10) {
-          clearInterval(interval);
-          setBatchProgress({ succeeded: 9, failed: 1, running: 0, total: 10 });
-        } else {
-          setBatchProgress({
-            succeeded: succ,
-            failed: fail,
-            running: 10 - succ - fail,
-            total: 10,
-          });
-        }
-      }, 1000);
-
+      setBatchEvent(null);
+      watchProgress(res.batch_id);
       onSuccess?.();
     } catch (err: any) {
       setError(err.message || String(err));
@@ -80,16 +97,35 @@ export function BatchModal({ isOpen, onClose, onSuccess }: BatchModalProps) {
 
   const handleCancel = async () => {
     if (!activeBatchId) return;
-    await cancelBatch(activeBatchId);
+    setError(null);
+    try {
+      await cancelBatch(activeBatchId);
+    } catch (err: any) {
+      setError(err.message || String(err));
+      return;
+    }
+    stopProgress();
     setActiveBatchId(null);
-    setBatchProgress(null);
+    setBatchEvent(null);
   };
 
   const handleRetryFailed = async () => {
     if (!activeBatchId) return;
-    await retryBatch(activeBatchId, { statuses: ["failed"] });
-    setBatchProgress((prev) => (prev ? { ...prev, failed: 0, running: 1 } : null));
+    setError(null);
+    try {
+      await retryBatch(activeBatchId, { statuses: ["failed"] });
+    } catch (err: any) {
+      setError(err.message || String(err));
+      return;
+    }
+    watchProgress(activeBatchId);
   };
+
+  const counts = batchEvent?.counts ?? {};
+  const total = Object.values(counts).reduce((sum, n) => sum + (n ?? 0), 0);
+  const succeeded = counts.succeeded ?? 0;
+  const failed = counts.failed ?? 0;
+  const failureClasses = Object.entries(batchEvent?.failures_by_error_class ?? {});
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4">
@@ -117,35 +153,59 @@ export function BatchModal({ isOpen, onClose, onSuccess }: BatchModalProps) {
               <span className="font-mono text-slate-500">{activeBatchId}</span>
             </div>
 
-            {batchProgress && (
+            {batchEvent && (
               <div className="flex flex-col gap-2">
+                <div className="flex justify-between text-slate-600">
+                  <span>
+                    {L.field.status}{": "}
+                    <strong>{BATCH_STATUS_LABEL[batchEvent.status] ?? batchEvent.status}</strong>
+                  </span>
+                  <span className="font-mono">
+                    {succeeded + failed}{" / "}{total}
+                  </span>
+                </div>
                 <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
                   <div
                     className="h-full bg-emerald-500 transition-all duration-300"
                     style={{
-                      width: `${(batchProgress.succeeded / batchProgress.total) * 100}%`,
+                      width: `${total > 0 ? (succeeded / total) * 100 : 0}%`,
                     }}
                   />
                 </div>
                 <div className="flex justify-between text-slate-600">
                   <span>
+                    {L.status.pending}{": "}
+                    <strong>{counts.pending ?? 0}</strong>
+                  </span>
+                  <span>
                     {L.status.done}{": "}
-                    <strong>{batchProgress.succeeded}</strong>
+                    <strong>{succeeded}</strong>
                   </span>
                   <span>
                     {L.status.running}{": "}
-                    <strong>{batchProgress.running}</strong>
+                    <strong>{counts.running ?? 0}</strong>
                   </span>
                   <span>
                     {L.status.failed}{": "}
-                    <strong className="text-rose-600">{batchProgress.failed}</strong>
+                    <strong className="text-rose-600">{failed}</strong>
                   </span>
                 </div>
+                {failureClasses.length > 0 && (
+                  <div className="flex flex-col gap-1 rounded-lg bg-slate-50 p-3 border border-slate-100 text-[11px] text-slate-600">
+                    <span className="font-semibold text-slate-700">{L.heading.failuresByClass}</span>
+                    {failureClasses.map(([cls, n]) => (
+                      <span key={cls} className="flex justify-between font-mono">
+                        <span>{cls}</span>
+                        <strong>{n}</strong>
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
             <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
-              {batchProgress?.failed && batchProgress.failed > 0 ? (
+              {failed > 0 ? (
                 <button
                   onClick={handleRetryFailed}
                   className="rounded-lg bg-amber-600 px-3 py-1.5 font-semibold text-white hover:bg-amber-700 transition"
@@ -174,33 +234,73 @@ export function BatchModal({ isOpen, onClose, onSuccess }: BatchModalProps) {
             </div>
 
             <div className="flex flex-col gap-1">
-              <label className="font-semibold text-slate-700">{"Manifest URI"}</label>
+              <label className="font-semibold text-slate-700">{L.field.manifestUri}</label>
               <input
                 type="text"
                 value={manifestUri}
+                placeholder={L.field.manifestUriPlaceholder}
                 onChange={(e) => setManifestUri(e.target.value)}
                 className="rounded-lg border border-slate-300 p-2 text-slate-800 font-mono text-[11px]"
               />
+              <span className="text-[11px] text-slate-500">{L.help.manifestUriHelp}</span>
+              {manifestUri.trim() && !manifestValid && (
+                <span className="text-[11px] text-rose-600">{L.error.manifestUriInvalid}</span>
+              )}
             </div>
 
             <div className="flex flex-col gap-1">
-              <label className="font-semibold text-slate-700">{L.heading.stages}</label>
-              <div className="flex gap-2">
-                {["triage", "mitosis", "grading"].map((st) => (
-                  <button
-                    key={st}
-                    type="button"
-                    onClick={() => handleStageToggle(st)}
-                    className={`rounded px-3 py-1.5 text-xs font-semibold capitalize transition ${
-                      stages.includes(st)
-                        ? "bg-indigo-600 text-white"
-                        : "border border-slate-300 bg-white text-slate-700"
-                    }`}
-                  >
-                    {st}
-                  </button>
-                ))}
+              <label className="font-semibold text-slate-700">{L.field.split}</label>
+              <select
+                value={split}
+                onChange={(e) => setSplit(e.target.value as Split)}
+                className="rounded-lg border border-slate-300 p-2 text-slate-800"
+              >
+                <option value="train">{L.field.splitTrain}</option>
+                <option value="val">{L.field.splitVal}</option>
+                {can("eval:test_split") && <option value="test">{L.field.splitTest}</option>}
+              </select>
+            </div>
+
+            {split === "test" && (
+              <div className="flex flex-col gap-1">
+                <label className="font-semibold text-slate-700">{L.field.testAccessReason}</label>
+                <input
+                  type="text"
+                  value={testAccessReason}
+                  onChange={(e) => setTestAccessReason(e.target.value)}
+                  className="rounded-lg border border-slate-300 p-2 text-slate-800"
+                />
+                <span className="text-[11px] text-slate-500">{L.help.testAccessHelp}</span>
+                {!testReasonValid && (
+                  <span className="text-[11px] text-rose-600">{L.error.testAccessReasonRequired}</span>
+                )}
               </div>
+            )}
+
+            <div className="flex flex-col gap-1">
+              <label className="font-semibold text-slate-700">{L.heading.stages}</label>
+              <div className="flex flex-wrap gap-2">
+                {PIPELINE_STAGES.map((st) => {
+                  const included = (stages as string[]).includes(st);
+                  const isEnd = (RUN_END_STAGES as readonly string[]).includes(st);
+                  return (
+                    <button
+                      key={st}
+                      type="button"
+                      disabled={!isEnd}
+                      onClick={() => isEnd && setEndStage(st as RunEndStage)}
+                      className={`rounded px-3 py-1.5 text-xs font-semibold transition ${
+                        included
+                          ? "bg-indigo-600 text-white"
+                          : "border border-slate-300 bg-white text-slate-700"
+                      } ${isEnd ? "" : "cursor-default opacity-80"}`}
+                    >
+                      {L.stage[st]}
+                    </button>
+                  );
+                })}
+              </div>
+              <span className="text-[11px] text-slate-500">{L.help.runThroughHelp}</span>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -208,33 +308,25 @@ export function BatchModal({ isOpen, onClose, onSuccess }: BatchModalProps) {
                 <label className="font-semibold text-slate-700">{L.field.runMode}</label>
                 <select
                   value={mode}
-                  onChange={(e) => setMode(e.target.value)}
+                  onChange={(e) => setMode(e.target.value as "auto" | "manual")}
                   className="rounded-lg border border-slate-300 p-2 text-slate-800"
                 >
-                  <option value="clinical">{"clinical"}</option>
-                  <option value="eval">{"eval"}</option>
-                  <option value="shadow">{"shadow"}</option>
+                  <option value="auto">{L.field.modeAuto}</option>
+                  <option value="manual">{L.field.modeManual}</option>
                 </select>
               </div>
 
               <div className="flex flex-col gap-1">
-                <label className="font-semibold text-slate-700">{"Concurrency"}</label>
+                <label className="font-semibold text-slate-700">{L.field.concurrency}</label>
                 <input
                   type="number"
                   min={1}
                   max={16}
                   value={concurrency}
-                  onChange={(e) => setConcurrency(Number(e.target.value))}
+                  onChange={(e) => setConcurrency(Math.max(1, Number(e.target.value)))}
                   className="rounded-lg border border-slate-300 p-2 text-slate-800"
                 />
               </div>
-            </div>
-
-            {/* Dry-run estimate display */}
-            <div className="rounded-lg bg-slate-50 p-3 border border-slate-100 flex flex-col gap-1 text-[11px] text-slate-600">
-              <span className="font-semibold text-slate-700">{"Dry-run estimate"}</span>
-              <span>{"Estimated calls: ~850 model invocations"}</span>
-              <span>{"Estimated cost: $1.20 / slide (~$24.00 total)"}</span>
             </div>
 
             <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
@@ -248,8 +340,8 @@ export function BatchModal({ isOpen, onClose, onSuccess }: BatchModalProps) {
               <button
                 type="button"
                 onClick={handleStartBatch}
-                disabled={loading || stages.length === 0}
-                className="rounded-lg bg-indigo-600 px-4 py-1.5 font-semibold text-white hover:bg-indigo-700"
+                disabled={!canSubmit}
+                className="rounded-lg bg-indigo-600 px-4 py-1.5 font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
               >
                 {L.action.newBatch}
               </button>

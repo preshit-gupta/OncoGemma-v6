@@ -158,6 +158,7 @@ export const L = {
     mitoticSummary: "Mitotic summary",
     overrideComponent: "Override component",
     caseComplete: "Case complete",
+    failuresByClass: "Failures by class",
   },
   help: {
     selectCase: "Select a case to begin review.",
@@ -202,6 +203,9 @@ export const L = {
     blindAnnotationNotice: "Blinded annotation mode active; model outputs hidden.",
     resolutionRequiresRunHelp: "Resolving requires a qualifying validation run reference.",
     categoryRemedyHelp: "Guidance on remedy class for category.",
+    manifestUriHelp: "Upload backend/eval/manifests/tcga_brca_idc_val.parquet to GCS, then enter its gs:// URI.",
+    runThroughHelp: "Runs start at ingest and stop for review after the chosen stage.",
+    testAccessHelp: "Test split access is audited. State why this run needs it.",
   },
   status: {
     running: "Running…",
@@ -223,6 +227,7 @@ export const L = {
     invited: "Invited",
     active: "Active",
     disabled: "Disabled",
+    cancelled: "Cancelled",
   },
   error: {
     qcFailed: "QC failed. Override with a reason or rescan.",
@@ -253,6 +258,8 @@ export const L = {
     resolutionRequiresRun: "Resolving an issue requires specifying a validating run demonstrating metric improvement.",
     reasonRequired: "A reason is required when editing or excluding label QA items.",
     manifestMismatch: "Runs must have matching manifest hashes to be compared.",
+    manifestUriInvalid: "Manifest URI must start with gs://.",
+    testAccessReasonRequired: "Test split runs require a reason for the audit log.",
   },
   field: {
     caseId: "Case ID",
@@ -374,6 +381,15 @@ export const L = {
     deltaLow: "Delta low",
     deltaHigh: "Delta high",
     mcnemarP: "McNemar p",
+    manifestUri: "Manifest URI",
+    manifestUriPlaceholder: "gs://<bucket>/manifests/tcga_brca_idc_val.parquet",
+    concurrency: "Concurrency",
+    testAccessReason: "Test access reason",
+    splitTrain: "Train",
+    splitVal: "Validation",
+    splitTest: "Test",
+    modeAuto: "Auto",
+    modeManual: "Manual",
   },
   unit: {
     um: "µm",
