@@ -124,6 +124,18 @@ steps:
         SA=$$(gcloud run jobs describe oncogemma-worker-job --region=$_REGION --format='value(spec.template.spec.template.spec.serviceAccountName)')
         if [ -z "$$SA" ]; then echo "oncogemma-worker-job has no service account; cannot deploy the eval worker" >&2; exit 1; fi
         echo "eval worker service account: $$SA"
+        # The model endpoints and the Gemini release, as the API has them (the models.yaml variables):
+        # without them every model call of an eval run fails. The build stops if the API lacks one.
+        MODEL_ENV=$$(gcloud run services describe oncogemma-api --region=$_REGION --format=json | python3 -c '
+        import json, sys
+        names = ["VERTEX_PATH_FOUNDATION_ENDPOINT_ID", "VERTEX_PATH_FOUNDATION_LOCATION", "VERTEX_MITOSIS_ENDPOINT_ID",
+                 "VERTEX_MITOSIS_LOCATION", "VERTEX_MEDGEMMA_ENDPOINT_ID", "VERTEX_MEDGEMMA_LOCATION", "GEMINI_REFEREE_MODEL"]
+        env = {e["name"]: e.get("value") for e in json.load(sys.stdin)["spec"]["template"]["spec"]["containers"][0].get("env", [])}
+        missing = [n for n in names if not env.get(n)]
+        if missing:
+            sys.exit("oncogemma-api lacks " + ", ".join(missing))
+        print("|".join(n + "=" + env[n] for n in names))
+        ')
         FLAGS=(
           --image=$_REGION-docker.pkg.dev/$PROJECT_ID/oncogemma-repo/worker:latest
           --region=$_REGION
@@ -132,6 +144,7 @@ steps:
           --set-cloudsql-instances=$PROJECT_ID:$_REGION:oncogemma-dev-psql
           --update-env-vars=CLOUD_SQL_CONNECTION_NAME=$PROJECT_ID:$_REGION:oncogemma-dev-psql,RUN_DAEMON=true,WORKER_RUN_MODES=eval,WORKER_IDLE_EXIT_S=900
           --set-secrets=DB_PASSWORD=og-db-password:latest
+          "--update-env-vars=^|^$$MODEL_ENV"
         )
         gcloud run jobs deploy oncogemma-eval-worker "$${FLAGS[@]}"
     id: 'deploy-eval-worker'
