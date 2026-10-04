@@ -13,7 +13,8 @@ from app.main import app
 from app.models.audit import AuditEvent
 from app.models.stage_execution import StageExecution
 from app.models.validation import ValidationItem, ValidationRun
-from eval.harness.driver import drive_active_runs, take_lease
+from eval.harness.controller import RunController
+from eval.harness.driver import drive_active_runs, step_under_lease, take_lease
 from tests.harness import fake_pipeline
 from tests.harness.test_controller import (  # noqa: F401  (fixtures)
     ALL_STAGES,
@@ -148,6 +149,30 @@ def test_one_worker_drives_a_run_and_another_takes_over_when_it_stops(client, db
         assert attempts == [1] * len(ALL_STAGES)
     run = db.get(ValidationRun, batch_id)
     assert run.controller_lease_owner is None  # released when the run ended
+
+
+def test_a_local_loop_waits_while_a_worker_drives_the_run(client, db):
+    """``eval.cli`` and ``one-shot`` step a run only under the lease, so they never drive it with a worker."""
+    prefix = put_slides("ok-a.svs")
+    batch_id = uuid.UUID(client.post("/api/v1/batches", json=prefix_batch(prefix), headers=RESEARCHER).json()["batch_id"])
+    t0 = datetime.now(timezone.utc)
+    assert drive_active_runs(Session, "worker:a", lease_s=LEASE_S, now=lambda: t0) == [str(batch_id)]
+
+    controller = RunController(db, batch_id)
+    assert not step_under_lease(db, controller, "cli:laptop", lease_s=LEASE_S, now=lambda: t0)
+    assert db.get(ValidationRun, batch_id).controller_lease_owner == "worker:a"
+
+    later = t0 + timedelta(seconds=LEASE_S + 1)  # the worker stopped renewing
+    for _ in range(40):
+        step_under_lease(db, controller, "cli:laptop", lease_s=LEASE_S, now=lambda: later)
+        if controller.run.status == "completed":
+            break
+        fake_pipeline.drain(db)
+    item = db.scalars(select(ValidationItem).where(ValidationItem.run_id == batch_id)).one()
+    assert item.status == "succeeded"
+    attempts = db.scalars(select(StageExecution.attempt).where(StageExecution.case_id == item.case_id)).all()
+    assert attempts == [1] * len(ALL_STAGES)
+    assert db.get(ValidationRun, batch_id).controller_lease_owner is None  # released when the run ended
 
 
 def test_a_controller_error_fails_the_run_loudly(client, db, tmp_path, lock, monkeypatch):

@@ -105,14 +105,15 @@ def _case_key(case_id) -> uuid.UUID | str:
 
 def latest_execution(session: Session, case_id, stage: str, *, for_update: bool = False) -> StageExecution | None:
     """The latest attempt of ``stage``. ``for_update`` row-locks it so concurrent confirms
-    serialise on the status check (SPEC-03 §5.3.3); SQLite ignores the lock."""
+    serialise on the status check (SPEC-03 §5.3.3); SQLite ignores the lock. The locked read also
+    refreshes a copy the session already holds, so the status check sees another session's confirm."""
     stmt = (
         select(StageExecution)
         .where(StageExecution.case_id == case_id, StageExecution.stage == stage)
         .order_by(StageExecution.attempt.desc())
     )
     if for_update:
-        stmt = stmt.with_for_update()
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
     return session.scalars(stmt).first()
 
 
