@@ -1,31 +1,33 @@
 """
-Integration tests for Stage 4 Mitosis REST API endpoints, live recompute, and safety gate (v4.3).
+Stage 4 review API: the mitosis_v6 routes, server-side recompute, error bodies and the review gate
+(docs/contracts/mitosis_v6.md; SPEC-06 §5.6-5.8, AC8, AC10; WP-7.6a).
 """
-import os
 import uuid
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.main import app
+from app.core.config import settings
 from app.core.db import Base, get_db
+from app.core.gcs import upload_blob_from_bytes
+from app.main import app
 from app.models.case import Case
+from app.models.decision_record import DecisionRecord
+from app.models.detection import Detection
+from app.models.hotspot import Hotspot
+from app.models.hpf_site import HpfSite
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
-from app.models.detection import Detection
-from app.models.hpf_site import HpfSite
+from tests.fakes.stage2 import seed_stage2
 
-SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
-
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL,
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
-)
+engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base.metadata.create_all(bind=engine)
+
+SIDE_PX, MPP = 20000, 0.25  # 5000 µm square
 
 
 def override_get_db():
@@ -43,238 +45,220 @@ def setup_mitosis_test_db():
     yield
     app.dependency_overrides.pop(get_db, None)
 
+
 client = TestClient(app)
+HEADERS = {"X-Test-Role": "pathologist"}
+
+
+def model_candidate(case_id, cid, xy, p_a, final_decision="mitosis", review_label=None):
+    return Detection(id=cid, case_id=case_id, hotspot_id="hs_01", centroid_um=list(xy), p_a=p_a, p_b=None, vlm=None,
+                     in_tumor=None, final_decision=final_decision, decision_path="A", review_label=review_label,
+                     record_ids=[str(uuid.uuid4())])
 
 
 @pytest.fixture
 def setup_test_case():
     db = TestingSessionLocal()
     case_id = uuid.uuid4()
-    case = Case(id=case_id, created_by="pathologist_test", status="open")
-    db.add(case)
-
-    slide = Slide(
-        id=uuid.uuid4(),
-        case_id=case_id,
-        gcs_uri_original="gs://raw/slide.svs",
-        mpp_x=0.25,
-        mpp_y=0.25
-    )
-    db.add(slide)
-
-    stage_exec = StageExecution(
-        id=uuid.uuid4(),
-        case_id=case_id,
-        stage="mitosis",
-        attempt=1,
-        status="awaiting_review"
-    )
-    db.add(stage_exec)
-
-    # Add 10 HPFs
-    for i in range(1, 11):
-        hpf = HpfSite(
-            case_id=case_id,
-            seq=i,
-            center_um=[1000.0 * i, 1000.0 * i],
-            radius_um=262.0,
-            mitotic_count=1 if i <= 3 else 0,
-            source="model"
-        )
-        db.add(hpf)
-
-    # Add candidates
-    d1 = Detection(
-        id="m_0001",
-        case_id=case_id,
-        centroid_um=[1010.0, 1010.0], # Inside HPF 1
-        det_conf=0.92,
-        ver_conf=0.88,
-        label="mitosis",
-        label_source="model"
-    )
-    d2 = Detection(
-        id="m_0002",
-        case_id=case_id,
-        centroid_um=[2020.0, 2020.0], # Inside HPF 2
-        det_conf=0.85,
-        ver_conf=0.75,
-        label="mitosis",
-        label_source="model"
-    )
-    d3 = Detection(
-        id="m_0003",
-        case_id=case_id,
-        centroid_um=[3010.0, 3010.0], # Inside HPF 3
-        det_conf=0.65,
-        ver_conf=0.60,
-        label="unreviewed",
-        label_source="model"
-    )
-    db.add_all([d1, d2, d3])
+    db.add(Case(id=case_id, created_by="pathologist_test", status="open"))
+    db.add(Slide(id=uuid.uuid4(), case_id=case_id, gcs_uri_original="gs://raw/slide.svs", mpp_x=MPP, mpp_y=MPP,
+                 width_px=SIDE_PX, height_px=SIDE_PX))
+    db.add(StageExecution(id=uuid.uuid4(), case_id=case_id, stage="mitosis", attempt=1, status="awaiting_review",
+                          model_versions={"kongnet_det_midog_1": "v2"}, config_hash="a" * 64))
+    for i in range(1, 4):
+        db.add(HpfSite(case_id=case_id, seq=i, center_um=[1000.0 * i, 1000.0 * i], radius_um=262.0, mitotic_count=0,
+                       tissue_coverage=0.9, tumor_fraction=None, source="model"))
+    db.add_all([
+        model_candidate(case_id, "m_0001", (1010.0, 1010.0), 0.92),                   # inside HPF 1
+        model_candidate(case_id, "m_0002", (2020.0, 2020.0), 0.85),                   # inside HPF 2
+        model_candidate(case_id, "m_0003", (3010.0, 3010.0), 0.80, "equivocal"),      # inside HPF 3, needs review
+        model_candidate(case_id, "m_0004", (4500.0, 300.0), 0.79, "equivocal"),       # outside every HPF
+    ])
     db.commit()
     db.close()
-
     return str(case_id)
 
 
-def test_get_mitosis_stage_data(setup_test_case):
-    case_id = setup_test_case
-    res = client.get(f"/api/v1/stages/mitosis/{case_id}", headers={"X-Test-Role": "pathologist"})
-    assert res.status_code == 200
-    data = res.json()
-    assert data["case_id"] == case_id
-    assert len(data["candidates"]) == 3
-    assert len(data["hpfs"]) == 10
-    assert "summary" in data
-    assert data["summary"]["count_total"] == 2 # m_0001 and m_0002 confirmed mitoses
-    assert data["summary"]["mitotic_score"] == 1
+def get(case_id):
+    res = client.get(f"/api/v1/stages/mitosis/{case_id}", headers=HEADERS)
+    assert res.status_code == 200, res.text
+    return res.json()
 
 
-def test_recompute_endpoint(setup_test_case):
-    case_id = setup_test_case
-    # Toggle m_0003 from unreviewed to mitosis
-    payload = {
-        "case_id": case_id,
-        "candidate_labels": {
-            "m_0001": "mitosis",
-            "m_0002": "mitosis",
-            "m_0003": "mitosis"
-        },
-        "audit_toggle": {
-            "id": "m_0003",
-            "from": "unreviewed",
-            "to": "mitosis"
-        }
-    }
-    res = client.post("/api/v1/stages/mitosis/recompute", json=payload, headers={"X-Test-Role": "pathologist"})
-    assert res.status_code == 200
-    data = res.json()
-    assert data["summary"]["count_total"] == 3 # Now 3 confirmed mitoses
+def post(path, body):
+    return client.post(f"/api/v1/stages/mitosis/{path}", json=body, headers=HEADERS)
 
 
-def test_add_candidate_endpoint(setup_test_case):
-    import tempfile
-    from unittest.mock import patch, MagicMock
-    from PIL import Image
-
-    case_id = setup_test_case
-    payload = {
-        "case_id": case_id,
-        "centroid_um": [1005.0, 1005.0],
-        "label": "mitosis",
-        "reviewed_by": "pathologist_01"
-    }
-
-    mock_slide = MagicMock()
-    mock_slide.read_region.return_value = Image.new("RGB", (128, 128), color=(200, 150, 180))
-
-    with tempfile.NamedTemporaryFile(suffix=".svs", delete=False) as tmp_slide:
-        tmp_slide_path = tmp_slide.name
-    try:
-        with patch("app.routers.mitosis.get_cached_slide_path", return_value=tmp_slide_path), \
-             patch("openslide.OpenSlide", return_value=mock_slide):
-            res = client.post("/api/v1/stages/mitosis/add_candidate", json=payload, headers={"X-Test-Role": "pathologist"})
-            assert res.status_code == 200
-            data = res.json()
-            assert data["status"] == "success"
-            assert data["candidate"]["label_source"] == "pathologist"
-    finally:
-        if os.path.exists(tmp_slide_path):
-            os.remove(tmp_slide_path)
-
-
-def test_bulk_action_endpoint(setup_test_case):
-    case_id = setup_test_case
-    payload = {
-        "case_id": case_id,
-        "action": "reject_remaining_unreviewed",
-        "reviewed_by": "pathologist_01"
-    }
-    res = client.post("/api/v1/stages/mitosis/bulk_action", json=payload, headers={"X-Test-Role": "pathologist"})
-    assert res.status_code == 200
-    data = res.json()
-    # All unreviewed should now be not_mitosis
-    unreviewed = [c for c in data["candidates"] if c["label"] == "unreviewed"]
-    assert len(unreviewed) == 0
-
-
-def test_confirm_safety_gate_blocking_and_success(setup_test_case):
-    case_id = setup_test_case
-    
-    # Attempt confirm while unreviewed high-conf candidates exist
+def count_records(case_id):
     db = TestingSessionLocal()
-    # Re-insert high confidence unreviewed candidate
-    db.add(Detection(
-        id="m_high_conf",
-        case_id=uuid.UUID(case_id),
-        centroid_um=[1500.0, 1500.0],
-        det_conf=0.88,
-        ver_conf=0.82,
-        label="unreviewed",
-        label_source="model"
-    ))
+    try:
+        return db.scalars(select(DecisionRecord).where(
+            DecisionRecord.case_id == uuid.UUID(case_id), DecisionRecord.task == "mitosis_count"
+        ).order_by(DecisionRecord.created_at)).all()
+    finally:
+        db.close()
+
+
+def test_get_serves_the_v6_payload(setup_test_case):
+    case_id = setup_test_case
+    data = get(case_id)
+    assert data["case_id"] == case_id and data["status"] == "awaiting_review"
+    assert data["slide"] == {"width_px": SIDE_PX, "height_px": SIDE_PX, "mpp_x": MPP, "mpp_y": MPP}
+    by_id = {c["id"]: c for c in data["candidates"]}
+    assert set(by_id) == {"m_0001", "m_0002", "m_0003", "m_0004"}
+    assert by_id["m_0001"]["counted"] is True and by_id["m_0003"]["counted"] is False
+    assert by_id["m_0001"]["in_tumor"] is None and by_id["m_0001"]["decision_path"] == "A"
+    assert by_id["m_0001"]["crop_url"] == f"/api/v1/stages/mitosis/{case_id}/candidates/m_0001/crop"
+    assert by_id["m_0001"]["context_url"] == f"/api/v1/stages/mitosis/{case_id}/candidates/m_0001/context"
+    assert [h["count"] for h in data["hpfs"]] == [1, 1, 0]
+    assert all(h["tissue_coverage"] == 0.9 and h["tumor_fraction"] is None for h in data["hpfs"])
+    summary = data["summary"]
+    assert (summary["count_total"], summary["n_hpf"], summary["n_equivocal"]) == (2, 3, 1)  # m_0004 is outside the HPFs
+    assert summary["flags"] == ["hpf_count_lt_10"]
+    assert summary["area_mm2"] == 0.647 and summary["mitotic_score"] == 1  # 2 / 0.647 mm² = 3.09/mm² < 3.65
+    assert data["provenance"] == {"stage": "mitosis", "model_versions": {"kongnet_det_midog_1": "v2"},
+                                  "config_hash": "a" * 64, "run_mode": "clinical"}
+
+
+def test_get_without_slide_geometry_is_not_found_instead_of_an_invented_size(setup_test_case):
+    case_id = setup_test_case
+    db = TestingSessionLocal()
+    slide = db.scalars(select(Slide).where(Slide.case_id == uuid.UUID(case_id))).one()
+    slide.width_px = None
+    db.commit()
+    db.close()
+    res = client.get(f"/api/v1/stages/mitosis/{case_id}", headers=HEADERS)
+    assert res.status_code == 404 and res.json()["error"] == "not_found"
+
+
+def test_review_recomputes_on_the_server_and_writes_a_superseding_count_record(setup_test_case):
+    case_id = setup_test_case
+    data = post("review", {"case_id": case_id, "candidate_id": "m_0003", "review_label": "mitosis"}).json()
+    assert data["summary"]["count_total"] == 3 and data["summary"]["n_equivocal"] == 0
+    assert next(c for c in data["candidates"] if c["id"] == "m_0003")["counted"] is True
+
+    data = post("review", {"case_id": case_id, "candidate_id": "m_0001", "review_label": "not_mitosis"}).json()
+    assert data["summary"]["count_total"] == 2
+    data = post("review", {"case_id": case_id, "candidate_id": "m_0001", "review_label": None}).json()
+    assert data["summary"]["count_total"] == 3  # cleared: the model's decision counts again
+
+    records = count_records(case_id)
+    assert len(records) == 3
+    assert records[0].supersedes_id is None and records[1].supersedes_id == records[0].id and records[2].supersedes_id == records[1].id
+    assert records[-1].output == data["summary"]
+    db = TestingSessionLocal()
+    assert [h.mitotic_count for h in db.scalars(select(HpfSite).where(HpfSite.case_id == uuid.UUID(case_id)).order_by(HpfSite.seq))] == [1, 1, 1]
+    db.close()
+
+
+def test_review_of_an_unknown_candidate_is_candidate_not_found(setup_test_case):
+    res = post("review", {"case_id": setup_test_case, "candidate_id": "m_9999", "review_label": "mitosis"})
+    assert res.status_code == 404 and res.json()["error"] == "candidate_not_found"
+
+
+def lock(case_id, status="confirmed"):
+    db = TestingSessionLocal()
+    db.scalars(select(StageExecution).where(StageExecution.case_id == uuid.UUID(case_id))).one().status = status
     db.commit()
     db.close()
 
-    # Should fail 400 Bad Request
-    res_fail = client.post(
-        "/api/v1/stages/mitosis/confirm",
-        json={"case_id": case_id, "reviewed_by": "pathologist_01"},
-        headers={"X-Test-Role": "pathologist"}
-    )
-    assert res_fail.status_code == 400
-    assert "Clinical Safety Gate" in res_fail.json()["detail"]
 
-    # Clear unreviewed via bulk reject
-    client.post(
-        "/api/v1/stages/mitosis/bulk_action",
-        json={"case_id": case_id, "action": "reject_remaining_unreviewed", "reviewed_by": "pathologist_01"},
-        headers={"X-Test-Role": "pathologist"}
-    )
+@pytest.mark.parametrize("path,body", [
+    ("review", {"candidate_id": "m_0001", "review_label": "not_mitosis"}),
+    ("add", {"centroid_um": [1000.0, 1000.0]}),
+    ("replace-hpfs", {}),
+])
+def test_edits_on_a_confirmed_stage_are_stage_locked(setup_test_case, path, body):
+    lock(setup_test_case)
+    res = post(path, {"case_id": setup_test_case, **body})
+    assert res.status_code == 409 and res.json()["error"] == "stage_locked"
 
-    # Now confirm should succeed 200 OK and queue Stage 5 (grading)
-    res_success = client.post(
-        "/api/v1/stages/mitosis/confirm",
-        json={"case_id": case_id, "reviewed_by": "pathologist_01"},
-        headers={"X-Test-Role": "pathologist"}
-    )
-    assert res_success.status_code == 200
-    assert res_success.json()["next_stage"] == "grading"
+
+def test_add_outside_the_slide_is_out_of_bounds(setup_test_case):
+    res = post("add", {"case_id": setup_test_case, "centroid_um": [6000.0, 100.0]})
+    assert res.status_code == 422 and res.json()["error"] == "out_of_bounds"
+
+
+def test_add_on_an_existing_candidate_labels_it_instead_of_adding_a_second_row(setup_test_case):
+    case_id = setup_test_case
+    data = post("add", {"case_id": case_id, "centroid_um": [3012.0, 3011.0]}).json()
+    assert len(data["candidates"]) == 4
+    m3 = next(c for c in data["candidates"] if c["id"] == "m_0003")
+    assert m3["review_label"] == "mitosis" and m3["counted"] is True
+
+
+def test_confirm_needs_every_equivocal_candidate_in_an_hpf_reviewed(setup_test_case):
+    case_id = setup_test_case
+    res = post("confirm", {"case_id": case_id})
+    assert res.status_code == 409
+    assert res.json()["error"] == "equivocal_unreviewed" and res.json()["ids"] == ["m_0003"]  # m_0004 is outside the HPFs
+
+    post("review", {"case_id": case_id, "candidate_id": "m_0003", "review_label": "not_mitosis"})
+    res = post("confirm", {"case_id": case_id})
+    assert res.status_code == 200, res.text
+    assert res.json() == {"status": "confirmed", "next_stage": "grading"}
+
+
+def test_confirm_when_not_awaiting_review(setup_test_case):
+    lock(setup_test_case, "running")
+    res = post("confirm", {"case_id": setup_test_case})
+    assert res.status_code == 409 and res.json()["error"] == "not_awaiting_review"
 
 
 def test_confirm_mitosis_does_not_clobber_completed_grading(setup_test_case):
     case_id = setup_test_case
     case_uid = uuid.UUID(case_id)
-
     db = TestingSessionLocal()
-    # Set grading stage execution to done
-    grading_exec = StageExecution(
-        case_id=case_uid,
-        stage="grading",
-        attempt=1,
-        status="done"
-    )
-    db.add(grading_exec)
+    db.add(StageExecution(case_id=case_uid, stage="grading", attempt=1, status="done"))
     db.commit()
     db.close()
+    post("review", {"case_id": case_id, "candidate_id": "m_0003", "review_label": "not_mitosis"})
 
-    # Clear unreviewed detections
-    client.post(
-        "/api/v1/stages/mitosis/bulk_action",
-        json={"case_id": case_id, "action": "reject_remaining_unreviewed", "reviewed_by": "pathologist_01"},
-        headers={"X-Test-Role": "pathologist"}
-    )
-
-    # Calling confirm should succeed but NOT reset grading stage to queued
-    res_confirm = client.post(
-        "/api/v1/stages/mitosis/confirm",
-        json={"case_id": case_id, "reviewed_by": "pathologist_01"},
-        headers={"X-Test-Role": "pathologist"}
-    )
-    assert res_confirm.status_code == 200
-
+    assert post("confirm", {"case_id": case_id}).status_code == 200
     db = TestingSessionLocal()
     g_exec = db.scalars(select(StageExecution).where(StageExecution.case_id == case_uid, StageExecution.stage == "grading")).first()
     assert g_exec.status == "done"  # Preserved, not clobbered to queued
     db.close()
+
+
+@pytest.mark.parametrize("path", ["recompute", "add_candidate", "bulk_action", "re_place_hpfs"])
+def test_the_v5_routes_are_gone(setup_test_case, path):
+    assert post(path, {"case_id": setup_test_case}).status_code in (404, 405)
+
+
+def test_replace_hpfs_places_from_counted_candidates_inside_the_hotspots(setup_test_case):
+    case_id = setup_test_case
+    db = TestingSessionLocal()
+    case_uid = uuid.UUID(case_id)
+    slide = db.scalars(select(Slide).where(Slide.case_id == case_uid)).one()
+    exec_id = db.scalars(select(StageExecution).where(StageExecution.case_id == case_uid)).one().id
+    db.add(Hotspot(id="hs_01", case_id=case_uid, stage_execution_id=exec_id, area_mm2=1.44, prob_mean=0.9, prob_max=0.95,
+                   polygon_um=[[1800.0, 1800.0], [3000.0, 1800.0], [3000.0, 3000.0], [1800.0, 3000.0]], source="model", excluded=False))
+    db.commit()
+    seed_stage2(db, case_uid, slide.id, SIDE_PX * MPP, SIDE_PX * MPP)
+    db.close()
+
+    res = post("replace-hpfs", {"case_id": case_id})
+    assert res.status_code == 200, res.text
+    hpfs = res.json()["hpfs"]
+    assert hpfs and all(1800.0 <= h["center_um"][0] <= 3000.0 and 1800.0 <= h["center_um"][1] <= 3000.0 for h in hpfs)
+    for i, a in enumerate(hpfs):
+        assert a["tissue_coverage"] >= 0.7
+        for b in hpfs[i + 1:]:
+            assert ((a["center_um"][0] - b["center_um"][0]) ** 2 + (a["center_um"][1] - b["center_um"][1]) ** 2) ** 0.5 >= 524.0 - 1e-6
+    assert len(count_records(case_id)) == 1
+
+
+def test_replace_hpfs_without_hotspots_is_refused(setup_test_case):
+    res = post("replace-hpfs", {"case_id": setup_test_case})
+    assert res.status_code == 409 and res.json()["error"] == "no_hotspots"
+
+
+def test_candidate_images_are_served_when_stored_and_404_otherwise(setup_test_case):
+    case_id = setup_test_case
+    res = client.get(f"/api/v1/stages/mitosis/{case_id}/candidates/m_0001/crop", headers=HEADERS)
+    assert res.status_code == 404 and res.json()["error"] == "image_not_found"
+    upload_blob_from_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_id}/mitosis/crops/m_0001_context.png", b"\x89PNG-context", "image/png")
+    res = client.get(f"/api/v1/stages/mitosis/{case_id}/candidates/m_0001/context", headers=HEADERS)
+    assert res.status_code == 200 and res.content == b"\x89PNG-context" and res.headers["content-type"] == "image/png"
+    assert client.get(f"/api/v1/stages/mitosis/{case_id}/candidates/m_0001/other", headers=HEADERS).status_code == 422

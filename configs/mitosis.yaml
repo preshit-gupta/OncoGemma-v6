@@ -32,16 +32,21 @@ referee:
   context_um: 512.0 # context field ...
   context_px: 512 # ... resampled to ~1.0 um/px
 
-# Confirming Stage 4 is refused while a candidate at or above this confidence is unreviewed (v5 value).
-review:
-  gate_min_conf: 0.50
+# Tumour-cell gate (SPEC-06 §5.5). Off until WP-7.6b: candidates carry in_tumor = null and are eligible.
+tumor_gate: false
+
+# Review images of every persisted candidate (contract mitosis_v6 crop_url / context_url), raw colour, PNG.
+review_crops:
+  crop_um: 64.0 # crop: 64 um ...
+  crop_mpp: 0.25 # ... at 0.25 um/px (256 px)
+  context_um: 256.0 # context: 256 um ...
+  context_mpp: 1.0 # ... at 1.0 um/px (256 px)
 
 hpf:
   radius_um: 262.0 # 250-270 um field radius (area ≈ 0.2157 mm²)
   count: 10 # 10 non-overlapping fields (cumulative area ≈ 2.157 mm²)
   density_grid_res_um: 16.0 # Spatial density sampling resolution
-  min_separation_um: 524.0 # 2 * radius_um (strict non-overlap)
-  relaxed_min_separation_um: 393.0 # 1.5 * radius_um (overlap relaxation for constrained tumor margins)
+  min_separation_um: 524.0 # 2 * radius_um: fields never overlap; fewer fit -> n_hpf < count (SPEC-06 §5.8)
   min_tissue_coverage: 0.70 # minimum tissue fraction inside an HPF (v5 code default)
   review_field_um: 577.29 # review image width: the viewer's 520 px canvas shows a 236 px reticle for radius_um (520 * 262 / 236)
   review_px: 2048 # ... rendered 2048 px square (~0.28 um/px)

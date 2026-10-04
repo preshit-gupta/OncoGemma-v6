@@ -224,17 +224,12 @@ class MitosisHpfConfig(StrictModel):
     review_px: PositiveInt
     density_grid_res_um: PositiveFloat
     min_separation_um: PositiveFloat
-    relaxed_min_separation_um: PositiveFloat
     # Minimum tissue fraction inside a placed HPF.
     min_tissue_coverage: Fraction
 
     @model_validator(mode="after")
     def _non_overlapping(self) -> "MitosisHpfConfig":
         _require(self.min_separation_um >= 2 * self.radius_um, "min_separation_um must be at least 2 * radius_um")
-        _require(
-            self.relaxed_min_separation_um <= self.min_separation_um,
-            "relaxed_min_separation_um must not exceed min_separation_um",
-        )
         return self
 
 
@@ -257,10 +252,13 @@ class MitosisScoringConfig(StrictModel):
     classic_area_mm2: PositiveFloat
 
 
-class MitosisReviewConfig(StrictModel):
-    """Confirmation gate: no candidate at or above this detector or referee confidence may stay unreviewed."""
+class MitosisReviewCropsConfig(StrictModel):
+    """The two review images of every persisted candidate (contract mitosis_v6), independent of any model's inputs."""
 
-    gate_min_conf: Fraction
+    crop_um: PositiveFloat
+    crop_mpp: Mpp
+    context_um: PositiveFloat
+    context_mpp: Mpp
 
 
 class MitosisConfig(StrictModel):
@@ -268,7 +266,14 @@ class MitosisConfig(StrictModel):
     referee: MitosisRefereeConfig
     hpf: MitosisHpfConfig
     scoring: MitosisScoringConfig
-    review: MitosisReviewConfig
+    # Tumour-cell gate (SPEC-06 §5.5); WP-7.6b implements it, so it cannot be switched on yet.
+    tumor_gate: bool
+    review_crops: MitosisReviewCropsConfig
+
+    @model_validator(mode="after")
+    def _gate_not_implemented(self) -> "MitosisConfig":
+        _require(not self.tumor_gate, "mitosis.tumor_gate is not implemented yet (WP-7.6b); it must be false")
+        return self
 
 
 # --- scoring.yaml -----------------------------------------------------------

@@ -65,6 +65,21 @@ class ReviewGateError(StageServiceError):
         self.status_code = status_code
 
 
+class NotAwaitingReview(StageConflict):
+    """The stage is not awaiting review, so it cannot be confirmed."""
+
+
+class EquivocalUnreviewed(ReviewGateError):
+    """Stage 4: an ``equivocal`` candidate inside an HPF has no pathologist label (SPEC-06 §5.6)."""
+
+    def __init__(self, ids: list[str]):
+        super().__init__(
+            f"{len(ids)} equivocal candidate(s) inside an HPF need a review label before Stage 4 can be confirmed.",
+            status_code=409,
+        )
+        self.ids = ids
+
+
 class StageOutputUnavailable(StageServiceError):
     """The machine output the confirmation needs could not be read."""
 
@@ -366,9 +381,12 @@ def _confirm_triage(session: Session, case_id: uuid.UUID, actor: str, no_invasiv
 
 
 def _confirm_mitosis(session: Session, case_id: uuid.UUID, actor: str) -> ConfirmResult:
-    """Clinical safety gate, then snapshot the confirmed candidates, HPFs and score and queue grading."""
-    from pipeline.grading import calculate_mitotic_score_from_detections_and_hpfs
-    from pipeline.scoring import compute_nottingham_mitotic_score
+    """Review gate, then snapshot the confirmed candidates, HPFs and score and queue grading.
+
+    Every ``equivocal`` candidate inside an HPF needs a ``review_label`` (SPEC-06 §5.6); counts and
+    score come from ``pipeline/scoring.py`` over the ``counted`` column.
+    """
+    from pipeline.scoring import equivocal_unreviewed_in_hpfs, summarize_stage4
 
     case = session.get(Case, case_id)
     if case is None:
@@ -377,53 +395,43 @@ def _confirm_mitosis(session: Session, case_id: uuid.UUID, actor: str) -> Confir
     if execution is None:
         raise StageNotFound("Stage 4 (mitosis) not found for this case")
     if execution.status != "awaiting_review":
-        raise StageConflict(
+        raise NotAwaitingReview(
             f"Mitosis stage is in status '{execution.status}', must be 'awaiting_review' to confirm."
         )
 
-    gate = get_pipeline_config().mitosis.review.gate_min_conf
-    unreviewed = session.scalars(
-        select(Detection).where(
-            Detection.case_id == case_id,
-            Detection.label == "unreviewed",
-            (Detection.det_conf >= gate) | (Detection.ver_conf >= gate),
-        )
-    ).all()
-    if unreviewed:
-        raise ReviewGateError(
-            f"Clinical Safety Gate: {len(unreviewed)} unreviewed candidate mitotic figure(s) with confidence "
-            f">= {gate:.2f} remain. Please review or use 'Bulk Reject' before confirming."
-        )
-
-    _mark_confirmed(execution, actor, datetime.now(timezone.utc))
-
-    detections = session.scalars(select(Detection).where(Detection.case_id == case_id)).all()
+    detections = session.scalars(select(Detection).where(Detection.case_id == case_id).order_by(Detection.id)).all()
     hpf_rows = session.scalars(
         select(HpfSite).where(HpfSite.case_id == case_id).order_by(HpfSite.seq.asc())
     ).all()
     candidates = [
         {
             "id": d.id,
-            "centroid_um": d.centroid_um,
-            "label": d.label,
-            "label_source": d.label_source,
-            "det_conf": d.det_conf,
-            "ver_conf": d.ver_conf,
             "hotspot_id": d.hotspot_id,
-            "crop_uri": d.crop_uri,
-            "crop_orig_uri": d.crop_orig_uri,
+            "centroid_um": d.centroid_um,
+            "p_a": d.p_a,
+            "p_b": d.p_b,
+            "vlm": d.vlm,
+            "in_tumor": d.in_tumor,
+            "final_decision": d.final_decision,
+            "decision_path": d.decision_path,
+            "review_label": d.review_label,
+            "counted": bool(d.counted),
+            "record_ids": d.record_ids,
         }
         for d in detections
     ]
     hpfs = [
-        {"seq": h.seq, "center_um": h.center_um, "radius_um": h.radius_um, "count": h.mitotic_count, "source": h.source}
+        {"seq": h.seq, "center_um": h.center_um, "radius_um": h.radius_um, "tissue_coverage": h.tissue_coverage,
+         "tumor_fraction": h.tumor_fraction, "source": h.source}
         for h in hpf_rows
     ]
-    scoring = get_pipeline_config().mitosis.scoring
-    total, _ = calculate_mitotic_score_from_detections_and_hpfs(candidates, hpfs, scoring)
-    summary = compute_nottingham_mitotic_score(
-        count_total=total, n_hpf=len(hpfs), radius_um=None, scoring=scoring, hpfs=hpfs
-    )
+    blocking = equivocal_unreviewed_in_hpfs(candidates, hpfs)
+    if blocking:
+        raise EquivocalUnreviewed(blocking)
+
+    _mark_confirmed(execution, actor, datetime.now(timezone.utc))
+    mitosis_cfg = get_pipeline_config().mitosis
+    hpfs, summary = summarize_stage4(candidates, hpfs, scoring=mitosis_cfg.scoring, hpf_count=mitosis_cfg.hpf.count)
 
     # The confirmed snapshot replaces the machine lists in output.json; other keys are kept.
     blob = f"cases/{case_id}/mitosis/output.json"
@@ -443,10 +451,10 @@ def _confirm_mitosis(session: Session, case_id: uuid.UUID, actor: str) -> Confir
         next_execution = queue_stage(session, case_id, "grading", parent=execution)
     case.status = "open"
     _audit(session, case_id, actor, "stage_confirmed", "mitosis", {
-        "next_stage": "grading", "mitotic_score": summary.get("score"), "count_total": total,
+        "next_stage": "grading", "mitotic_score": summary["mitotic_score"], "count_total": summary["count_total"],
     })
     return ConfirmResult(str(case_id), "mitosis", "grading", next_execution, {
-        "mitotic_score": summary.get("score"), "count_total": total,
+        "mitotic_score": summary["mitotic_score"], "count_total": summary["count_total"],
     })
 
 

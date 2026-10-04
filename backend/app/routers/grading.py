@@ -169,12 +169,12 @@ def _build_grading_stage_data_dict(
 
     if not grading_record or not grading_record.machine:
         hpf_sites = list(db.scalars(select(HpfSite).where(HpfSite.case_id == case_uid)).all())
-        confirmed_dets = list(db.scalars(select(Detection).where(Detection.case_id == case_uid, Detection.label == "mitosis")).all())
+        confirmed_dets = list(db.scalars(select(Detection).where(Detection.case_id == case_uid, Detection.counted.is_(True))).all())
         # No mitotic score until Stage 4 has HPFs or an output with a score.
         m_score = None
         total_mitoses = 0
         if hpf_sites and confirmed_dets:
-            cands_for_score = [{"id": d.id, "centroid_um": d.centroid_um, "label": "mitosis"} for d in confirmed_dets]
+            cands_for_score = [{"id": d.id, "centroid_um": d.centroid_um, "counted": True} for d in confirmed_dets]
             hpfs_for_score = [{"seq": h.seq, "center_um": h.center_um, "radius_um": h.radius_um, "count": 0} for h in hpf_sites]
             total_mitoses, m_score = calculate_mitotic_score_from_detections_and_hpfs(
                 cands_for_score, hpfs_for_score, mitotic_scoring

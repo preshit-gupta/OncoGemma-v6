@@ -147,15 +147,16 @@ def rehydrate_case_from_gcs(case_id_val: Any, db: Session) -> Case | None:
                             case_id=case_uuid,
                             hotspot_id=c.get("hotspot_id"),
                             centroid_um=c.get("centroid_um", [0.0, 0.0]),
-                            det_conf=c.get("det_conf"),
-                            ver_conf=c.get("ver_conf"),
-                            label=c.get("label", "unreviewed"),
-                            label_source=c.get("label_source", "model"),
-                            medgemma_verdict=c.get("medgemma_verdict"),
-                            medgemma_rationale=c.get("medgemma_rationale"),
-                            medgemma_confidence=c.get("medgemma_confidence"),
-                            crop_uri=c.get("crop_uri"),
-                            crop_orig_uri=c.get("crop_orig_uri"),
+                            # The v6 fields output.json carries (contract mitosis_v6); counted is generated.
+                            p_a=c.get("p_a"),
+                            p_b=c.get("p_b"),
+                            vlm=c.get("vlm"),
+                            rule_override=bool(c.get("rule_override", False)),
+                            in_tumor=c.get("in_tumor"),
+                            final_decision=c["final_decision"],
+                            decision_path=c["decision_path"],
+                            review_label=c.get("review_label"),
+                            record_ids=c.get("record_ids"),
                         )
                         db.add(det_obj)
                     for h in mitosis_json.get("hpfs", []):
@@ -165,6 +166,8 @@ def rehydrate_case_from_gcs(case_id_val: Any, db: Session) -> Case | None:
                             center_um=h.get("center_um", [0.0, 0.0]),
                             radius_um=float(h.get("radius_um", 262.0)),
                             mitotic_count=int(h.get("count", 0)),
+                            tissue_coverage=h.get("tissue_coverage"),
+                            tumor_fraction=h.get("tumor_fraction"),
                             source=str(h.get("source", "model")),
                         )
                         db.add(hpf_obj)

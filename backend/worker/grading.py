@@ -300,10 +300,10 @@ def run_grading(stage_exec: StageExecution, db: Session, runtime: StageRuntime) 
     if not hpf_sites:
         raise ValueError(f"Case {case_id} has no Stage 4 HPFs. Confirm the mitosis stage before grading.")
     confirmed_dets = list(db.scalars(
-        select(Detection).where(Detection.case_id == case.id, Detection.label == "mitosis")
+        select(Detection).where(Detection.case_id == case.id, Detection.counted.is_(True))
     ).all())
     if confirmed_dets:
-        cands_for_score = [{"id": d.id, "centroid_um": d.centroid_um, "label": "mitosis"} for d in confirmed_dets]
+        cands_for_score = [{"id": d.id, "centroid_um": d.centroid_um, "counted": True} for d in confirmed_dets]
         hpfs_for_score = [{"seq": h.seq, "center_um": h.center_um, "radius_um": h.radius_um, "count": 0} for h in hpf_sites]
         total_mitoses, mitotic_score = calculate_mitotic_score_from_detections_and_hpfs(
             cands_for_score, hpfs_for_score, mitotic_scoring
