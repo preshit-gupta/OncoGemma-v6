@@ -64,8 +64,8 @@ The card column links the delegate task cards.
 | 7.3, 7.4, 7.5 | Attribution study, classifier B, referee v2, definition file | 06 §3, 5.3–5.4, 6.2 | — | — | — | **deferred to the next iteration** (D19) |
 | 8.6 | `grading_v6` API, hotspot-framed stratified sampling, separate tubule/pleomorphism reads, unbiased aggregation (baseline end to end) | 07 §4–5.2, 6.1, 7.1, 7.3 | L | C | 7.6a, 6.2/6.3 (merged), 8.5 (merged) | [WP-8.6](tasks/WP-8.6-grading-v6-api.md) (**production grade screen broken until done**) |
 | 8.7 | Validate the grading baseline on TCGA-BRCA val (fixed settings, no tuning) | 02 §5, 07 §7.1, 8.2 (metrics) | M | C | 8.6, TCGA in-place reads | [WP-8.7](tasks/WP-8.7-grading-baseline-validation.md) |
-| 8.1 | Tumour-mask sampling, aggregation, bias removal | 07 §4–5.2 | — | — | — | **absorbed into 8.6** (sampling, aggregation, B2–B5); the whole-tumour frame is deferred (proposed, §2.3) |
-| 8.2, 8.3, 8.4 | VLM arms (T1 `@v2`, T1-MG, P1), StarDist and nuclear features, MIL/ordinal heads, H2, direct-grade comparator, attribution study | 07 §5.3–5.4, 6.2–6.4, 7.2, 8.2 | — | — | — | **deferred to the next iteration** (proposed, §2.3) |
+| 8.1 | Tumour-mask sampling, aggregation, bias removal | 07 §4–5.2 | — | — | — | **absorbed into 8.6** (sampling, aggregation, B2–B5); the whole-tumour frame is deferred (§2.3, D21) |
+| 8.2, 8.3, 8.4 | VLM arms (T1 `@v2`, T1-MG, P1), StarDist and nuclear features, MIL/ordinal heads, H2, direct-grade comparator, attribution study | 07 §5.3–5.4, 6.2–6.4, 7.2, 8.2 | — | — | — | **deferred to the next iteration** (§2.3, D21) |
 | 8.5 | GradingReviewWorkspace rewrite | 07 §10 | M | D | contract | [WP-8.5](tasks/WP-8.5-grading-workspace.md) **done** (#9) |
 | 9.1 | Research API | 08 §7 | M | D+R | 5.5 | later |
 | 9.2 | Research UI | 08 §3–6 | L | D | contract | [WP-9.2](tasks/WP-9.2-research-ui.md) |
@@ -117,9 +117,9 @@ Notes for the next iteration:
 - The A2 referee run was a mismatched setup. The v1 prompt asks for the v5 fields while Gemini is constrained to `MitosisVerdict`, it captions the images in the wrong order, and it promises a marker that is never drawn.
 - RC11 (transposed coordinates) is the largest v5 cause and is not in SPEC-06 §1.
 
-### 2.3 WP-8 re-plan (2026-10-04, proposed): baseline first
+### 2.3 WP-8 re-plan (2026-10-04): baseline first
 
-**Status: proposed by Claude on 2026-10-04 for the program owner to confirm.** It applies D19's baseline-first scope to Stage 5, following the owner's WP-8.6 decisions of 2026-10-02.
+**Confirmed by the program owner on 2026-10-04 (D21).** It applies D19's baseline-first scope to Stage 5, following the owner's WP-8.6 decisions of 2026-10-02.
 
 **Where Stage 5 is.**
 - Already removed in WP-2.3: the v5 doer, the numeric anchors and the silent defaults (B3 anchoring, B5, B6). Estimates go through the gateway with strict schemas, and a failed estimate becomes `null` plus `needs_human`.
@@ -130,7 +130,7 @@ Notes for the next iteration:
 1. **WP-8.6** ships the baseline end to end. It covers the `grading_v6` API, stratified samples inside the confirmed hotspots (owner, 2026-10-02), tubule at 512 µm @ 1.0 µm/px, pleomorphism at 128 µm @ 0.25 µm/px, area-weighted T%, mode P, no confidence weights, and M only through `pipeline/scoring.py`. It starts after WP-7.6a merges, because both edit the grading readers and `scoring.py`.
 2. **WP-8.7** validates that baseline on the locked TCGA val split with fixed settings. It reports NS-G, the band metrics, and the per-band signed error that tests SPEC-07 §1's upward-bias hypothesis. It needs the harness to read TCGA slides in place, and an owner go-ahead for the live run.
 
-**Deferred to the next iteration (proposed).** These are tested against the validated baseline:
+**Deferred to the next iteration.** These are tested against the validated baseline:
 - WP-8.1's whole-tumour sampling frame (SPEC-07 §4) versus the hotspot frame;
 - the attribution study from G0 = v5 (§8.2);
 - WP-8.2 arms: T1 with `tubule@v2`/`pleo@v2` and the definition files, T1-MG, T1-chain, P1 `p75`;
@@ -138,10 +138,11 @@ Notes for the next iteration:
 - WP-8.4: T3/P4 ABMIL, P2/P3 ordinal, H2, and the §7.2 direct-grade comparator;
 - T4 cut-point calibration.
 
-**Open for the owner:**
-- confirm this split;
-- the P tie rule (WP-8.6 proposes `null` + `needs_human`);
-- a source for the Thennavan et al. histotype labels, which S5-HT needs (`report.py` marks it unavailable).
+**Owner decisions (2026-10-04):**
+- The split above is confirmed.
+- When pleomorphism field scores tie, P takes the highest score.
+- The WP-8.7 live run is approved.
+- The owner supplies the Thennavan et al. histotype labels after the other WP-8 parts are done; a follow-up adds S5-HT.
 
 ## 3. Token-conscious working rules
 
@@ -186,3 +187,4 @@ Notes for the next iteration:
 | D18 | 2026-10-02 | WP-7 re-planned from the measurements: 7.6 split into 7.6a/7.6b, 7.8 added | this file §2.2 |
 | D19 | 2026-10-02 | **Baseline first.** This iteration validates the baseline (KongNet, τ 0.75, NMS 7.5 µm, referee off). The attribution study, classifier B and training code, referee v2, and calibration are deferred to the next iteration | this file §2.2 |
 | D20 | 2026-10-02 | **This version is built for TCGA-BRCA only** (narrows D1). BCNB is deferred, with its core-biopsy checks (SPEC-05 AC8, per-profile `τ_tumor` from BCNB val, the BCNB binary loss term); the `core_biopsy` profile stays in code. BCSS counts as TCGA-BRCA: its expert ROI masks on TCGA-BRCA slides are the tumour-head tile labels, read in raw colour from the GDC slides by HTTP range requests (the BCSS release has only colour-normalised RGBs). MIDOG++ stays as the mitosis detector's validation set | SPEC-05 §4, WP-6.2 |
+| D21 | 2026-10-04 | **Stage 5, baseline first.** WP-8.6 ships the baseline, and WP-8.7 validates it on TCGA val with fixed settings. WP-8.1 is absorbed into 8.6. WP-8.2–8.4 and the SPEC-07 attribution study are deferred. Pleomorphism ties take the highest score | this file §2.3 |

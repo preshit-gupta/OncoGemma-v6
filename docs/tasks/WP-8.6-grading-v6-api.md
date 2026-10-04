@@ -2,10 +2,11 @@
 
 | Owner | Size | Spec | Depends on | Lane |
 |---|---|---|---|---|
-| Claude | L | SPEC-07 §4, §5.1–5.2, §6.1, §7.1, §7.3; contract `grading_v6` | WP-6.2, WP-6.3, WP-8.5 (merged); **WP-7.6a (must merge first)** | Claude (`backend/**`, `configs/**`) |
+| Claude | L | SPEC-07 §4, §5.1–5.2, §6.1, §7.1, §7.3; contract `grading_v6` | WP-6.2, WP-6.3, WP-8.5, WP-7.6a (all merged) | Claude (`backend/**`, `configs/**`) |
 
-> **Refreshed 2026-10-04** against `main` (`a2803da`) and the WP-7.6a work in progress. Changes from the 2026-10-02 card:
-> - WP-7.6a edits the same files (`routers/grading.py`, `worker/grading.py`, `services/stages.py`, `core/rehydrate.py`, `pipeline/scoring.py`), so start from `main` after it merges.
+> **Refreshed 2026-10-04** against `main` after WP-7.6a merged (#47). Changes from the 2026-10-02 card:
+> - WP-7.6a edited the same files (`routers/grading.py`, `worker/grading.py`, `services/stages.py`, `core/rehydrate.py`, `pipeline/scoring.py`). Grading already reads `counted`, but it still calls its own mitotic helpers.
+> - **Owner decisions (2026-10-04):** the WP-8 split is confirmed (plan §2.3, D21). When pleomorphism field scores tie, P takes the **highest** tied score.
 > - WP-7.6a makes `pipeline/scoring.py` the single counting implementation (SPEC-06 AC10). Detections count by the generated `counted` column, and a summary with no HPF has `mitotic_score: null`. This card takes M from that module and deletes grading's own mitotic helpers (task 3).
 > - Line references are replaced by symbols. The "confirmed hotspot" definition is spelled out (task 1).
 > - Dead `scoring.yaml` grading keys are removed (task 7).
@@ -78,8 +79,8 @@ This came up on 2026-10-02 while fixing a production run. Histotype confirm post
    - Thresholds come from `scoring.yaml` through `pipeline/scoring.py` only.
    - **M** comes from the confirmed Stage 4 output through `pipeline/scoring.py` (`summarize_stage4` over `counted` detections and the HPFs). Grading never recounts mitoses its own way. A Stage 4 summary with `mitotic_score: null` (no HPF placed) gives no grade, with `needs_human`.
    - Write the aggregate to the `gradings` columns (`tubule_percent`, the three scores, `nottingham_sum`, `grade`, `histologic_type`), and recompute them after every review and override. The eval harness reads these columns, and `check_nottingham_grade_calc` must hold.
-   - Delete `calculate_mitotic_score_from_hpfs`, `calculate_mitotic_score_from_detections_and_hpfs`, `weighted_median` and `weighted_mode` from `pipeline/grading.py` when nothing calls them (SPEC-07 §10). `weighted_mode`'s tie-to-max is bias B4.
-   - P ties: the mode is ambiguous when two scores tie. **Proposed (owner to confirm):** P is `null` with `needs_human`, so the pathologist picks. Neither max (B4) nor min is assumed.
+   - Delete `calculate_mitotic_score_from_hpfs`, `calculate_mitotic_score_from_detections_and_hpfs`, and `weighted_median` from `pipeline/grading.py` when nothing calls them (SPEC-07 §10). Replace `weighted_mode` with an unweighted mode.
+   - P ties: when two or more scores tie for the mode, P is the **highest** tied score (owner, 2026-10-04). The tie-break value comes from config (`scoring.yaml`), not from code, and a test covers it. Record in `machine` that a tie occurred.
 4. **API = `grading_v6`:**
    - `GET /{case_id}`, `POST /review-sample`, `/override`, `/histotype/confirm` (`{case_id, type}`, `422 invalid_value`, idempotent) and `/confirm`, with the contract's errors. Every mutation returns the full `GradingStageV6`.
    - Reviews and overrides go in `gradings.overrides` (`reviews[sample_id]`, `reasons`). `machine` is never mutated, so the machine output stays auditable.
@@ -123,6 +124,10 @@ Sampling tests:
 ## Proposed spec change (raise in the PR; do not edit the spec)
 
 SPEC-07 §4: the sampling frame is the confirmed hotspot windows (owner, 2026-10-02), not the whole tumour mask. Tubule samples may overlap. Overlapping tubule samples score some tissue more than once, so the area-weighted T% counts that tissue more than once. Report this in the PR.
+
+## Proposed spec change: pleomorphism ties (raise in the PR)
+
+SPEC-07 §1 lists the tie-to-max mode as part of bias B4. The owner keeps tie-to-max (2026-10-04), so B4 is reduced to the 1.0 µm/px resolution and the merged-nuclei CV. WP-8.7's signed error measures the effect.
 
 ## Done checklist
 

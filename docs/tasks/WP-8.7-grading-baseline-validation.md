@@ -2,7 +2,7 @@
 
 | Owner | Size | Spec | Depends on | Lane |
 |---|---|---|---|---|
-| Claude | M | SPEC-02 §5, §7; SPEC-07 §7.1, §8.1–8.2 (metrics only), §9 AC2/AC3 (measured, not gated) | WP-8.6, WP-7.6a; whole-slide TCGA reads in place (see "Prerequisite") | Claude (`backend/eval/**`) |
+| Claude | M | SPEC-02 §5, §7; SPEC-07 §7.1, §8.1–8.2 (metrics only), §9 AC2/AC3 (measured, not gated) | WP-8.6, WP-7.6a (merged); whole-slide TCGA reads in place (see "Prerequisite") | Claude (`backend/eval/**`) |
 
 ## Goal
 
@@ -66,7 +66,7 @@ This card starts after that lands, or after the owner approves another source fo
 
 ## Owner gates
 
-- **Live run.** About 145 graded val cases. Each costs about 97 VLM calls for grading (48 + 48 + 1), plus the Path Foundation embeddings, the tumour referee and the KongNet tiles. That is about 1.4 × 10⁴ VLM calls in total; reruns are cached. Give the owner an estimate from one case's DecisionRecords and ask before the first full run.
+- **Live run.** About 145 graded val cases. Each costs about 97 VLM calls for grading (48 + 48 + 1), plus the Path Foundation embeddings, the tumour referee and the KongNet tiles. That is about 1.4 × 10⁴ VLM calls in total; reruns are cached. **The owner approved the live run on 2026-10-04.** Still run one case first, and put its cost from the DecisionRecords in the report.
 - **Test split.** Locked. Not read under this card.
 
 ## Acceptance (run these)
@@ -84,7 +84,7 @@ Tests, with synthetic items and labels:
 ## Out of scope — do not do
 
 - The SPEC-07 §8.2 attribution study (G0 = v5 Stage 5, cumulative fixes). Deferred with WP-8.1–8.4; this card measures only the v6 baseline.
-- Histologic type S5-HT and ILC F1. The Thennavan et al. labels (`eval/datasets/labels/tcga_histotype.csv`) are not in the repo, and `report.py` marks them unavailable. Listed as an open item.
+- Histologic type S5-HT and ILC F1. The Thennavan et al. labels (`eval/datasets/labels/tcga_histotype.csv`) are not in the repo, and `report.py` marks them unavailable. The owner will supply them after the other WP-8 parts are done (2026-10-04); a follow-up adds S5-HT.
 - New arms (T1 with `tubule@v2`, T1-MG, T3, T4, P1–P4, H2), MIL/ordinal training, StarDist, the direct-grade comparator.
 - Any change to `configs/`.
 - BCNB (D20).
@@ -92,7 +92,7 @@ Tests, with synthetic items and labels:
 ## Done checklist
 
 - [ ] Prerequisite met: TCGA val slides readable by the harness
-- [ ] Owner go-ahead for the live run
+- [x] Owner go-ahead for the live run (2026-10-04)
 - [ ] Val run with fixed settings; run id and `config_hash` recorded
 - [ ] NS-G, band metrics and per-band signed errors with CIs and n; label caveat stated
 - [ ] `reports/baseline/grading_tcga_val.md` committed
