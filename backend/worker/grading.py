@@ -18,7 +18,6 @@ reviews and overrides go in ``gradings.overrides``.
 
 import io
 import json
-import os
 import shutil
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -31,10 +30,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.slide_source import download_slide
 from app.core.gcs import (
     download_blob_as_bytes,
-    download_blob_to_filename,
-    parse_gcs_uri,
     resolve_slide_raw_uri,
     upload_blob_from_bytes,
 )
@@ -182,11 +180,8 @@ def run_grading(stage_exec: StageExecution, db: Session, runtime: StageRuntime) 
     reader = None
     try:
         gcs_uri_original = resolve_slide_raw_uri(case_id, slide) or slide.gcs_uri_original or f"gs://{settings.GCS_RAW_BUCKET}/cases/{case_id}/{slide_id}.svs"
-        raw_bucket_name, blob_name = parse_gcs_uri(gcs_uri_original)
-        ext = os.path.splitext(blob_name)[1] or ".svs"
-        local_slide_path = os.path.join(scratch_dir, f"slide{ext}")
         try:
-            download_blob_to_filename(raw_bucket_name, blob_name, local_slide_path)
+            local_slide_path = download_slide(gcs_uri_original, scratch_dir)
         except OSError as exc:
             raise SlideReadError(f"could not download slide {gcs_uri_original} for case {case_id}: {exc}") from exc
         reader = SlideReader.from_slide_row(local_slide_path, slide)

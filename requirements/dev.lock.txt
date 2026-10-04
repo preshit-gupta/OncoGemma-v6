@@ -1830,6 +1830,13 @@ opencv-python-headless==5.0.0.93 \
     --hash=sha256:c6bcd96b185975ea240d22cfdb15a1f6d080cc95264cfbe2621f21bb144d89b9 \
     --hash=sha256:ed709fdf9aa0bd1f2ed8549e71d19449b03a675bb581eb292285f6861953be37
     # via -r requirements/worker.in
+openslide-bin==4.0.1.2 \
+    --hash=sha256:0c882f0693e4b43e187a51469bff8057de381e865765ac5508a7e1feba319116 \
+    --hash=sha256:0dff14807e1b7ccfd476ca5b6945edf46908b76ec61777d35acb2a514e205c30 \
+    --hash=sha256:230cdb1e2cfa88b9f28ca8f51a7b47065b20a855ad3e7ba141cd663e5a713e8c \
+    --hash=sha256:83c9a4a598f3a5fe1dea83e123745e48b94ce7eab99833f04902bdf4fa0af1db \
+    --hash=sha256:8ac4aa3a2277ed5e218ca0019db65bdd6e853f865eb4edd3da00e2f4acf0c923
+    # via -r requirements/worker.in
 openslide-python==1.4.6 \
     --hash=sha256:0641c621ef8d486ed6fa893eee787945729821b4007fbdaabb3eeec216fa6724 \
     --hash=sha256:0c2655e668e467c6fd8db0147924f9753f053586304f5b775e56019a02adee8f \

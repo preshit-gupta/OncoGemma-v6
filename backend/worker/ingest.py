@@ -1,7 +1,6 @@
 import os
 import json
 import struct
-import hashlib
 import tempfile
 import shutil
 import glob
@@ -16,12 +15,12 @@ from PIL import Image
 Image.MAX_IMAGE_PIXELS = None
 
 from app.core.config import settings
+from app.core.slide_source import download_slide, is_series_uri, local_slide_sha256
 from app.core.gcs import (
     get_gcs_client,
     parse_gcs_uri,
     upload_blob_from_bytes,
     upload_blob_from_file,
-    download_blob_to_filename
 )
 from app.models.case import Case
 from app.models.slide import Slide
@@ -29,13 +28,6 @@ from app.models.stage_execution import StageExecution
 from app.models.audit import AuditEvent
 from app.services.stages import dispatch, queue_stage
 from worker.runtime import StageRuntime
-
-def calculate_sha256(filepath: str) -> str:
-    sha = hashlib.sha256()
-    with open(filepath, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            sha.update(chunk)
-    return sha.hexdigest()
 
 def strip_label_and_macro_images(filepath: str) -> bool:
     """
@@ -348,13 +340,9 @@ def run_ingest(stage_execution: StageExecution, session: Session, runtime: Stage
 
     try:
 
-        ext = os.path.splitext(blob_name)[1]
-        if not ext or len(ext) < 2:
-            ext = ".svs"
-        local_slide_path = os.path.join(scratch_dir, f"slide{ext}")
-        
-        # Download directly from GCS raw bucket to transient scratch file
-        download_blob_to_filename(raw_bucket_name, blob_name, local_slide_path)
+        # Download to transient scratch: one object, or every instance of a DICOM series (IDC).
+        local_slide_path = download_slide(gcs_uri_original, scratch_dir)
+        ext = os.path.splitext(local_slide_path)[1]
 
         if not os.path.exists(local_slide_path):
             raise FileNotFoundError(f"Original slide file not found in GCS for ingest stage in case {stage_execution.case_id} (URI: {gcs_uri_original})")
@@ -362,7 +350,7 @@ def run_ingest(stage_execution: StageExecution, session: Session, runtime: Stage
         # Verify client SHA256 checksum if provided before de-identification (Issue #18)
         client_checksum = slide_obj.checksum_sha256 or input_ref.get("client_sha256")
         if client_checksum:
-            download_sha256 = calculate_sha256(local_slide_path)
+            download_sha256 = local_slide_sha256(local_slide_path, gcs_uri_original)
             if download_sha256.lower() != client_checksum.lower():
                 raise ValueError(
                     f"Slide integrity verification failed: client checksum ({client_checksum}) "
@@ -381,7 +369,7 @@ def run_ingest(stage_execution: StageExecution, session: Session, runtime: Stage
             slide_obj.label_stripped_at = None
 
         # 2. SHA256 checksum calculated on de-identified file
-        checksum = calculate_sha256(local_slide_path)
+        checksum = local_slide_sha256(local_slide_path, gcs_uri_original)
         slide_obj.checksum_sha256 = checksum
 
         # 3. Metadata extraction (fail fast on unopenable files, never guess 0.25 MPP)
@@ -419,7 +407,8 @@ def run_ingest(stage_execution: StageExecution, session: Session, runtime: Stage
 
         # Prime local slide cache for zero-latency tile serving (Issue #635). Only clinical cases are
         # viewed; for eval runs the copy would double the scratch memory a slide takes (SPEC-02 §6.2).
-        if stage_execution.run_mode == "clinical":
+        # A DICOM series is several files; it is read from its source, not cached as one file.
+        if stage_execution.run_mode == "clinical" and not is_series_uri(gcs_uri_original):
             try:
                 cache_dir = os.path.join(tempfile.gettempdir(), "og_slides_cache")
                 os.makedirs(cache_dir, exist_ok=True)

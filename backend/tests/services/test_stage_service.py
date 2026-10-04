@@ -244,7 +244,7 @@ def ingest(db, execution, slide_path, mpp_props=None):
     slide = MagicMock()
     slide.dimensions = (1024, 1024)
     slide.properties = {"openslide.vendor": "aperio", **(mpp_props or {})}
-    with patch("worker.ingest.download_blob_to_filename", side_effect=lambda b, k, dest: shutil.copyfile(slide_path, dest)), \
+    with patch("app.core.slide_source.download_blob_to_filename", side_effect=lambda b, k, dest: shutil.copyfile(slide_path, dest)), \
          patch("openslide.OpenSlide", return_value=slide), \
          patch("worker.ingest.generate_dzi_pyramid", return_value="pyramid.dzi"), \
          patch("worker.ingest.upload_dzi_tree_to_gcs"), \

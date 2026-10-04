@@ -1,3 +1,5 @@
+import base64
+import hashlib
 import os
 import io
 import shutil
@@ -87,6 +89,14 @@ class LocalMockBlob:
     @property
     def size(self):
         return os.path.getsize(self._path) if os.path.exists(self._path) else 0
+
+    @property
+    def md5_hash(self):
+        """Base64 MD5 of the content, as GCS reports it (None when the blob does not exist)."""
+        if not os.path.exists(self._path):
+            return None
+        with open(self._path, "rb") as f:
+            return base64.b64encode(hashlib.md5(f.read()).digest()).decode("ascii")
 
 class MockBlobList(list):
     def __init__(self, items=None, prefixes=None):
@@ -245,6 +255,9 @@ def resolve_slide_raw_uri(case_id: str, slide_obj=None) -> str | None:
     """
     if slide_obj:
         uri = getattr(slide_obj, "gcs_uri_original", None)
+        if uri and uri.startswith("gs://") and uri.endswith("/"):
+            # A DICOM WSI series prefix (app/core/slide_source.py) is not an object; it is the slide.
+            return uri
         if uri and uri.startswith("gs://"):
             b_name, o_name = parse_gcs_uri(uri)
             try:

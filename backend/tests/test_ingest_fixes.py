@@ -161,7 +161,7 @@ def test_issue_38_missing_mpp_sets_needs_mpp_and_halts_pipeline(db_session, tmp_
     mock_os.dimensions = (1024, 1024)
     mock_os.properties = {"openslide.vendor": "test_scanner"} # No openslide.mpp-x or mpp-y
 
-    with patch("worker.ingest.download_blob_to_filename", side_effect=lambda b, k, dest: shutil.copyfile(slide_path, dest)), \
+    with patch("app.core.slide_source.download_blob_to_filename", side_effect=lambda b, k, dest: shutil.copyfile(slide_path, dest)), \
          patch("openslide.OpenSlide", return_value=mock_os), \
          patch("worker.ingest.generate_dzi_pyramid", return_value="pyramid.dzi"), \
          patch("worker.ingest.upload_dzi_tree_to_gcs"), \

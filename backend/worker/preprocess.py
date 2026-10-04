@@ -23,12 +23,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.slide_source import download_slide
 from app.core.gcs import (
     get_gcs_client,
-    parse_gcs_uri,
     upload_blob_from_bytes,
-    download_blob_to_filename,
-    resolve_slide_raw_uri
+    resolve_slide_raw_uri,
 )
 from app.core.pipeline_config import NormPyramidConfig
 from app.core.stain_profiles import save_stain_profile, transform_of_profile
@@ -178,13 +177,9 @@ def run_preprocess(stage_execution: StageExecution, session: Session, runtime: S
 
     try:
         gcs_uri_original = resolve_slide_raw_uri(case_id, slide_obj) or slide_obj.gcs_uri_original or f"gs://{settings.GCS_RAW_BUCKET}/cases/{case_id}/{slide_id}.svs"
-        raw_bucket_name, blob_name = parse_gcs_uri(gcs_uri_original)
-
-        ext = os.path.splitext(blob_name)[1] or ".svs"
-        local_slide_path = os.path.join(scratch_dir, f"slide{ext}")
 
         # Download directly from GCS raw bucket to transient scratch file
-        download_blob_to_filename(raw_bucket_name, blob_name, local_slide_path)
+        local_slide_path = download_slide(gcs_uri_original, scratch_dir)
 
         if not os.path.exists(local_slide_path):
             raise FileNotFoundError(f"Raw slide file not found in GCS for preprocess stage in case {case_id}")
