@@ -36,6 +36,19 @@ They are not for delegates, but follow the same template so each is one bounded 
 | [WP-5.6 TCGA from IDC DICOM](WP-5.6-idc-source.md) | **done** (#54) | Reads TCGA-BRCA in place for whole-slide runs; prerequisite of WP-8.7 |
 | [WP-8.7 Grading baseline validation](WP-8.7-grading-baseline-validation.md) | now (owner runs the live run, approved 2026-10-04) | Fixed settings on TCGA val (`eval/manifests/tcga_brca_idc_val.parquet`) |
 
+## Owner review of Stages 3–5 (2026-10-05, D22; plan §2.4)
+
+The backend ships together with WP-6.7 and WP-7.10 in one release. After that, open cases re-run Stage 3, Stage 4 and grading.
+
+| Card | Owner | Can start | Fixes |
+|---|---|---|---|
+| [WP-9.4 Quick fixes: Stage 5 scrolling, Stage 4 HPF chips](WP-9.4-review-quick-fixes.md) | B | now | S5-1, S4-1 |
+| [WP-6.5 HPF sites: 0.5 mm circles in 0.6 mm frames](WP-6.5-hpf-sites.md) | Claude | now | S3-1, S3-3, S3-4 (backend) |
+| [WP-6.6 HPF sites at the tumour periphery first](WP-6.6-periphery-ranking.md) | Claude | after 6.5 | S3-2 |
+| [WP-7.9 Morphology descriptions of mitotic figures](WP-7.9-mitosis-descriptions.md) | Claude | after 6.5 | S4-2 (backend) |
+| [WP-6.7 Stage 3 viewer: HPF circles, Pin HPF](WP-6.7-triage-hpf-pins.md) | B | after 6.5 and 6.6 (mock mode earlier) | S3-3, S3-4 (UI) |
+| [WP-7.10 Stage 4 viewer: HPF circles, descriptions](WP-7.10-mitosis-viewer-hpfs.md) | B | after 6.5, 7.9 and 9.4 (mock mode earlier) | S3-1, S3-4, S4-2 (UI) |
+
 Deferred to the next iteration (D19): attribution study, classifier B, referee v2, calibration. For Stage 5 (plan §2.3, proposed): WP-8.1's whole-tumour frame, WP-8.2–8.4 arms and training, the SPEC-07 attribution study.
 
 ## Card template
