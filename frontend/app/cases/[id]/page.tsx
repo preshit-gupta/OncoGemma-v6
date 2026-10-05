@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState, useRef } from "react";
 import Link from "next/link";
-import { ArrowLeft, RefreshCcw, Info, X, Microscope, AlertTriangle, CheckCircle2, RotateCcw } from "lucide-react";
+import { ArrowLeft, RefreshCcw, Info, X, Microscope, AlertTriangle, CheckCircle2, RotateCcw, Clock } from "lucide-react";
 import { fetchCaseDetail, CaseDetail, retryStage, approveStage, confirmTriageStage, updateSlideMpp, updateCaseSpecimenType, SpecimenType } from "@/lib/api";
 import { formatISTDateTime } from "@/lib/utils";
 import dynamic from "next/dynamic";
@@ -112,7 +112,8 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
   const isIngestFailed = Boolean(ingestStage?.status === "failed");
   const isNeedsMpp = slide?.status === "needs_mpp" || caseDetail?.status === "needs_mpp" || (isIngestDone && (!slide?.mpp_x || slide?.mpp_x <= 0));
   const isQcFailed = qcStage?.status === "failed";
-  const isQcRunning = qcStage?.status === "running" || qcStage?.status === "queued";
+  const isQcComplete = ["done", "awaiting_review", "failed", "confirmed"].includes(qcStage?.status ?? "");
+  const isQcRunning =qcStage?.status === "running" || qcStage?.status === "queued";
 
   const [mppInput, setMppInput] = useState<string>("0.25");
   const [mppYInput, setMppYInput] = useState<string>("");
@@ -352,6 +353,14 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
                   <AlertTriangle className="w-3.5 h-3.5" />
                   <span>{L.action.overrideQc}</span>
                 </button>
+              ) : !isQcComplete ? (
+                <span
+                  className="px-3 py-1.5 bg-slate-800 text-slate-400 border border-slate-700 rounded-lg text-xs font-semibold flex items-center space-x-1.5"
+                  title={L.status.qcPending}
+                >
+                  <Clock className="w-3.5 h-3.5 animate-pulse" />
+                  <span>{L.status.qcPending}</span>
+                </span>
               ) : (
                 <button
                   onClick={() => handleApprovePreprocess()}
