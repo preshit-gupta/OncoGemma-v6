@@ -5,7 +5,7 @@ SPEC-01 §3.5 and WP-2.4.
 from __future__ import annotations
 
 import json
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, ClassVar, Literal, Sequence
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 
@@ -89,6 +89,62 @@ class MitosisVerdict(StrictModel):
                 "lymphocyte", "prophase", "crush", "other"
             )
         )
+
+
+_DESCRIPTION_CHROMATIN = (
+    "condensed_clumps", "band_or_plate", "two_separated_masses", "fine_granular", "smooth_dense", "beaded_fragments",
+    "not_assessable",
+)
+_DESCRIPTION_MEMBRANE = ("not_visible", "partly_visible", "intact", "not_assessable")
+_DESCRIPTION_OUTLINE = ("hairy_projections", "smooth", "not_assessable")
+_DESCRIPTION_CYTOPLASM = ("clear_halo", "eosinophilic", "none_visible", "not_assessable")
+_DESCRIPTION_SIZE = ("larger", "similar", "smaller", "not_assessable")
+_DESCRIPTION_SETTING = ("tumour_cells", "stroma", "inflammatory", "necrosis", "lumen", "not_assessable")
+DESCRIPTION_MAX_WORDS = 60
+
+
+class MitosisDescription(StrictModel):
+    """What a candidate figure looks like, for the pathologist to interpret (SPEC-06 §5.6, D22).
+
+    Descriptive only: there is deliberately no verdict, label, phase, mimic, confidence, count or decision
+    field. ``forbidden_phrases`` (set per run from ``mitosis.yaml describe.forbidden_phrases`` by
+    ``describe_schema``) are rejected in the summary as a ``SchemaInvalidError``.
+    """
+
+    chromatin: Literal[_DESCRIPTION_CHROMATIN]
+    nuclear_membrane: Literal[_DESCRIPTION_MEMBRANE]
+    outline: Literal[_DESCRIPTION_OUTLINE]
+    cytoplasm: Literal[_DESCRIPTION_CYTOPLASM]
+    relative_size: Literal[_DESCRIPTION_SIZE]
+    setting: Literal[_DESCRIPTION_SETTING]
+    summary: str
+
+    forbidden_phrases: ClassVar[tuple[str, ...]] = ()
+
+    @field_validator("chromatin", "nuclear_membrane", "outline", "cytoplasm", "relative_size", "setting", mode="before")
+    @classmethod
+    def normalize_enum(cls, v: Any, info: Any) -> Any:
+        allowed = {
+            "chromatin": _DESCRIPTION_CHROMATIN, "nuclear_membrane": _DESCRIPTION_MEMBRANE, "outline": _DESCRIPTION_OUTLINE,
+            "cytoplasm": _DESCRIPTION_CYTOPLASM, "relative_size": _DESCRIPTION_SIZE, "setting": _DESCRIPTION_SETTING,
+        }[info.field_name]
+        return _normalize_literal(v, allowed)
+
+    @field_validator("summary")
+    @classmethod
+    def summary_is_descriptive(cls, v: str) -> str:
+        if len(v.split()) > DESCRIPTION_MAX_WORDS:
+            raise ValueError(f"summary has more than {DESCRIPTION_MAX_WORDS} words")
+        lowered = " ".join(v.lower().split())
+        for phrase in cls.forbidden_phrases:
+            if phrase.lower() in lowered:
+                raise ValueError(f"summary contains the forbidden phrase {phrase!r}: a description never judges the cell")
+        return v
+
+
+def describe_schema(forbidden_phrases: Sequence[str]) -> type[MitosisDescription]:
+    """``MitosisDescription`` that also rejects ``forbidden_phrases`` in its summary (same name and JSON schema)."""
+    return type("MitosisDescription", (MitosisDescription,), {"forbidden_phrases": tuple(forbidden_phrases), "__module__": __name__, "__doc__": MitosisDescription.__doc__})
 
 
 class TubuleEstimate(StrictModel):

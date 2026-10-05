@@ -88,6 +88,15 @@ models:
     requires_image: true
     params: {temperature: 0.0}
 
+  # Morphology descriptions of mitotic figures (SPEC-06 §5.6, D22): descriptive only. Same Gemini release as the referee.
+  gemini_describer:
+    kind: vlm
+    provider: vertex_genai
+    model: ${GEMINI_REFEREE_MODEL}
+    region: ${GCP_REGION}
+    requires_image: true
+    params: {temperature: 0.0}
+
   # Ground-truth grades from TCGA pathology reports (SPEC-02 §4, eval only). Text in, no image;
   # the report goes in its own delimited part (SPEC-03 §5.2). Same Gemini release as the referee.
   gemini_labeler:

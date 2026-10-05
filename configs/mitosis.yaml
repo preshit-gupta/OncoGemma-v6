@@ -32,6 +32,24 @@ referee:
   context_um: 512.0 # context field ...
   context_px: 512 # ... resampled to ~1.0 um/px
 
+# Morphology description of each figure the count rests on (SPEC-06 §5.6, owner decision 2026-10-05, D22): what the
+# cell looks like, for the pathologist to interpret. Descriptive only: it never changes a decision, the count or the
+# HPFs, which is why it is allowed although the referee is off. Inputs are the review crop and context (review_crops).
+describe:
+  enabled: true
+  run_in_eval: false # eval runs skip it explicitly: metrics cannot depend on a description
+  producer: gemini_describer
+  prompt: mitosis_describe@v1.md
+  forbidden_phrases: # a summary containing one of these is rejected (SchemaInvalidError)
+    - is a mitotic figure
+    - is not a mitotic figure
+    - not mitotic
+    - should be counted
+    - should not be counted
+    - confidence
+    - likely mitosis
+    - unlikely
+
 # Tumour-cell gate (SPEC-06 §5.5): a candidate counts only when its tile, in the triage tumour mask dilated by
 # dilation_tiles grid tiles (224 um each), is tumour. A pathologist's 'mitosis' label still counts. The in-situ
 # clause waits for a tumour head with an in-situ class (tumor_head@1.0.0 has none). Off only for an eval ablation:

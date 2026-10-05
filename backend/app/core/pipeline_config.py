@@ -216,6 +216,18 @@ class MitosisRefereeConfig(StrictModel):
     color: ColorPolicy
 
 
+class MitosisDescribeConfig(StrictModel):
+    """The morphology description of the figures the count rests on (SPEC-06 §5.6, D22). Never part of a decision."""
+
+    enabled: bool
+    # Eval runs make no describe call unless this is true: metrics cannot depend on a description.
+    run_in_eval: bool
+    producer: RegistryKey
+    prompt: PromptFileName
+    # A summary containing any of these (case-insensitive) is a SchemaInvalidError: a description never judges.
+    forbidden_phrases: Annotated[list[str], Field(min_length=1)]
+
+
 class MitosisHpfConfig(StrictModel):
     """The HPF circles are the confirmed Stage 3 sites (specimen_profiles.yaml hotspots), so only the review image is set here.
 
@@ -264,6 +276,7 @@ class MitosisTumorGateConfig(StrictModel):
 class MitosisConfig(StrictModel):
     detector: MitosisDetectorConfig
     referee: MitosisRefereeConfig
+    describe: MitosisDescribeConfig
     hpf: MitosisHpfConfig
     scoring: MitosisScoringConfig
     tumor_gate: MitosisTumorGateConfig
@@ -785,6 +798,15 @@ class PipelineConfig(StrictModel):
         _require(
             referee.prompt in self.prompts,
             f"mitosis.yaml referee.prompt {referee.prompt!r} is not in configs/prompts",
+        )
+        describer = models.get(self.mitosis.describe.producer)
+        _require(
+            describer is not None and describer.kind == "vlm" and describer.requires_image,
+            f"mitosis.yaml describe.producer {self.mitosis.describe.producer!r} must be an image VLM in models.yaml",
+        )
+        _require(
+            self.mitosis.describe.prompt in self.prompts,
+            f"mitosis.yaml describe.prompt {self.mitosis.describe.prompt!r} is not in configs/prompts",
         )
 
     def _triage_models_exist(self) -> None:

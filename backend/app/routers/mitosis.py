@@ -139,6 +139,8 @@ def _candidates(db: Session, case_obj: Case) -> List[Dict[str, Any]]:
             "decision_path": d.decision_path,
             "review_label": d.review_label,
             "counted": bool(d.counted),
+            "description": d.description,
+            "description_status": d.description_status,
             "record_ids": d.record_ids,
         }
         for d in rows

@@ -28,6 +28,22 @@ interface Candidate {
   hpf_seq: number | null;       // the HPF circle that contains it (server-computed); null outside every circle: shown, never counted
   crop_url: string;             // 64 µm @ 0.25 µm/px
   context_url: string;          // 256 µm @ 1.0 µm/px
+  description: MitosisDescription | null;   // morphology only (WP-7.9, D22); null unless description_status is "ok"
+  description_status: "ok" | "unavailable" | "not_requested";
+}
+
+// What the figure looks like, for the pathologist to interpret. It has no verdict, label, phase, mimic, confidence,
+// count or decision field, and it never changes final_decision, counted, the HPFs or the score. Present for candidates
+// with final_decision "mitosis" or "equivocal" inside an HPF circle ("unavailable" when the description failed);
+// "not_requested" for every other candidate, pathologist-added ones included, and for every eval run.
+interface MitosisDescription {
+  chromatin: "condensed_clumps" | "band_or_plate" | "two_separated_masses" | "fine_granular" | "smooth_dense" | "beaded_fragments" | "not_assessable";
+  nuclear_membrane: "not_visible" | "partly_visible" | "intact" | "not_assessable";
+  outline: "hairy_projections" | "smooth" | "not_assessable";
+  cytoplasm: "clear_halo" | "eosinophilic" | "none_visible" | "not_assessable";
+  relative_size: "larger" | "similar" | "smaller" | "not_assessable";
+  setting: "tumour_cells" | "stroma" | "inflammatory" | "necrosis" | "lumen" | "not_assessable";
+  summary: string;              // <= 60 words, descriptive only
 }
 
 // An HPF is the circle of a confirmed Stage 3 site: same centre, radius hpf_diameter_um / 2 (250). Nothing is searched for
@@ -75,6 +91,7 @@ interface MitosisStageV6 {
   - `p_b` (Classifier)
   - the VLM verdict, the criteria checklist, `mimic` and a "Rule override" badge
   - `review_label`
+- **Morphology description panel** (WP-7.10). When `description_status` is `"ok"`, show the six fields and the `summary` in a panel titled as a morphology description, with the text "The count does not use this description." `"unavailable"` shows that no description is available; `"not_requested"` shows no panel. Never show a model name (AGENTS rule 6) and never present the description as a verdict, a confidence or a recommendation.
 
 ## Example (mock fixture `frontend/lib/mock/mitosis.json`)
 
@@ -85,15 +102,20 @@ interface MitosisStageV6 {
   "candidates": [
     {"id": "m_0001", "hotspot_id": "hs_01", "centroid_um": [4210.5, 5120.0], "p_a": 0.91, "p_b": 0.88, "vlm": null,
      "in_tumor": true, "final_decision": "mitosis", "decision_path": "AB", "review_label": null, "counted": true, "hpf_seq": 1,
+     "description_status": "ok", "description": {"chromatin": "band_or_plate", "nuclear_membrane": "not_visible", "outline": "hairy_projections",
+       "cytoplasm": "clear_halo", "relative_size": "larger", "setting": "tumour_cells", "summary": "Dense dark chromatin arranged as a flat band across the cell centre with fine projections at its edges."},
      "crop_url": "/mock/crop_m1.png", "context_url": "/mock/ctx_m1.png"},
     {"id": "m_0002", "hotspot_id": "hs_01", "centroid_um": [4400.0, 5300.2], "p_a": 0.52, "p_b": 0.49,
      "vlm": {"verdict": "EQUIVOCAL", "criteria": {"membrane_absent": true, "condensed_chromosome_projections": false,
              "phase": "none", "neoplastic_cell": true}, "mimic": "pyknotic_nucleus", "rationale": "Dense round body, no projections.",
              "rule_override": false},
      "in_tumor": true, "final_decision": "equivocal", "decision_path": "ABC", "review_label": null, "counted": false, "hpf_seq": 1,
+     "description_status": "ok", "description": {"chromatin": "smooth_dense", "nuclear_membrane": "not_assessable", "outline": "smooth",
+       "cytoplasm": "eosinophilic", "relative_size": "smaller", "setting": "tumour_cells", "summary": "A small, round, uniformly dark body with a smooth edge, surrounded by pink cytoplasm."},
      "crop_url": "/mock/crop_m2.png", "context_url": "/mock/ctx_m2.png"},
     {"id": "m_0003", "hotspot_id": "hs_02", "centroid_um": [5010.0, 5200.0], "p_a": 0.40, "p_b": 0.08, "vlm": null,
      "in_tumor": true, "final_decision": "not_mitosis", "decision_path": "AB", "review_label": null, "counted": false, "hpf_seq": null,
+     "description": null, "description_status": "not_requested",
      "crop_url": "/mock/crop_m3.png", "context_url": "/mock/ctx_m3.png"}
   ],
   "hpfs": [{"seq": 1, "center_um": [4300, 5300], "radius_um": 250, "count": 1, "tissue_coverage": 0.96, "tumor_fraction": 0.9,
