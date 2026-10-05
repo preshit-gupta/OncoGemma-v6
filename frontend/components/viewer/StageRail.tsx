@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { CheckCircle2, Clock, XCircle, Play, PanelLeftClose, PanelLeft, RotateCcw, UserCheck } from "lucide-react";
+import { CheckCircle2, Clock, XCircle, Play, PanelLeftClose, PanelLeft, RotateCcw, UserCheck, Lock } from "lucide-react";
 import { retryStage } from "@/lib/api";
 import { L } from "@/lib/labels";
 
@@ -38,6 +38,13 @@ export function StageRail({ caseId, stages, activeStage, onSelectStage, onRefres
   const getStageInfo = (stageName: string) => {
     const sorted = stages.filter((s) => s.stage === stageName).sort((a, b) => b.attempt - a.attempt);
     return sorted[0];
+  };
+
+  // A stage opens only once the one before it is complete (ingest) or confirmed (every reviewed stage).
+  const isStageLocked = (idx: number) => {
+    if (idx === 0) return false;
+    const prev = getStageInfo(STAGE_ORDER[idx - 1].name)?.status;
+    return idx === 1 ? !(prev === "done" || prev === "completed" || prev === "confirmed") : prev !== "confirmed";
   };
 
   const handleRetry = async (e: React.MouseEvent, stageName: string) => {
@@ -125,16 +132,21 @@ export function StageRail({ caseId, stages, activeStage, onSelectStage, onRefres
           const status = stageInfo?.status || "pending";
           const isActive = activeStage === st.name;
           const isFailed = status === "failed";
+          const locked = isStageLocked(idx);
 
           return (
             <div key={st.name} className="flex flex-col space-y-1">
               <button
                 onClick={() => onSelectStage(st.name)}
-                title={collapsed ? `${st.label}` : undefined}
+                disabled={locked}
+                aria-disabled={locked}
+                title={locked ? L.status.lockedHelp : collapsed ? `${st.label}` : undefined}
                 className={`w-full text-left rounded-lg border transition-all flex items-center ${
                   collapsed ? "p-2.5 justify-center" : "p-3 justify-between"
                 } ${
-                  isActive
+                  locked
+                    ? "bg-slate-50 border-slate-100 text-slate-400 cursor-not-allowed opacity-60"
+                    : isActive
                     ? "bg-sky-50 border-sky-300 text-sky-900 shadow-sm"
                     : isFailed
                     ? "bg-rose-50/50 border-rose-200 text-rose-900"
@@ -151,7 +163,7 @@ export function StageRail({ caseId, stages, activeStage, onSelectStage, onRefres
                     <div className="truncate">
                       <div className="text-xs font-semibold truncate">{st.label}</div>
                       <div className="text-[10px] text-slate-400 capitalize truncate">
-                        {formatStatusLabel(status)}
+                        {locked ? L.status.locked : formatStatusLabel(status)}
                       </div>
                     </div>
                   )}
@@ -169,7 +181,7 @@ export function StageRail({ caseId, stages, activeStage, onSelectStage, onRefres
                       <RotateCcw className={`w-3.5 h-3.5 ${retryingStage === st.name ? "animate-spin" : ""}`} />
                     </button>
                   )}
-                  {renderStatusBadge(stageInfo)}
+                  {locked ? <Lock className="w-4 h-4 text-slate-400 shrink-0" /> : renderStatusBadge(stageInfo)}
                 </div>
               </button>
 
