@@ -259,3 +259,18 @@ def test_a_counted_candidate_outside_every_circle_has_no_hpf_and_is_not_in_the_t
     m4 = next(c for c in data["candidates"] if c["id"] == "m_0004")
     assert m4["counted"] is True and m4["hpf_seq"] is None
     assert data["summary"]["count_total"] == 2  # m_0001 and m_0002 only
+
+
+@pytest.mark.parametrize("status", ["queued", "running"])
+def test_get_answers_stage_not_ready_while_the_stage_runs(setup_test_case, status):
+    """A queued or running stage has no results: 409 stage_not_ready, never an empty payload that reads as zero HPFs."""
+    case_id = setup_test_case
+    db = TestingSessionLocal()
+    stage = db.scalars(select(StageExecution).where(StageExecution.case_id == uuid.UUID(case_id))).one()
+    stage.status = status
+    db.commit()
+    db.close()
+    res = client.get(f"/api/v1/stages/mitosis/{case_id}", headers=HEADERS)
+    assert res.status_code == 409
+    assert res.json()["error"] == "stage_not_ready"
+    assert res.json()["status"] == status

@@ -78,6 +78,8 @@ router = APIRouter(prefix="/api/v1/stages/mitosis", tags=["mitosis"], route_clas
 
 # The stage accepts review edits only while it awaits review.
 EDITABLE_STATUS = "awaiting_review"
+# While the stage is in one of these there are no results to show: its rows are the previous run's or none.
+RUNNING_STATUSES = ("queued", "running")
 
 
 def to_uuid(val: Any) -> uuid.UUID:
@@ -263,8 +265,11 @@ class CasePayload(BaseModel):
 
 @router.get("/{case_id}")
 def get_mitosis_stage(case_id: str, db: Session = Depends(get_db), user: CurrentUser = Depends(require("case:read"))):
-    """The ``MitosisStageV6`` payload."""
+    """The ``MitosisStageV6`` payload; ``409 stage_not_ready`` while the stage is queued or running."""
     case_obj, stage_exec = _case_and_stage(case_id, db)
+    if stage_exec.status in RUNNING_STATUSES:
+        raise ContractError(409, "stage_not_ready", f"Mitosis stage is '{stage_exec.status}'; its results are available when it finishes.",
+                            status=stage_exec.status)
     view, _ = _stage_view(db, case_obj, stage_exec)
     return view
 

@@ -224,6 +224,7 @@ export const L = {
     calibrating: "Calibrating…",
     extractingHotspots: "Extracting hotspots…",
     countingMitoses: "Counting mitoses…",
+    mitosisRunning: "Counting mitoses. The results appear here when it is done.",
     analyzingSlide: "Analyzing slide…",
     invited: "Invited",
     active: "Active",

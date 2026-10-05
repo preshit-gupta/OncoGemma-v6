@@ -41,7 +41,13 @@ interface MitosisViewerProps {
   onRefreshCase?: () => void;
   tileUrlTemplate?: string | null;
   onAdvanceToGrading?: () => void;
+  /** Status and id of the latest Stage 4 run; the results are fetched again when either changes. */
+  stageStatus?: string;
+  stageRunId?: string | number;
 }
+
+// Stage 4 has no results to show while it runs (the API answers 409 stage_not_ready).
+const RUNNING_STATUSES = ["queued", "running"];
 
 export function MitosisViewer({
   caseId,
@@ -52,7 +58,10 @@ export function MitosisViewer({
   onRefreshCase,
   tileUrlTemplate = null,
   onAdvanceToGrading,
+  stageStatus,
+  stageRunId,
 }: MitosisViewerProps) {
+  const isRunning = stageStatus !== undefined && RUNNING_STATUSES.includes(stageStatus);
   const [data, setData] = useState<MitosisStageV6 | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [submitting, setSubmitting] = useState<boolean>(false);
@@ -77,7 +86,7 @@ export function MitosisViewer({
   const [showDefinitionPanel, setShowDefinitionPanel] = useState<boolean>(false);
   const [focusPointUm, setFocusPointUm] = useState<[number, number] | null>(null);
 
-  // Load stage data once per case. It must not depend on `data` or the selection:
+  // Load stage data once per case and per run. It must not depend on `data` or the selection:
   // each fetch would then re-create it and the effect below would fetch again, forever.
   const loadStageData = useCallback(async () => {
     try {
@@ -104,9 +113,11 @@ export function MitosisViewer({
     }
   }, [caseId]);
 
+  // A viewer opened while the stage runs holds no results; fetch again when the run is over.
   useEffect(() => {
+    if (isRunning) return;
     loadStageData();
-  }, [loadStageData]);
+  }, [loadStageData, isRunning, stageStatus, stageRunId]);
 
   // Priority queue order per contract:
   // Show equivocal first, then mitosis, then not_mitosis.
@@ -254,6 +265,15 @@ export function MitosisViewer({
       })),
     [hpfs]
   );
+
+  if (isRunning) {
+    return (
+      <div className="w-full h-full bg-slate-950 flex flex-col items-center justify-center text-slate-400">
+        <Loader2 className="w-8 h-8 animate-spin text-sky-500 mb-2" />
+        <p className="text-sm font-medium">{L.status.mitosisRunning}</p>
+      </div>
+    );
+  }
 
   if (loading) {
     return (
