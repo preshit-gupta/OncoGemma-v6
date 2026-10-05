@@ -960,6 +960,8 @@ export function OpenSeadragonViewer({
             // If zoomed out (< 15x), only show if inside an active HPF or explicitly selected
             if (currentMag < 15.0 && !m.in_hpf && !isSelected) return null;
 
+            // A figure outside every HPF circle is shown hollow grey: it is not counted.
+            const outsideHpfs = m.label === "mitosis" && m.in_hpf === false;
             const color = m.label === "mitosis" ? "#10b981" : (m.label === "not_mitosis" ? "#94a3b8" : "#f59e0b");
             const r = isSelected ? 8 : (currentMag >= 25.0 ? 5.5 : 4.0);
 
@@ -969,13 +971,14 @@ export function OpenSeadragonViewer({
                 className="cursor-pointer pointer-events-auto"
                 onClick={() => onSelectCandidate && onSelectCandidate(m.id)}
               >
+                {outsideHpfs && <title>{L.help.outsideNotCounted}</title>}
                 <circle
                   cx={m.x}
                   cy={m.y}
                   r={r}
-                  fill={color}
-                  stroke={isSelected ? "#38bdf8" : "#0f172a"}
-                  strokeWidth={isSelected ? 3 : 1.5}
+                  fill={outsideHpfs ? "none" : color}
+                  stroke={isSelected ? "#38bdf8" : outsideHpfs ? "#94a3b8" : "#0f172a"}
+                  strokeWidth={isSelected ? 3 : outsideHpfs ? 2 : 1.5}
                   className={isSelected ? "filter drop-shadow-[0_0_8px_rgba(56,189,248,0.9)]" : "hover:stroke-sky-300 hover:stroke-[2.5] transition-colors"}
                 />
                 {isSelected && (

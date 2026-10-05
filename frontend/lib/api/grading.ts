@@ -66,6 +66,9 @@ export interface GradingStageV6 {
     n_hpf: number;
     area_mm2: number;
     per_mm2: number;
+    // copied from the Stage 4 summary: fewer HPFs than hpf_target is inadequate tissue
+    flags: "hpf_count_lt_10"[];
+    hpf_target: number;
   };
   histotype: {
     type: string | null;
