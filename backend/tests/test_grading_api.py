@@ -116,7 +116,9 @@ def test_get_aggregates_from_machine_output(client):
     assert body["total"] == 7 and body["grade"] == 2 and body["flags"] == ["near_grade_boundary"]
     assert body["mitotic"] == {"score": 2, "count_total": 12, "n_hpf": 10, "area_mm2": 1.963, "per_mm2": 6.11, "flags": [], "hpf_target": 10}
     assert body["histotype"] == {"type": "IDC-NST", "estimator": "H1:gemini_referee@histologic_type@v1",
-                                 "rationale": "cohesive nests", "confirmed": False, "confirmed_by": None}
+                                 "rationale": "cohesive nests", "confirmed": False, "confirmed_by": None,
+                                 # a machine output written before WP-8.8 has no votes: served empty, not invented
+                                 "agreement": None, "n_requested": 0, "votes": []}
     assert body["tubule"]["samples"][0]["image_url"] == f"{BASE}/{case_id}/tubule/t_01/image"
     assert body["provenance"] == {"stage": "grading", "model_versions": {"gemini_referee": "v"}, "config_hash": "abc",
                                   "run_mode": "clinical"}

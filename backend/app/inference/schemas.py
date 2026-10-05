@@ -209,6 +209,35 @@ class HistotypeVerdict(StrictModel):
         )
 
 
+_HISTOTYPE_ARCHITECTURE = (
+    "solid_sheets", "cohesive_nests", "glands_or_tubules", "trabeculae_or_cords", "single_files", "targetoid",
+    "papillary", "mucin_pools", "other", "not_assessable",
+)
+_HISTOTYPE_COHESION = ("cohesive", "discohesive", "mixed", "not_assessable")
+_HISTOTYPE_CONFIDENCE = ("low", "medium", "high")
+
+
+class HistotypePatchVerdict(HistotypeVerdict):
+    """One patch's histologic type with what the model saw (WP-8.8).
+
+    The slide's type is decided by ``pipeline/grading.py::aggregate_histotype`` over several of these.
+    ``confidence`` is kept for the reviewer and used in no computation (uncalibrated, SPEC-01 §3.5).
+    """
+
+    architecture: Literal[_HISTOTYPE_ARCHITECTURE]
+    cohesion: Literal[_HISTOTYPE_COHESION]
+    confidence: Literal[_HISTOTYPE_CONFIDENCE]
+
+    @field_validator("architecture", "cohesion", "confidence", mode="before")
+    @classmethod
+    def normalize_evidence(cls, v: Any, info: Any) -> Any:
+        allowed = {
+            "architecture": _HISTOTYPE_ARCHITECTURE, "cohesion": _HISTOTYPE_COHESION,
+            "confidence": _HISTOTYPE_CONFIDENCE,
+        }[info.field_name]
+        return _normalize_literal(v, allowed)
+
+
 ReportField = Literal["grade", "total", "tubule", "pleo", "mitoses"]
 NottinghamComponent = Annotated[int, Field(ge=1, le=3)]
 

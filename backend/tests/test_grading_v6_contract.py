@@ -114,12 +114,24 @@ class Mitotic(Strict):
     hpf_target: Optional[int] = None
 
 
+class HistotypeVote(Strict):
+    sample_id: str
+    type: Optional[str]
+    architecture: Optional[str]
+    cohesion: Optional[str]
+    confidence: Optional[Literal["low", "medium", "high"]]
+    rationale: Optional[str]
+
+
 class Histotype(Strict):
     type: Optional[str]
     estimator: str
     rationale: str
     confirmed: bool
     confirmed_by: Optional[str]
+    agreement: Optional[float]
+    n_requested: int
+    votes: List[HistotypeVote]
 
 
 class Overrides(Strict):

@@ -305,7 +305,7 @@ ROWS = [
     Row("worker/grading.py:507", "pleomorphism failure became pleomorphism_score=2",
         grading_with_down(schemas.PleoScore), ModelUnavailableError, "pleo_field"),
     Row("worker/grading.py:519-528", "histologic-type failure became IDC-NST",
-        grading_with_down(schemas.HistotypeVerdict), ModelUnavailableError, "histotype"),
+        grading_with_down(schemas.HistotypePatchVerdict), ModelUnavailableError, "histotype"),
     Row("worker/triage.py:600,706-710", "synthetic pink crops sent to the referee and uploaded",
         triage_region_unreadable, SlideReadError, "TIFFRGBAImageGet failed"),
     Row("app/routers/triage.py:259", "synthetic evidence patch generator",

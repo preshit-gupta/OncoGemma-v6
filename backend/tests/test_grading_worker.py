@@ -38,7 +38,8 @@ EXCLUDED = [[3200.0, 3200.0], [3800.0, 3200.0], [3800.0, 3800.0], [3200.0, 3800.
 ANSWERS = {
     schemas.TubuleEstimate: {"tumor_present": True, "tubule_percent": 40, "rationale": "tubules in a third"},
     schemas.PleoScore: {"pleomorphism_score": 3},
-    schemas.HistotypeVerdict: {"type": "ILC", "rationale": "single files"},
+    schemas.HistotypePatchVerdict: {"type": "ILC", "architecture": "single_files", "cohesion": "discohesive",
+                                    "confidence": "medium", "rationale": "single files"},
 }
 
 
@@ -142,11 +143,12 @@ def test_grading_estimates_come_from_the_gateway_and_aggregate_deterministically
     verify = [r for r in rows if r["task"] == "pleo_field" and r["producer_id"] == "medgemma"]
     assert len(verify) == N_PLEO and {r["prompt_id"] for r in verify} == {"pleo_verify@v1.md"}
     assert all(s["mpp"] == 0.25 for r in verify for s in r["input_spec"]["images"])
-    (histotype,) = [r for r in rows if r["task"] == "histotype"]
+    histotype = [r for r in rows if r["task"] == "histotype"]
     assert len(tubule) == N_TUBULE and len(pleo) == N_PLEO
     assert {r["prompt_id"] for r in tubule} == {"tubule@v1.md"} and {r["prompt_id"] for r in pleo} == {"pleo@v1.md"}
-    assert histotype["prompt_id"] == "histologic_type@v1.md" and len(histotype["input_spec"]["images"]) == HISTOTYPE_IMAGES
-    assert histotype["entity_type"] == "slide"
+    # WP-8.8: one call per patch, each on one image, instead of one call over the first patches.
+    assert len(histotype) == HISTOTYPE_IMAGES and {r["prompt_id"] for r in histotype} == {"histologic_type@v2.md"}
+    assert all(len(r["input_spec"]["images"]) == 1 and r["entity_type"] == "patch" for r in histotype)
     # SPEC-07 AC6: tubule samples at 1.0 µm/px, pleomorphism fields at 0.25 µm/px, 512 px each.
     assert all(s["mpp"] == 1.0 and s["size_px"] == [512, 512] for r in tubule for s in r["input_spec"]["images"])
     assert all(s["mpp"] == 0.25 and s["size_px"] == [512, 512] for r in pleo for s in r["input_spec"]["images"])
@@ -167,7 +169,12 @@ def test_grading_estimates_come_from_the_gateway_and_aggregate_deterministically
     assert machine == output_json(stage)
     assert machine["schema"] == MACHINE_SCHEMA and machine["flags"] == []
     assert machine["frame"]["hotspot_ids"] == ["hs_01"]
-    assert machine["histotype"]["type"] == "ILC" and machine["histotype"]["record_id"] == str(histotype["id"])
+    ids = [s["id"] for s in machine["tubule"]["samples"]]
+    votes = machine["histotype"]["votes"]
+    assert machine["histotype"]["type"] == "ILC" and machine["histotype"]["agreement"] == 1.0
+    assert machine["histotype"]["n_votes"] == machine["histotype"]["n_requested"] == HISTOTYPE_IMAGES
+    assert [v["sample_id"] for v in votes] == [ids[0], ids[2], ids[4]]  # spread over the six, not the first three
+    assert {v["record_id"] for v in votes} == {str(r["id"]) for r in histotype}
     assert machine["tubule"]["estimator"] == "T1:gemini_referee@tubule@v1"
     assert machine["mitotic"] == {"score": 3, "count_total": 2, "n_hpf": 1, "area_mm2": 0.216, "per_mm2": 9.27,
                                   "flags": ["hpf_count_lt_10"], "hpf_target": 10}
@@ -238,7 +245,7 @@ def test_allowed_outages_leave_components_unassessed_never_defaulted(db_session,
     install_fake_slide(monkeypatch, FakeOpenSlide(SIDE_PX, SIDE_PX), raw_uri)
 
     def histotype_down(request):
-        if request.output_model is schemas.HistotypeVerdict:
+        if request.output_model is schemas.HistotypePatchVerdict:
             raise TransientCallError("503")
         return answer_by_schema(request)
 
@@ -250,7 +257,7 @@ def test_allowed_outages_leave_components_unassessed_never_defaulted(db_session,
     assert grading.histologic_type is None  # v5 wrote IDC-NST here
     output = output_json(stage)
     assert output["histotype"] is None and "needs_human" in output["result"]["flags"]
-    assert [r["task"] for r in log.pending() if r["producer_kind"] == "fallback"] == ["histotype"]
+    assert [r["task"] for r in log.pending() if r["producer_kind"] == "fallback"] == ["histotype"] * HISTOTYPE_IMAGES
 
 
 def test_failed_field_estimates_are_left_out_of_the_aggregate(db_session, monkeypatch):
