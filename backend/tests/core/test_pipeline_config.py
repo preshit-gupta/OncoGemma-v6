@@ -318,3 +318,18 @@ def test_worker_stamps_config_hash_on_the_execution():
         stamped = db.get(StageExecution, exec_id)
         assert stamped.status == "done"
         assert stamped.config_hash == get_config_hash()
+
+
+@pytest.mark.parametrize(
+    "edit, message",
+    [
+        (lambda d: d["grading"]["estimators"].update(histotype_min_agreement=0), "histotype_min_agreement must be above 0"),
+        (lambda d: d["grading"]["estimators"].update(histotype_min_agreement=1.5), "histotype_min_agreement"),
+        (lambda d: d["grading"]["estimators"].pop("histotype_min_agreement"), "histotype_min_agreement"),
+    ],
+)
+def test_histotype_agreement_must_be_a_share_above_zero(tmp_path, edit, message):
+    configs = copy_configs(tmp_path)
+    edit_yaml(configs / "scoring.yaml", edit)
+    with pytest.raises(ConfigLoadError, match=message):
+        load(configs)

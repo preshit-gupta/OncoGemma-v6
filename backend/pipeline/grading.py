@@ -25,6 +25,38 @@ def sample_blob(case_id: str, kind: str, sample_id: str) -> str:
     return f"cases/{case_id}/grading/{kind}/{sample_id}.png"
 
 
+def spread_indices(n_available: int, n: int) -> List[int]:
+    """``n`` indices spread evenly over ``range(n_available)``, the first always 0 (WP-8.8).
+
+    The tubule samples are in stratum order and the strata are spatial clusters, so these pick patches
+    from across the tumour instead of the first ``n``.
+    """
+    if not 0 < n <= n_available:
+        raise ValueError(f"cannot spread {n} indices over {n_available} items")
+    return [i * n_available // n for i in range(n)]
+
+
+def aggregate_histotype(votes: Sequence[Dict[str, Any]], min_agreement: float) -> Dict[str, Any]:
+    """The slide's histologic type from the patches' votes (WP-8.8). No model computes it, and nothing defaults.
+
+    ``votes`` are the patches whose call succeeded. The type is the strict plurality; a tie for first, or a
+    share of the votes below ``min_agreement``, proposes no type (``type`` None): the patches disagree and the
+    pathologist chooses. The model's confidence is not an input.
+    """
+    counts = Counter(v["type"] for v in votes)
+    n_votes = len(votes)
+    out: Dict[str, Any] = {"type": None, "agreement": None, "n_votes": n_votes, "counts": dict(counts)}
+    if n_votes == 0:
+        return out
+    ranked = counts.most_common()
+    winner, top = ranked[0]
+    out["agreement"] = top / n_votes
+    tied = len(ranked) > 1 and ranked[1][1] == top
+    if not tied and out["agreement"] >= min_agreement:
+        out["type"] = winner
+    return out
+
+
 def calculate_tubule_score(tubule_percent: float, cfg: ScoringConfig) -> int:
     """
     Map tubule formation percentage to Elston-Ellis Nottingham score

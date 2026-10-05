@@ -178,7 +178,17 @@
     "estimator": "H1:gemini_histotype@v2",
     "rationale": "Cohesive nests, no single files.",
     "confirmed": false,
-    "confirmed_by": null
+    "confirmed_by": null,
+    "agreement": 0.83,
+    "n_requested": 6,
+    "votes": [
+      {"sample_id": "t_01", "type": "IDC-NST", "architecture": "cohesive_nests", "cohesion": "cohesive", "confidence": "high", "rationale": "Cohesive nests, no single files."},
+      {"sample_id": "t_02", "type": "IDC-NST", "architecture": "solid_sheets", "cohesion": "cohesive", "confidence": "medium", "rationale": "Solid sheets of cohesive cells."},
+      {"sample_id": "t_03", "type": "IDC-NST", "architecture": "cohesive_nests", "cohesion": "cohesive", "confidence": "high", "rationale": "Nests with fibrovascular septa."},
+      {"sample_id": "t_04", "type": "IDC-NST", "architecture": "trabeculae_or_cords", "cohesion": "cohesive", "confidence": "medium", "rationale": "Anastomosing cords."},
+      {"sample_id": "t_05", "type": "IDC-NST", "architecture": "cohesive_nests", "cohesion": "cohesive", "confidence": "high", "rationale": "Cohesive nests."},
+      {"sample_id": "t_06", "type": "ILC", "architecture": "not_assessable", "cohesion": "not_assessable", "confidence": "low", "rationale": "Dense field; single files possible."}
+    ]
   },
   "total": 6,
   "grade": 2,

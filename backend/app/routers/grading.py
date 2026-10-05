@@ -126,6 +126,11 @@ def _verification(field: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return {"producer": v["producer"], "pleomorphism_score": v["pleomorphism_score"], "agrees": v["agrees"]}
 
 
+def _histotype_vote(vote: Dict[str, Any]) -> Dict[str, Any]:
+    """One patch's vote as the contract's ``HistotypeVote`` (the DecisionRecord id stays in the machine output)."""
+    return {k: vote[k] for k in ("sample_id", "type", "architecture", "cohesion", "confidence", "rationale")}
+
+
 def _contract_overrides(overrides: Dict[str, Any]) -> Dict[str, Any]:
     out = {k: overrides[k] for k in ("tubule_score", "pleo_score", "histotype") if k in overrides}
     out["reasons"] = dict(overrides.get("reasons", {}))
@@ -169,6 +174,10 @@ def _view(db: Session, case: Case, stage_exec: StageExecution, grading: Grading)
             "type": grading.histologic_type,
             "estimator": machine["histotype_estimator"],
             "rationale": proposed["rationale"] if proposed else "",
+            # A grading made before WP-8.8 has no votes: absent, never invented.
+            "agreement": proposed.get("agreement") if proposed else None,
+            "n_requested": proposed.get("n_requested", 0) if proposed else 0,
+            "votes": [_histotype_vote(v) for v in proposed.get("votes", [])] if proposed else [],
             "confirmed": grading.type_confirmed_by != "unconfirmed",
             "confirmed_by": None if grading.type_confirmed_by == "unconfirmed" else grading.type_confirmed_by,
         },

@@ -259,3 +259,34 @@ def test_parse_wraps_validation_errors():
         schemas.parse_json_strict(schemas.PleoEstimate, '{"pleomorphism_score": 7}')
     assert ei.value.model_name == "PleoEstimate"
     assert "pleomorphism_score" in str(ei.value)
+
+
+# ---------------------------------------------------------------------------
+# HistotypePatchVerdict (WP-8.8)
+# ---------------------------------------------------------------------------
+
+PATCH = {"type": "IDC-NST", "architecture": "solid_sheets", "cohesion": "cohesive", "confidence": "high", "rationale": "x"}
+
+
+def test_histotype_patch_valid_and_normalised():
+    verdict = schemas.HistotypePatchVerdict.model_validate({**PATCH, "type": "idc-nst", "cohesion": "Cohesive", "confidence": "HIGH"})
+    assert (verdict.type, verdict.cohesion, verdict.confidence) == ("IDC-NST", "cohesive", "high")
+
+
+@pytest.mark.parametrize("missing", ["architecture", "cohesion", "confidence", "type"])
+def test_histotype_patch_has_no_defaulted_evidence(missing):
+    with pytest.raises(ValidationError):
+        schemas.HistotypePatchVerdict.model_validate({k: v for k, v in PATCH.items() if k != missing})
+
+
+@pytest.mark.parametrize("field, value", [
+    ("architecture", "lobular"), ("cohesion", "loose"), ("confidence", "certain"), ("confidence", 3), ("type", "ductal"),
+])
+def test_histotype_patch_invalid(field, value):
+    with pytest.raises(ValidationError):
+        schemas.HistotypePatchVerdict.model_validate({**PATCH, field: value})
+
+
+def test_histotype_patch_refuses_an_invented_field():
+    with pytest.raises(ValidationError):
+        schemas.HistotypePatchVerdict.model_validate({**PATCH, "differential": ["ILC"]})

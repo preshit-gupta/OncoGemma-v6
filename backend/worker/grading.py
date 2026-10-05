@@ -5,8 +5,9 @@ Stage 5 worker: Nottingham grading (SPEC-07 §4-7; WP-8.6, contract grading_v6).
    ``tubule_patches`` tubule samples (512 µm @ 1.0 µm/px, may overlap) and ``pleo_fields``
    pleomorphism fields (128 µm @ 0.25 µm/px, non-overlapping), counts from the specimen profile.
 2. Estimates through the model gateway with the configured producer and prompts: one tubule call
-   per tubule sample, one pleomorphism call per field, the histologic type over the first tubule
-   samples. A failed estimate is never replaced by a value (SPEC-01 §3.9): it fails the stage
+   per tubule sample, one pleomorphism call per field, and one histologic-type call per patch on
+   ``histotype_images`` tubule samples spread over the tumour; the slide's type is their vote
+   (``pipeline/grading.py::aggregate_histotype``, WP-8.8). A failed estimate is never replaced by a value (SPEC-01 §3.9): it fails the stage
    unless configs/fallbacks.yaml allows it in a clinical run; then that estimate is null and the
    grading needs a human.
 3. M from the confirmed Stage 4 rows through ``pipeline/scoring.py`` (the single implementation).
@@ -39,7 +40,7 @@ from app.core.gcs import (
 from app.core.stain_profiles import usable_stain_transform
 from app.core.tasks import EntityType, Task
 from app.inference.gateway import EntityRef, FallbackResult, ImageInput, InputSpec, ModelInputs
-from app.inference.schemas import HistotypeVerdict, PleoScore, TubuleEstimate
+from app.inference.schemas import HistotypePatchVerdict, PleoScore, TubuleEstimate
 from app.models.audit import AuditEvent
 from app.models.case import Case
 from app.models.detection import Detection
@@ -48,7 +49,7 @@ from app.models.hotspot import Hotspot
 from app.models.hpf_site import HpfSite
 from app.models.stage_execution import StageExecution
 from pipeline.errors import DegenerateStainProfileError, SlideReadError
-from pipeline.grading import MACHINE_SCHEMA, sample_blob, stage5_result
+from pipeline.grading import MACHINE_SCHEMA, aggregate_histotype, sample_blob, spread_indices, stage5_result
 from pipeline.grading_sampling import (
     HotspotFrame,
     Sample,
@@ -224,13 +225,16 @@ def run_grading(stage_exec: StageExecution, db: Session, runtime: StageRuntime) 
         jobs += [(Task.PLEO_FIELD, estimators.pleo_verifier, estimators.pleo_verifier_prompt, (img,),
                   EntityRef(EntityType.FIELD, s.id), PleoScore)
                  for s, img in zip(plan.pleo, pleo_images)]
-        jobs.append((Task.HISTOTYPE, producer, estimators.histotype_prompt, tuple(tubule_images[:estimators.histotype_images]),
-                     EntityRef(EntityType.SLIDE, slide_id), HistotypeVerdict))
+        # The type is voted over patches from across the tumour, one call each (a shortfall of samples shrinks the vote).
+        histotype_at = spread_indices(len(plan.tubule), min(estimators.histotype_images, len(plan.tubule))) if plan.tubule else []
+        jobs += [(Task.HISTOTYPE, producer, estimators.histotype_prompt, (tubule_images[i],),
+                  EntityRef(EntityType.PATCH, plan.tubule[i].id), HistotypePatchVerdict)
+                 for i in histotype_at]
         with ThreadPoolExecutor(max_workers=ESTIMATOR_THREADS) as pool:
             results = list(pool.map(_estimate, jobs))
-        type_result = results.pop()
         n_t, n_p = len(plan.tubule), len(plan.pleo)
-        t_results, p_results, v_results = results[:n_t], results[n_t:n_t + n_p], results[n_t + n_p:]
+        t_results, p_results = results[:n_t], results[n_t:n_t + n_p]
+        v_results, h_results = results[n_t + n_p:n_t + 2 * n_p], results[n_t + 2 * n_p:]
     finally:
         if reader is not None:
             reader.close()
@@ -262,17 +266,32 @@ def run_grading(stage_exec: StageExecution, db: Session, runtime: StageRuntime) 
             "nuclei": None,  # nuclear segmentation is WP-8.3 (deferred, D21)
             "record_id": str(res.record_id),
         })
-    histotype = None
-    if not isinstance(type_result, FallbackResult):
-        histotype = {"type": type_result.output.type, "rationale": type_result.output.rationale,
-                     "record_id": str(type_result.record_id)}
+    votes_out = []
+    for i, res in zip(histotype_at, h_results):
+        out = None if isinstance(res, FallbackResult) else res.output
+        votes_out.append({
+            "sample_id": plan.tubule[i].id,
+            "type": None if out is None else out.type,
+            "architecture": None if out is None else out.architecture,
+            "cohesion": None if out is None else out.cohesion,
+            "confidence": None if out is None else out.confidence,
+            "rationale": None if out is None else out.rationale,
+            "record_id": str(res.record_id),
+        })
+    cast = [v for v in votes_out if v["type"] is not None]
+    histotype = None  # no successful vote: no proposal
+    if cast:
+        vote = aggregate_histotype(cast, estimators.histotype_min_agreement)
+        winner = next((v for v in cast if v["type"] == vote["type"]), None)  # None: the patches disagree
+        histotype = {**vote, "n_requested": len(votes_out), "rationale": winner["rationale"] if winner else "",
+                     "votes": votes_out}
 
     machine_flags = []
     shortfall = {
         "tubule": profile.grading.tubule_patches - len(plan.tubule),
         "pleo": profile.grading.pleo_fields - len(plan.pleo),
     }
-    if shortfall["tubule"] > 0 or shortfall["pleo"] > 0 or histotype is None:
+    if shortfall["tubule"] > 0 or shortfall["pleo"] > 0 or histotype is None or histotype["type"] is None:
         machine_flags.append("needs_human")
 
     model_versions = {key: config.models.version_of(key) for key in (estimators.producer, estimators.pleo_verifier)}
@@ -312,7 +331,7 @@ def run_grading(stage_exec: StageExecution, db: Session, runtime: StageRuntime) 
         "mitotic_score": result["mitotic_score"],
         "nottingham_sum": result["total"],
         "grade": result["grade"],
-        "histologic_type": histotype["type"] if histotype else None,
+        "histologic_type": histotype["type"] if histotype else None,  # None when absent or the patches disagree
     }
     grading = db.get(Grading, stage_exec.case_id)
     if grading is None:

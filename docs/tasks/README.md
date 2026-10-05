@@ -35,6 +35,7 @@ They are not for delegates, but follow the same template so each is one bounded 
 | [WP-8.6 `grading_v6` API and Stage 5 sampling](WP-8.6-grading-v6-api.md) | **done** (#49) | |
 | [WP-5.6 TCGA from IDC DICOM](WP-5.6-idc-source.md) | **done** (#54) | Reads TCGA-BRCA in place for whole-slide runs; prerequisite of WP-8.7 |
 | [WP-8.7 Grading baseline validation](WP-8.7-grading-baseline-validation.md) | now (owner runs the live run, approved 2026-10-04) | Fixed settings on TCGA val (`eval/manifests/tcga_brca_idc_val.parquet`) |
+| [WP-8.8 Histologic type from evidence](WP-8.8-histotype-evidence.md) | now | Per-patch votes, IDC-NST default, no consensus is not a guess (case `7bf347e5`: IDC proposed as ILC); the UI for the votes is a follow-up (proposed WP-8.9) |
 
 ## Owner review of Stages 3–5 (2026-10-05, D22; plan §2.4)
 

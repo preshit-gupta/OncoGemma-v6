@@ -39,8 +39,11 @@ grading:
     # never sees the estimate; a disagreement is flagged on the field for review, the grade is unchanged.
     pleo_verifier: medgemma
     pleo_verifier_prompt: pleo_verify@v1.md
-    histotype_prompt: histologic_type@v1.md
-    histotype_images: 6 # the first patches, shown together (v5 sent 6 to Gemini)
+    histotype_prompt: histologic_type@v2.md
+    histotype_images: 6 # patches voted on, one call each, spread evenly over the tubule samples (WP-8.8)
+    # The winning type needs this share of the successful votes (4 of 6) or no type is proposed and the
+    # pathologist chooses. An unvalidated default: tuned on TCGA val against the S5-HT labels.
+    histotype_min_agreement: 0.66
     color: normalized # SPEC-04 §3.5 default for VLM tasks; the raw-vs-normalised ablation decides per task
 
 hpf:

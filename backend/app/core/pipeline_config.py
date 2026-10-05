@@ -323,7 +323,14 @@ class GradingEstimatorsConfig(StrictModel):
     pleo_verifier_prompt: PromptFileName
     histotype_prompt: PromptFileName
     histotype_images: PositiveInt
+    # The share of the voting patches that must choose the winning type for it to be proposed (WP-8.8).
+    histotype_min_agreement: Fraction
     color: ColorPolicy
+
+    @model_validator(mode="after")
+    def _agreement_above_zero(self) -> "GradingEstimatorsConfig":
+        _require(self.histotype_min_agreement > 0, "histotype_min_agreement must be above 0")
+        return self
 
 
 class GradingSampleGeometry(StrictModel):
