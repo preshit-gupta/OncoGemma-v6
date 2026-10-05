@@ -209,8 +209,8 @@ def test_issue_73_tumor_head_provenance_and_sha256():
 # --- #448: apply_edit_ops processes delete operation ---
 def test_issue_448_apply_edit_ops_delete_operation():
     machine_hotspots = [
-        {"id": "hs_01", "polygon_um": [[0, 0], [100, 0], [100, 100], [0, 100]], "area_mm2": 0.36, "source": "model", "excluded": False},
-        {"id": "hs_02", "polygon_um": [[200, 200], [300, 200], [300, 300], [200, 300]], "area_mm2": 0.36, "source": "model", "excluded": False},
+        {"id": "hs_01", "center_um": [300.0, 300.0], "source": "model", "excluded": False},
+        {"id": "hs_02", "center_um": [1300.0, 300.0], "source": "model", "excluded": False},
     ]
 
     # Pathologist deletes hs_01
@@ -218,7 +218,7 @@ def test_issue_448_apply_edit_ops_delete_operation():
         {"op": "delete", "id": "hs_01"}
     ]
 
-    effective = apply_edit_ops(machine_hotspots, edits)
+    effective = apply_edit_ops(machine_hotspots, edits, diameter_um=500.0, frame_um=600.0)
     assert len(effective) == 1
     assert effective[0]["id"] == "hs_02", "Deleted hs_01 must be completely removed from effective set"
 

@@ -67,9 +67,17 @@ def setup_test_case():
                  width_px=SIDE_PX, height_px=SIDE_PX))
     db.add(StageExecution(id=uuid.uuid4(), case_id=case_id, stage="mitosis", attempt=1, status="awaiting_review",
                           model_versions={"kongnet_det_midog_1": "v2"}, config_hash="a" * 64))
+    db.flush()
+    exec_id = db.scalars(select(StageExecution).where(StageExecution.case_id == case_id)).one().id
     for i in range(1, 4):
-        db.add(HpfSite(case_id=case_id, seq=i, center_um=[1000.0 * i, 1000.0 * i], radius_um=262.0, mitotic_count=0,
+        centre = [1000.0 * i, 1000.0 * i]
+        db.add(HpfSite(case_id=case_id, seq=i, center_um=centre, radius_um=250.0, mitotic_count=0,
                        tissue_coverage=0.9, tumor_fraction=0.8, source="model"))
+        db.add(Hotspot(id=f"hs_{i:02d}", case_id=case_id, stage_execution_id=exec_id, source="model", excluded=False,
+                       center_um=centre, hpf_diameter_um=500.0, window_um=600.0, rank=i,
+                       polygon_um=[[centre[0] - 300, centre[1] - 300], [centre[0] + 300, centre[1] - 300],
+                                   [centre[0] + 300, centre[1] + 300], [centre[0] - 300, centre[1] + 300],
+                                   [centre[0] - 300, centre[1] - 300]]))
     db.add_all([
         model_candidate(case_id, "m_0001", (1010.0, 1010.0), 0.92),                   # inside HPF 1
         model_candidate(case_id, "m_0002", (2020.0, 2020.0), 0.85),                   # inside HPF 2
@@ -116,8 +124,12 @@ def test_get_serves_the_v6_payload(setup_test_case):
     assert all(h["tissue_coverage"] == 0.9 and h["tumor_fraction"] == 0.8 for h in data["hpfs"])
     summary = data["summary"]
     assert (summary["count_total"], summary["n_hpf"], summary["n_equivocal"]) == (2, 3, 1)  # m_0004 is outside the HPFs
-    assert summary["flags"] == ["hpf_count_lt_10"]
-    assert summary["area_mm2"] == 0.647 and summary["mitotic_score"] == 1  # 2 / 0.647 mm² = 3.09/mm² < 3.65
+    assert summary["flags"] == ["hpf_count_lt_10"] and summary["hpf_target"] == 10
+    assert summary["area_mm2"] == 0.589 and summary["mitotic_score"] == 1  # 2 / 0.589 mm² = 3.40/mm² < 3.65
+    assert [h["hotspot_id"] for h in data["hpfs"]] == ["hs_01", "hs_02", "hs_03"]
+    assert data["hpfs"][0]["frame_um"][0] == [700.0, 700.0] and len(data["hpfs"][0]["frame_um"]) == 5
+    # hpf_seq: the circle that contains the candidate, null outside every circle
+    assert [by_id[k]["hpf_seq"] for k in ("m_0001", "m_0002", "m_0003", "m_0004")] == [1, 2, 3, None]
     assert data["provenance"] == {"stage": "mitosis", "model_versions": {"kongnet_det_midog_1": "v2"},
                                   "config_hash": "a" * 64, "run_mode": "clinical"}
 
@@ -168,7 +180,6 @@ def lock(case_id, status="confirmed"):
 @pytest.mark.parametrize("path,body", [
     ("review", {"candidate_id": "m_0001", "review_label": "not_mitosis"}),
     ("add", {"centroid_um": [1000.0, 1000.0]}),
-    ("replace-hpfs", {}),
 ])
 def test_edits_on_a_confirmed_stage_are_stage_locked(setup_test_case, path, body):
     lock(setup_test_case)
@@ -223,40 +234,9 @@ def test_confirm_mitosis_does_not_clobber_completed_grading(setup_test_case):
     db.close()
 
 
-@pytest.mark.parametrize("path", ["recompute", "add_candidate", "bulk_action", "re_place_hpfs"])
+@pytest.mark.parametrize("path", ["recompute", "add_candidate", "bulk_action", "re_place_hpfs", "replace-hpfs"])
 def test_the_v5_routes_are_gone(setup_test_case, path):
     assert post(path, {"case_id": setup_test_case}).status_code in (404, 405)
-
-
-def test_replace_hpfs_places_from_counted_candidates_inside_the_hotspots(setup_test_case):
-    case_id = setup_test_case
-    db = TestingSessionLocal()
-    case_uid = uuid.UUID(case_id)
-    slide = db.scalars(select(Slide).where(Slide.case_id == case_uid)).one()
-    exec_id = db.scalars(select(StageExecution).where(StageExecution.case_id == case_uid)).one().id
-    db.add(Hotspot(id="hs_01", case_id=case_uid, stage_execution_id=exec_id, area_mm2=1.44, prob_mean=0.9, prob_max=0.95,
-                   polygon_um=[[1800.0, 1800.0], [3000.0, 1800.0], [3000.0, 3000.0], [1800.0, 3000.0]], source="model", excluded=False))
-    db.commit()
-    seed_stage2(db, case_uid, slide.id, SIDE_PX * MPP, SIDE_PX * MPP)
-    save_tumor_mask(case_uid, np.ones((23, 23), dtype=bool))  # 5 mm of 224 µm tumour tiles
-    db.close()
-
-    res = post("replace-hpfs", {"case_id": case_id})
-    assert res.status_code == 200, res.text
-    hpfs = res.json()["hpfs"]
-    # One field per hotspot window, its disk inside the window (WP-7.6b).
-    assert len(hpfs) == 1 and all(1800.0 + 262.0 <= h["center_um"][i] <= 3000.0 - 262.0 for h in hpfs for i in (0, 1))
-    assert hpfs[0]["tumor_fraction"] == 1.0
-    for i, a in enumerate(hpfs):
-        assert a["tissue_coverage"] >= 0.7
-        for b in hpfs[i + 1:]:
-            assert ((a["center_um"][0] - b["center_um"][0]) ** 2 + (a["center_um"][1] - b["center_um"][1]) ** 2) ** 0.5 >= 524.0 - 1e-6
-    assert len(count_records(case_id)) == 1
-
-
-def test_replace_hpfs_without_hotspots_is_refused(setup_test_case):
-    res = post("replace-hpfs", {"case_id": setup_test_case})
-    assert res.status_code == 409 and res.json()["error"] == "no_hotspots"
 
 
 def test_candidate_images_are_served_when_stored_and_404_otherwise(setup_test_case):
@@ -267,3 +247,15 @@ def test_candidate_images_are_served_when_stored_and_404_otherwise(setup_test_ca
     res = client.get(f"/api/v1/stages/mitosis/{case_id}/candidates/m_0001/context", headers=HEADERS)
     assert res.status_code == 200 and res.content == b"\x89PNG-context" and res.headers["content-type"] == "image/png"
     assert client.get(f"/api/v1/stages/mitosis/{case_id}/candidates/m_0001/other", headers=HEADERS).status_code == 422
+
+
+def test_a_counted_candidate_outside_every_circle_has_no_hpf_and_is_not_in_the_total(setup_test_case):
+    case_id = setup_test_case
+    db = TestingSessionLocal()
+    db.get(Detection, ("m_0004", uuid.UUID(case_id))).final_decision = "mitosis"  # now counted, at (4500, 300): outside the circles
+    db.commit()
+    db.close()
+    data = get(case_id)
+    m4 = next(c for c in data["candidates"] if c["id"] == "m_0004")
+    assert m4["counted"] is True and m4["hpf_seq"] is None
+    assert data["summary"]["count_total"] == 2  # m_0001 and m_0002 only

@@ -217,19 +217,12 @@ class MitosisRefereeConfig(StrictModel):
 
 
 class MitosisHpfConfig(StrictModel):
-    radius_um: PositiveFloat
-    count: PositiveInt
-    # The review image of each field: review_field_um wide, review_px square (it fits the viewer's reticle).
-    review_field_um: PositiveFloat
-    review_px: PositiveInt
-    # Candidate HPF centres lie on a lattice of this step inside each hotspot window.
-    centre_step_um: PositiveFloat
-    min_separation_um: PositiveFloat
+    """The HPF circles are the confirmed Stage 3 sites (specimen_profiles.yaml hotspots), so only the review image is set here.
 
-    @model_validator(mode="after")
-    def _non_overlapping(self) -> "MitosisHpfConfig":
-        _require(self.min_separation_um >= 2 * self.radius_um, "min_separation_um must be at least 2 * radius_um")
-        return self
+    The image shows the site's frame (``HotspotsConfig.frame_um``) rendered ``review_px`` square.
+    """
+
+    review_px: PositiveInt
 
 
 class MitoticThresholds(StrictModel):
@@ -510,13 +503,29 @@ class SpecimenTriageConfig(StrictModel):
 class HotspotsConfig(StrictModel):
     """Stage 3 hotspot extraction and selection settings (SPEC-05 §5)."""
 
-    window_um: PositiveFloat
+    # An HPF site is a circle of this diameter; its frame is the square around it with
+    # frame_padding_um added on each side, so a figure on the circle's edge is seen whole (D22).
+    hpf_diameter_um: PositiveFloat
+    frame_padding_um: NonNegativeFloat
+    # Candidate site centres lie on a lattice of this step over the tumour mask's bounding box.
     lattice_step_um: PositiveFloat
+    # Tissue and tumour shares are measured over the circle.
     min_tissue_fraction: Fraction
     min_tumor_fraction: Fraction
+    # The least distance between two circles' edges.
     gap_um: NonNegativeFloat
+    # The number of HPFs to examine: the target for the mitotic score.
     k_max: PositiveInt
     ranking_arm: Literal["H1", "H2", "H3"] = "H1"
+
+    @property
+    def frame_um(self) -> float:
+        """Side of a site's padded frame."""
+        return self.hpf_diameter_um + 2.0 * self.frame_padding_um
+
+    @property
+    def hpf_radius_um(self) -> float:
+        return self.hpf_diameter_um / 2.0
 
 
 class SpecimenGradingConfig(StrictModel):
@@ -706,10 +715,6 @@ class PipelineConfig(StrictModel):
             mitosis_scoring.basis == mitotic_score.basis and mitosis_scoring.thresholds == mitotic_score.thresholds,
             "mitosis.yaml scoring and scoring.yaml mitotic_score must have the same basis and thresholds",
         )
-        _require(
-            self.mitosis.hpf.radius_um == self.scoring.hpf.radius_um and self.mitosis.hpf.count == self.scoring.hpf.count,
-            "mitosis.yaml hpf and scoring.yaml hpf must have the same radius_um and count",
-        )
         self._triage_models_exist()
         self._mitosis_models_exist()
         self._grading_models_exist()
@@ -825,21 +830,29 @@ class PipelineConfig(StrictModel):
             f"triage.yaml tumor_referee.prompt {triage.tumor_referee.prompt!r} is not in configs/prompts",
         )
 
-    def hotspot_gap_um(self, specimen_type: str | None) -> float:
-        """The gap between active hotspots (SPEC-05 §5.5) for a case's specimen type.
+    def hotspot_settings(self, specimen_type: str | None) -> HotspotsConfig:
+        """The HPF site settings (SPEC-05 §5) for a case's specimen type.
 
-        A case without a known specimen type is checked with the gap every profile shares;
+        A case without a known specimen type is checked with the settings every profile shares;
         when the profiles disagree, its specimen type is required (SpecimenTypeRequired).
         """
         if specimen_type in self.specimen_profiles.profiles:
-            return self.specimen_profiles.for_type(specimen_type).hotspots.gap_um
-        gaps = {profile.hotspots.gap_um for profile in self.specimen_profiles.profiles.values()}
-        if len(gaps) != 1:
+            return self.specimen_profiles.for_type(specimen_type).hotspots
+        distinct = {profile.hotspots.model_dump_json() for profile in self.specimen_profiles.profiles.values()}
+        if len(distinct) != 1:
             raise SpecimenTypeRequired(
-                f"the case's specimen type is {specimen_type!r} and the hotspot gap differs between specimen types; "
+                f"the case's specimen type is {specimen_type!r} and the HPF site settings differ between specimen types; "
                 "set it to resection or core_biopsy"
             )
-        return gaps.pop()
+        return next(iter(self.specimen_profiles.profiles.values())).hotspots
+
+    def hotspot_gap_um(self, specimen_type: str | None) -> float:
+        """The gap between active HPF circles (SPEC-05 §5.5) for a case's specimen type."""
+        return self.hotspot_settings(specimen_type).gap_um
+
+    def hpf_target(self, specimen_type: str | None) -> int:
+        """The number of HPFs the mitotic score is meant to examine (``k_max``)."""
+        return self.hotspot_settings(specimen_type).k_max
 
     def config_hash(self) -> str:
         return hashlib.sha256(canonical_json(self.model_dump(mode="json")).encode("utf-8")).hexdigest()

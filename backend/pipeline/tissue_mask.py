@@ -29,8 +29,22 @@ MASK_ALGORITHM_VERSION = "tissue_mask_v2"
 MM_PER_UM = 1e-3
 # Sub-pixel samples per axis for the pixels a disk's edge crosses.
 DISK_EDGE_SAMPLES = 8
+# Horizontal strips a disk is cut into for the vectorised disk fractions (relative area error ~ 1 / STRIPS²).
+DISK_STRIPS = 128
 HSV_CHANNEL_MAX = 255
 GRAY_LEVELS = 256
+
+
+def disk_strips(r: float, n_strips: int = DISK_STRIPS) -> tuple[np.ndarray, np.ndarray, float]:
+    """A disk of radius ``r`` as ``n_strips`` horizontal strips: (centre offsets dy, half widths, strip height).
+
+    Each strip is the rectangle of its midline's chord, so the strips cover the disk to within ~1 / n_strips².
+    """
+    if not r > 0:
+        raise ValueError(f"r must be positive, got {r!r}")
+    height = 2.0 * r / n_strips
+    dy = -r + (np.arange(n_strips) + 0.5) * height
+    return dy, np.sqrt(r * r - dy * dy), height
 
 
 @dataclass(frozen=True)
@@ -146,6 +160,46 @@ class TissueMask:
             weight[edge_rows, edge_cols] = ((sub_x**2 + sub_y**2) <= radius**2).mean(axis=(1, 2))
         tissue = self.array[row0:row1, col0:col1]
         return float((weight * tissue).sum() / (math.pi * radius**2))
+
+    def fractions_in_disks_um(self, cx, cy, r: float, chunk: int = 64) -> np.ndarray:
+        """``fraction_in_disk_um`` of many disks at once (centres ``cx``, ``cy``, one radius ``r``): the same
+        measurement, the same sub-pixel sampling of the pixels the edge crosses, evaluated for a chunk of
+        centres together on a window of pixels around each. A part of the disk off the slide counts as non-tissue.
+        """
+        if not r > 0:
+            raise ValueError(f"r must be positive, got {r!r}")
+        cx = np.asarray(cx, dtype=np.float64).ravel()
+        cy = np.asarray(cy, dtype=np.float64).ravel()
+        radius = r / self.mpp
+        reach = math.ceil(radius) + 1
+        offsets = np.arange(-reach, reach + 1)
+        padded = np.zeros((self.height_px + 2 * reach + 1, self.width_px + 2 * reach + 1))
+        padded[reach:reach + self.height_px, reach:reach + self.width_px] = self._cells
+        sub = (np.arange(DISK_EDGE_SAMPLES) + 0.5) / DISK_EDGE_SAMPLES
+        out = np.empty(cx.shape)
+        for k in range(0, len(cx), chunk):
+            px, py = cx[k:k + chunk] / self.mpp, cy[k:k + chunk] / self.mpp
+            ix, iy = np.floor(px).astype(np.int64), np.floor(py).astype(np.int64)
+            # Pixel (iy + j, ix + i) spans [ix + i, ix + i + 1) x [iy + j, iy + j + 1); distances are from the centre.
+            dx0 = (offsets[None, :] + (ix - px)[:, None])           # (n, W): left edge of each pixel column
+            dy0 = (offsets[None, :] + (iy - py)[:, None])           # (n, W): top edge of each pixel row
+            near_x = np.where(dx0 > 0, dx0, np.where(dx0 + 1 < 0, -(dx0 + 1), 0.0))
+            near_y = np.where(dy0 > 0, dy0, np.where(dy0 + 1 < 0, -(dy0 + 1), 0.0))
+            far_x = np.maximum(np.abs(dx0), np.abs(dx0 + 1))
+            far_y = np.maximum(np.abs(dy0), np.abs(dy0 + 1))
+            inside = (far_y[:, :, None] ** 2 + far_x[:, None, :] ** 2) <= radius ** 2
+            outside = (near_y[:, :, None] ** 2 + near_x[:, None, :] ** 2) >= radius ** 2
+            weight = inside.astype(np.float64)
+            n_i, r_i, c_i = np.nonzero(~inside & ~outside)
+            if n_i.size:
+                sub_x = dx0[n_i, c_i][:, None, None] + sub[None, None, :]
+                sub_y = dy0[n_i, r_i][:, None, None] + sub[None, :, None]
+                weight[n_i, r_i, c_i] = ((sub_x ** 2 + sub_y ** 2) <= radius ** 2).mean(axis=(1, 2))
+            rows = (iy[:, None] + offsets[None, :] + reach)[:, :, None]
+            cols = (ix[:, None] + offsets[None, :] + reach)[:, None, :]
+            tissue = padded[np.clip(rows, 0, padded.shape[0] - 1), np.clip(cols, 0, padded.shape[1] - 1)]
+            out[k:k + chunk] = (weight * tissue).sum(axis=(1, 2)) / (math.pi * radius ** 2)
+        return out
 
     def fraction_grid(
         self, cell_w_um: float, cell_h_um: float, n_cols: int, n_rows: int, origin_um: tuple[float, float] = (0.0, 0.0)

@@ -1,13 +1,13 @@
 import hashlib
 import io
 import json
+import math
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional, Literal
-import numpy as np
 from PIL import Image
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -20,7 +20,7 @@ from app.core.gcs import (
 from app.core.db import get_db
 from app.auth.deps import CurrentUser, require
 from app.auth.idempotency import IdempotencyContext, IdempotentRoute, idempotent
-from app.core.geometry import validate_polygon_geometry, validate_hotspots_non_overlapping
+from app.core.geometry import ContractHTTPError, InvalidSiteError, validate_hpf_sites
 from app.core.slide_access import PRECONDITION_ERRORS, open_case_slide, slide_stain_transform
 from app.core.pipeline_config import canonical_json, get_pipeline_config
 from app.core.tasks import Task, EntityType, ProducerKind, DecisionStatus
@@ -34,6 +34,7 @@ from app.core.rehydrate import rehydrate_case_from_gcs
 from app.services import stages as stage_service
 from google.api_core.exceptions import NotFound
 from pipeline.errors import SlideReadError, SpecimenTypeRequired
+from pipeline.hotspots_v6 import frame_polygon_um
 from pipeline.slide_io import centered_origin_um, read_region_at_mpp
 
 # Edge of the hotspot review patches, in pixels.
@@ -50,20 +51,6 @@ def to_uuid(val: Any) -> uuid.UUID:
         return val
 
 
-def compute_polygon_area_mm2(coords: list[list[float]]) -> float:
-    """
-    Computes polygon area in square millimeters from micrometer coordinates [[x, y], ...].
-    Uses the Shoelace formula.
-    """
-    if not coords or len(coords) < 3:
-        return 0.0
-    pts = np.array(coords, dtype=float)
-    x = pts[:, 0]
-    y = pts[:, 1]
-    area_um2 = 0.5 * np.abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)))
-    return round(float(area_um2 / 1e6), 4)
-
-
 def slide_bounds_um(db: Session, case_id: str) -> tuple[float, float] | None:
     """Slide extent in µm, or None while the slide has no recorded size or resolution."""
     slide_row = db.scalars(select(Slide).where(Slide.case_id == to_uuid(case_id))).first()
@@ -73,35 +60,27 @@ def slide_bounds_um(db: Session, case_id: str) -> tuple[float, float] | None:
     return (float(slide_row.width_px * slide_row.mpp_x), float(slide_row.height_px * mpp_y))
 
 
-def validate_edit_geometry(edits: list[dict], slide_bounds: tuple[float, float] | None) -> None:
-    """Server-side checks on every pathologist-drawn polygon (SPEC-03 §5.3.2)."""
-    for op in edits:
-        if op.get("op") in ("add", "modify") and op.get("polygon_um") is not None:
-            validate_polygon_geometry(op["polygon_um"], slide_bounds_um=slide_bounds)
-
-
-def coordinates_differ(poly1: list[list[float]], poly2: list[list[float]], tol_um: float = 1.0) -> bool:
-    """
-    Checks if two polygon coordinate lists differ by more than tol_um.
-    """
-    try:
-        a1 = np.array(poly1, dtype=float)
-        a2 = np.array(poly2, dtype=float)
-        if a1.shape != a2.shape:
-            return True
-        return bool(np.max(np.abs(a1 - a2)) > tol_um)
-    except Exception:
-        return True
-
-
 class TriageEditOp(BaseModel):
-    op: Literal["add", "modify", "exclude", "delete"]
+    """One HPF-site edit (docs/contracts/triage_v6.md ``EditOp``). Polygon ops (``modify``) no longer exist."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["add", "move", "exclude", "restore", "delete"]
     id: Optional[str] = None
-    polygon_um: Optional[list[list[float]]] = None
+    center_um: Optional[tuple[float, float]] = None
     reason: Optional[str] = None
-    area_mm2: Optional[float] = None
-    prob_mean: Optional[float] = None
-    prob_max: Optional[float] = None
+
+    @model_validator(mode="after")
+    def _fields_of_the_op(self) -> "TriageEditOp":
+        needs_id = self.op != "add"
+        needs_centre = self.op in ("add", "move")
+        if needs_id and not self.id:
+            raise ValueError(f"'{self.op}' needs an id")
+        if needs_centre and self.center_um is None:
+            raise ValueError(f"'{self.op}' needs center_um")
+        if self.op == "exclude" and not (self.reason or "").strip():
+            raise ValueError("'exclude' needs a reason")
+        return self
 
 
 class TriageEditsPayload(BaseModel):
@@ -112,69 +91,81 @@ class TriageEditsPayload(BaseModel):
 class TriageConfirmPayload(BaseModel):
     case_id: str
     no_invasive_tumor: bool = False
+    accept_fewer_hpfs: bool = False
 
 
-def apply_edit_ops(machine_hotspots: list[dict], edits: list[Any]) -> list[dict]:
+def contract_error(exc: stage_service.StageServiceError) -> HTTPException:
+    """The HTTP refusal for a stage-service error: the contract body when it names an ``error`` code."""
+    if exc.error:
+        return ContractHTTPError(exc.status_code, exc.error, exc.detail, **exc.extra)
+    return HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+
+def _site(center_um, source: str, diameter_um: float, frame_um: float) -> dict:
+    cx, cy = (float(v) for v in center_um)
+    return {
+        "center_um": [cx, cy],
+        "hpf_diameter_um": diameter_um,
+        "polygon_um": frame_polygon_um(cx, cy, frame_um),
+        "window_um": frame_um,
+        "area_mm2": math.pi * (diameter_um / 2.0) ** 2 / 1e6,
+        "source": source,
+    }
+
+
+def apply_edit_ops(machine_hotspots: list[dict], edits: list[Any], *, diameter_um: float, frame_um: float) -> list[dict]:
     """
-    Applies RFC-6902 style diff operations to machine output hotspots.
-    Idempotent, order-stable, and collision-proof.
+    Applies the pathologist's HPF-site operations to the machine sites, in order.
+
+    ``add`` pins a site (id ``hs_u_<n>``, n over the whole edit history), ``move`` re-centres one,
+    ``exclude`` / ``restore`` toggle it, ``delete`` removes it. The server builds each frame from the
+    centre. A pinned site has no tissue or tumour fraction and no rank (the pathologist's call); a
+    moved model site loses its fractions and score, which belonged to its old position.
+    Stored v6.0 edits (polygons) and sites without ``center_um`` need triage to run again.
     """
-    hotspots_dict = {h["id"]: dict(h) for h in machine_hotspots}
-    user_counter = 1
+    sites = {}
+    for h in machine_hotspots:
+        if h.get("center_um") is None:
+            raise stage_service.TriageRerunRequired(f"hotspot {h.get('id')!r} has no center_um")
+        sites[h["id"]] = dict(h)
+    n_added = 0
 
     for raw_op in edits:
-        op = raw_op.model_dump() if hasattr(raw_op, "model_dump") else (raw_op.dict() if hasattr(raw_op, "dict") else dict(raw_op))
-        action = op.get("op")
-        hid = op.get("id")
-
-        if action == "modify" and hid in hotspots_dict:
-            new_poly = op.get("polygon_um")
-            if new_poly:
-                orig_poly = hotspots_dict[hid].get("polygon_um", [])
-                if coordinates_differ(orig_poly, new_poly):
-                    hotspots_dict[hid]["polygon_um"] = new_poly
-                    hotspots_dict[hid]["source"] = "pathologist_modified"
-                    hotspots_dict[hid]["area_mm2"] = compute_polygon_area_mm2(new_poly)
-                else:
-                    # Unchanged coordinates preserve original source (#75)
-                    hotspots_dict[hid]["polygon_um"] = new_poly
-
-        elif action == "add":
-            poly = op.get("polygon_um", [])
-            # Reject degenerate/empty polygons (#95)
-            if not poly or len(poly) < 3:
-                continue
-
-            # Collision-proof ROI ID (#741, #714)
-            new_id = hid
-            if not new_id or new_id.startswith("hs_") or new_id in hotspots_dict:
-                while f"user_roi_{user_counter:02d}" in hotspots_dict:
-                    user_counter += 1
-                new_id = f"user_roi_{user_counter:02d}"
-                user_counter += 1
-
-            calc_area = compute_polygon_area_mm2(poly)
-            area_val = op.get("area_mm2") if op.get("area_mm2") is not None else calc_area
-
-            hotspots_dict[new_id] = {
+        op = raw_op.model_dump() if hasattr(raw_op, "model_dump") else dict(raw_op)
+        action, hid = op.get("op"), op.get("id")
+        if action == "modify" or "polygon_um" in op:
+            raise stage_service.TriageRerunRequired("the stored edits are polygon edits from before HPF sites")
+        if action == "add":
+            n_added += 1
+            new_id = hid or f"hs_u_{n_added}"
+            if new_id in sites:
+                raise InvalidSiteError(new_id, "duplicate_id", f"Site '{new_id}' already exists.")
+            sites[new_id] = {
                 "id": new_id,
-                "polygon_um": poly,
-                "area_mm2": area_val,
-                "prob_mean": op.get("prob_mean"),  # None for pathologist additions (#95)
-                "prob_max": op.get("prob_max"),    # None for pathologist additions (#95)
-                "source": "pathologist_added",
-                "excluded": False,
-                "exclude_reason": None
+                **_site(op["center_um"], "pathologist_added", diameter_um, frame_um),
+                "rank": None, "rank_score": None, "score_kind": None,
+                "tissue_fraction": None, "tumor_fraction": None, "prescan_expected": None,
+                "excluded": False, "exclude_reason": None,
             }
+            continue
+        if hid not in sites:
+            raise InvalidSiteError(hid, "unknown_site", f"There is no site '{hid}'.")
+        if action == "move":
+            was_model = sites[hid]["source"] == "model"
+            sites[hid].update(_site(op["center_um"], "pathologist_modified" if was_model else sites[hid]["source"],
+                                    diameter_um, frame_um))
+            if was_model:
+                sites[hid].update({"rank_score": None, "tissue_fraction": None, "tumor_fraction": None})
+        elif action == "exclude":
+            sites[hid]["excluded"] = True
+            sites[hid]["exclude_reason"] = op.get("reason")
+        elif action == "restore":
+            sites[hid]["excluded"] = False
+            sites[hid]["exclude_reason"] = None
+        elif action == "delete":
+            del sites[hid]
 
-        elif action == "exclude" and hid in hotspots_dict:
-            hotspots_dict[hid]["excluded"] = True
-            hotspots_dict[hid]["exclude_reason"] = op.get("reason", "Pathologist excluded")
-
-        elif action == "delete" and hid in hotspots_dict:
-            del hotspots_dict[hid]
-
-    return list(hotspots_dict.values())
+    return list(sites.values())
 
 
 def triage_view(
@@ -227,6 +218,8 @@ def triage_view(
         "hotspots": effective_hotspots,
         "machine_hotspots": machine_hotspots,
         "flags": machine_output.get("flags"),
+        "hpf_target": machine_output.get("hpf_target"),
+        "n_sites_available": machine_output.get("n_sites_available"),
         "provenance": {
             "stage": "triage",
             "model_versions": stage_exec.model_versions,
@@ -306,7 +299,10 @@ def get_triage_data(case_id: str, db: Session = Depends(get_db), user: CurrentUs
 
         edits = stage_exec.review_edits or []
         machine_hotspots = machine_output.get("hotspots", [])
-        effective_hotspots = apply_edit_ops(machine_hotspots, edits)
+        try:
+            effective_hotspots = stage_service.effective_triage_hotspots(stage_exec, machine_output)
+        except stage_service.StageServiceError as exc:
+            raise contract_error(exc) from exc
 
     return triage_view(db, case_id, stage_exec, machine_output, machine_hotspots, effective_hotspots, edits)
 
@@ -372,7 +368,8 @@ def get_hotspot_thumbnail(
         cy_um = float(actual_cy)
         is_user_edited = True
     else:
-        # Check review edits FIRST (#573, #701)
+        # The effective site: the machine site with the reviewer's edits (#573, #701). A site the
+        # reviewer moved or pinned has no pre-generated patch, so its patches are read from the slide.
         st_obj = db.scalars(
             select(StageExecution).where(
                 StageExecution.case_id == case_id,
@@ -380,29 +377,26 @@ def get_hotspot_thumbnail(
             ).order_by(StageExecution.attempt.desc())
         ).first()
 
-        if st_obj and st_obj.review_edits:
-            for ed in st_obj.review_edits:
-                if ed.get("id") == hotspot_id and "polygon_um" in ed:
-                    poly = np.array(ed["polygon_um"])
-                    if len(poly) > 0:
-                        cx_um = float(poly[:, 0].mean())
-                        cy_um = float(poly[:, 1].mean())
-                        is_user_edited = True
-                        break
-
-        # If not in review_edits, check machine output
-        if cx_um is None or cy_um is None:
+        try:
+            out_bytes = download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_id}/triage/output.json")
+            machine_output = json.loads(out_bytes.decode("utf-8"))
+        except (NotFound, FileNotFoundError, ValueError):
+            machine_output = {}  # no machine output: the site is unknown (404 below)
+        machine_sites = machine_output.get("hotspots", [])
+        sites = machine_sites
+        if st_obj is not None and st_obj.review_edits:
             try:
-                out_bytes = download_blob_as_bytes(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_id}/triage/output.json")
-                tdata = json.loads(out_bytes.decode("utf-8"))
-                target_hs = next((h for h in tdata.get("hotspots", []) if h["id"] == hotspot_id), None)
-                if target_hs and "polygon_um" in target_hs:
-                    poly = np.array(target_hs["polygon_um"])
-                    if len(poly) > 0:
-                        cx_um = float(poly[:, 0].mean())
-                        cy_um = float(poly[:, 1].mean())
-            except Exception:
-                pass
+                diameter_um, frame_um, _ = stage_service.site_geometry(machine_output)
+                sites = apply_edit_ops(machine_sites, st_obj.review_edits, diameter_um=diameter_um, frame_um=frame_um)
+            except stage_service.StageServiceError as exc:
+                raise contract_error(exc) from exc
+        site = next((h for h in sites if h["id"] == hotspot_id), None)
+        if site is not None:
+            if site.get("center_um") is None:
+                raise contract_error(stage_service.TriageRerunRequired(f"hotspot {hotspot_id!r} has no center_um"))
+            cx_um, cy_um = (float(v) for v in site["center_um"])
+            machine_site = next((h for h in machine_sites if h["id"] == hotspot_id), None)
+            is_user_edited = machine_site is None or machine_site.get("center_um") != site["center_um"]
 
     # Unknown hotspot ID must return 404 (#734)
     if cx_um is None or cy_um is None:
@@ -523,23 +517,35 @@ def save_triage_edits(payload: TriageEditsPayload, db: Session = Depends(get_db)
             detail=f"Triage stage for case {payload.case_id} is already confirmed and immutable."
         )
 
-    edits_dict = [
-        e.model_dump() if hasattr(e, "model_dump") else (e.dict() if hasattr(e, "dict") else dict(e))
-        for e in payload.edits
-    ]
-    validate_edit_geometry(edits_dict, slide_bounds_um(db, payload.case_id))
-
     try:
         machine_output = stage_service.machine_triage_output(stage_exec)
+        diameter_um, frame_um, hpf_target = stage_service.site_geometry(machine_output)
+        # Edits accumulate: each request appends its ops (the client sends one op per request). A pin
+        # gets the next hs_u_<n> over the whole history, which the stored op keeps.
+        stored = list(stage_exec.review_edits or [])
+        n_added = sum(1 for e in stored if e.get("op") == "add")
+        new_edits = []
+        for e in payload.edits:
+            op = e.model_dump(exclude_none=True)
+            if "center_um" in op:
+                op["center_um"] = [float(v) for v in op["center_um"]]
+            if op["op"] == "add":
+                n_added += 1
+                op["id"] = f"hs_u_{n_added}"
+            new_edits.append(op)
+        edits_dict = stored + new_edits
+        machine_hotspots = machine_output.get("hotspots", [])
+        effective_hotspots = apply_edit_ops(machine_hotspots, edits_dict, diameter_um=diameter_um, frame_um=frame_um)
     except stage_service.StageServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-    machine_hotspots = machine_output.get("hotspots", [])
-    effective_hotspots = apply_edit_ops(machine_hotspots, edits_dict)
+        raise contract_error(exc) from exc
     gap_um = _hotspot_gap_um(db, payload.case_id)
-    validate_hotspots_non_overlapping(effective_hotspots, gap_um=gap_um)
+    validate_hpf_sites(
+        effective_hotspots, diameter_um=diameter_um, gap_um=gap_um, hpf_target=hpf_target,
+        slide_bounds_um=slide_bounds_um(db, payload.case_id),
+    )
 
     stage_exec.review_edits = edits_dict
-    
+
     audit = AuditEvent(
         case_id=str(payload.case_id),
         actor=user.id,
@@ -568,8 +574,8 @@ def save_triage_edits(payload: TriageEditsPayload, db: Session = Depends(get_db)
         producer_kind=ProducerKind.HUMAN.value,
         producer_id=user.id,
         producer_version="human_review@1.0",
-        input_sha256=hashlib.sha256(canonical_json(edits_dict).encode("utf-8")).hexdigest(),
-        input_spec={"edits": edits_dict},
+        input_sha256=hashlib.sha256(canonical_json(new_edits).encode("utf-8")).hexdigest(),
+        input_spec={"edits": new_edits},
         params={"gap_um": gap_um},
         output={"effective_hotspots_count": len(effective_hotspots)},
         status=DecisionStatus.OK.value,
@@ -599,14 +605,16 @@ def confirm_triage(
     """
     try:
         result = stage_service.confirm_stage(
-            db, payload.case_id, "triage", user.id, no_invasive_tumor=payload.no_invasive_tumor
+            db, payload.case_id, "triage", user.id,
+            no_invasive_tumor=payload.no_invasive_tumor, accept_fewer_hpfs=payload.accept_fewer_hpfs,
         )
     except stage_service.StageServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        raise contract_error(exc) from exc
     return {
         "status": "confirmed",
         "case_id": payload.case_id,
         "confirmed_hotspots_count": result.details["confirmed_hotspots_count"],
-        "next_stage_queued": result.next_stage
+        "next_stage_queued": result.next_stage,
+        "accept_fewer_hpfs": result.details["accept_fewer_hpfs"],
     }
 

@@ -215,8 +215,11 @@ class RunController:
         options = {}
         try:
             if execution.stage == "triage":
-                hotspots = stage_service.effective_triage_hotspots(execution)
-                options["no_invasive_tumor"] = not any(not h.get("excluded", False) for h in hotspots)
+                machine_output = stage_service.machine_triage_output(execution)
+                n_active = sum(1 for h in stage_service.effective_triage_hotspots(execution, machine_output) if not h.get("excluded", False))
+                options["no_invasive_tumor"] = n_active == 0
+                # Fewer sites than the target is inadequate tissue; the harness acknowledges it as a pathologist would (D22).
+                options["accept_fewer_hpfs"] = 0 < n_active < stage_service.site_geometry(machine_output)[2]
             stage_service.confirm_stage(self.session, case.id, execution.stage, harness_actor(self.run), **options)
         except stage_service.StageServiceError as exc:
             self.session.rollback()

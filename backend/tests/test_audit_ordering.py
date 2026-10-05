@@ -137,10 +137,10 @@ def test_stage_started_audit_event_emission():
         stage_exec = StageExecution(case_id=case_uid, stage="triage", attempt=1, status="awaiting_review")
         db.add(stage_exec)
         db.commit()
-        hotspot = {"id": "hs_1", "polygon_um": [[0, 0], [100, 0], [100, 100], [0, 100]], "excluded": False}
+        hotspot = {"id": "hs_1", "center_um": [300.0, 300.0], "polygon_um": [[0, 0], [600, 0], [600, 600], [0, 600], [0, 0]], "source": "model", "excluded": False}
         upload_blob_from_bytes(
             settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_uid}/triage/output.json",
-            json.dumps({"hotspots": [hotspot]}).encode("utf-8"), "application/json",
+            json.dumps({"hotspots": [{**hotspot, "id": f"hs_{k}", "center_um": [300.0 + 700.0 * k, 300.0]} for k in range(10)], "hpf_diameter_um": 500.0, "frame_um": 600.0, "hpf_target": 10}).encode("utf-8"), "application/json",
         )
 
         with patch("app.routers.cases.dispatch_stage_task"):

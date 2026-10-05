@@ -18,7 +18,7 @@ from app.auth.idempotency import IdempotentReplay, replay_response
 from app.auth.rate_limit import RateLimitMiddleware
 from app.auth.service import check_auth_settings
 from app.core.config import settings
-from app.core.geometry import HotspotOverlapError, PolygonValidationError
+from app.core.geometry import ContractHTTPError, HotspotOverlapError, PolygonValidationError
 from app.core.migrations import upgrade_to_head
 from app.core.soft_delete import reject_soft_deleted_case
 from app.core.pipeline_config import init_pipeline_config
@@ -141,6 +141,10 @@ def create_app(env: str | None = None) -> FastAPI:
             content["id"] = exc.polygon_id
         return JSONResponse(status_code=exc.status_code, content=content)
 
+    async def _contract_error_handler(request, exc: ContractHTTPError):
+        return JSONResponse(status_code=exc.status_code, content=exc.body)
+
+    application.add_exception_handler(ContractHTTPError, _contract_error_handler)
     application.add_exception_handler(HotspotOverlapError, _hotspot_overlap_handler)
     application.add_exception_handler(PolygonValidationError, _polygon_validation_handler)
 

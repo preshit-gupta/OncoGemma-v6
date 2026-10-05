@@ -313,12 +313,14 @@ def test_idempotency_key_enforcement_and_replay(safety_test_env):
         "hotspots": [
             {
                 "id": "hs_01",
-                "polygon_um": [[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]],
-                "area_mm2": 0.01,
+                "center_um": [300.0, 300.0],
+                "polygon_um": [[0.0, 0.0], [600.0, 0.0], [600.0, 600.0], [0.0, 600.0], [0.0, 0.0]],
+                "area_mm2": 0.196,
                 "prob_mean": 0.9,
                 "prob_max": 0.95
             }
-        ]
+        ],
+        "hpf_diameter_um": 500.0, "frame_um": 600.0, "hpf_target": 10,
     }
 
     with patch("app.services.stages.download_blob_as_bytes", return_value=json.dumps(mock_hs_data).encode("utf-8")), \
@@ -336,7 +338,7 @@ def test_idempotency_key_enforcement_and_replay(safety_test_env):
         idem_key = f"key-{uuid.uuid4()}"
         resp1 = client.post(
             "/api/v1/stages/triage/confirm",
-            json={"case_id": str(case_id), "no_invasive_tumor": False},
+            json={"case_id": str(case_id), "no_invasive_tumor": False, "accept_fewer_hpfs": True},
             headers={"Idempotency-Key": idem_key}
         )
         assert resp1.status_code == 200
@@ -345,7 +347,7 @@ def test_idempotency_key_enforcement_and_replay(safety_test_env):
         # 3. Exact replay with same Idempotency-Key -> returns cached response with Idempotent-Replay header
         resp_replay = client.post(
             "/api/v1/stages/triage/confirm",
-            json={"case_id": str(case_id), "no_invasive_tumor": False},
+            json={"case_id": str(case_id), "no_invasive_tumor": False, "accept_fewer_hpfs": True},
             headers={"Idempotency-Key": idem_key}
         )
         assert resp_replay.status_code == 200

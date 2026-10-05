@@ -164,7 +164,7 @@ def _view(db: Session, case: Case, stage_exec: StageExecution, grading: Grading)
         "pleomorphism": {"fields": fields, "score": result["pleo_score"],
                          "estimator": machine["pleomorphism"]["estimator"],
                          "aggregation": machine["pleomorphism"]["aggregation"]},
-        "mitotic": {k: mitotic[k] for k in ("score", "count_total", "n_hpf", "area_mm2", "per_mm2")},
+        "mitotic": {k: mitotic[k] for k in ("score", "count_total", "n_hpf", "area_mm2", "per_mm2", "flags", "hpf_target")},
         "histotype": {
             "type": grading.histologic_type,
             "estimator": machine["histotype_estimator"],

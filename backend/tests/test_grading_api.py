@@ -69,7 +69,7 @@ def v6_machine(samples, fields, mitotic_score=2, histotype="IDC-NST", flags=()):
                          "estimator": "P1:gemini_referee@pleo@v1"},
         "histotype": {"type": histotype, "rationale": "cohesive nests", "record_id": str(uuid.uuid4())} if histotype else None,
         "histotype_estimator": "H1:gemini_referee@histologic_type@v1",
-        "mitotic": {"score": mitotic_score, "count_total": 12, "n_hpf": 10, "area_mm2": 2.157, "per_mm2": 5.56, "flags": []},
+        "mitotic": {"score": mitotic_score, "count_total": 12, "n_hpf": 10, "area_mm2": 1.963, "per_mm2": 6.11, "flags": [], "hpf_target": 10},
         "shortfall": {"tubule": 0, "pleo": 0}, "flags": list(flags), "model_versions": {}, "generated_at": "2026-10-04T00:00:00Z",
     }
 
@@ -114,7 +114,7 @@ def test_get_aggregates_from_machine_output(client):
     assert body["tubule"]["percent"] == 30.0 and body["tubule"]["score"] == 2 and body["tubule"]["n_used"] == 2
     assert body["pleomorphism"]["score"] == 3 and body["pleomorphism"]["aggregation"] == "mode"
     assert body["total"] == 7 and body["grade"] == 2 and body["flags"] == ["near_grade_boundary"]
-    assert body["mitotic"] == {"score": 2, "count_total": 12, "n_hpf": 10, "area_mm2": 2.157, "per_mm2": 5.56}
+    assert body["mitotic"] == {"score": 2, "count_total": 12, "n_hpf": 10, "area_mm2": 1.963, "per_mm2": 6.11, "flags": [], "hpf_target": 10}
     assert body["histotype"] == {"type": "IDC-NST", "estimator": "H1:gemini_referee@histologic_type@v1",
                                  "rationale": "cohesive nests", "confirmed": False, "confirmed_by": None}
     assert body["tubule"]["samples"][0]["image_url"] == f"{BASE}/{case_id}/tubule/t_01/image"

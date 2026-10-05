@@ -30,7 +30,9 @@ interface GradingStageV6 {
   // estimator: what produced the component, "<arm>:<producer>@<prompt>", e.g. "T1:gemini_referee@tubule@v1"
   tubule: { samples: TubuleSample[]; percent: number | null; score: 1 | 2 | 3 | null; estimator: string; n_used: number };
   pleomorphism: { fields: PleoField[]; score: 1 | 2 | 3 | null; estimator: string; aggregation: "mode" | "p75" | "model" };
-  mitotic: { score: 1 | 2 | 3 | null; count_total: number; n_hpf: number; area_mm2: number; per_mm2: number };  // read-only (Stage 4)
+  // read-only (Stage 4). flags / hpf_target copy the Stage 4 summary: fewer HPFs than hpf_target is inadequate tissue.
+  mitotic: { score: 1 | 2 | 3 | null; count_total: number; n_hpf: number; area_mm2: number; per_mm2: number;
+             flags: ("hpf_count_lt_10")[]; hpf_target: number };
   histotype: { type: string | null; estimator: string; rationale: string; confirmed: boolean; confirmed_by: string | null };
   total: number | null;                 // T + P + M, null unless all three present
   grade: 1 | 2 | 3 | null;
@@ -80,7 +82,7 @@ interface GradingStageV6 {
       {"id": "p_01", "center_um": [4310, 5290], "size_um": 128, "mpp": 0.25, "image_url": "/mock/p01.png", "stratum": 0,
        "estimate": {"pleomorphism_score": 2}, "nuclei": {"n": 143, "area_p50_um2": 48.2, "area_cv": 0.41}, "review": null}],
     "score": 2, "estimator": "P2:ordinal_morph@1.0.0", "aggregation": "model"},
-  "mitotic": {"score": 2, "count_total": 12, "n_hpf": 10, "area_mm2": 2.157, "per_mm2": 5.56},
+  "mitotic": {"score": 2, "count_total": 12, "n_hpf": 10, "area_mm2": 1.963, "per_mm2": 6.11, "flags": [], "hpf_target": 10},
   "histotype": {"type": "IDC-NST", "estimator": "H1:gemini_histotype@v2", "rationale": "Cohesive nests, no single files.",
                 "confirmed": false, "confirmed_by": null},
   "total": 6, "grade": 2, "flags": ["near_grade_boundary"],

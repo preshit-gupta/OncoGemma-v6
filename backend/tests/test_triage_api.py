@@ -67,14 +67,16 @@ def test_triage_api_workflow(client_and_db):
         "hotspots": [
             {
                 "id": "hs_01",
-                "polygon_um": [[0, 0], [224, 0], [224, 224], [0, 224]],
-                "area_mm2": 0.05,
+                "center_um": [300.0, 300.0],
+                "polygon_um": [[0, 0], [600, 0], [600, 600], [0, 600], [0, 0]],
+                "area_mm2": 0.196,
                 "prob_mean": 0.85,
                 "prob_max": 0.95,
                 "source": "model",
                 "excluded": False
             }
-        ]
+        ],
+        "hpf_diameter_um": 500.0, "frame_um": 600.0, "hpf_target": 10,
     }
     mock_bytes = json.dumps(mock_output).encode("utf-8")
 
@@ -95,7 +97,7 @@ def test_triage_api_workflow(client_and_db):
         # 2. POST edits (add user hotspot & exclude hs_01)
         edits = [
             {"op": "exclude", "id": "hs_01", "reason": "DCIS only"},
-            {"op": "add", "id": "user_01", "polygon_um": [[500, 500], [700, 500], [700, 700], [500, 700]], "area_mm2": 0.04}
+            {"op": "add", "center_um": [2000.0, 2000.0]}
         ]
         res_edits = client.post("/api/v1/stages/triage/edits", json={"case_id": case_id, "edits": edits})
         assert res_edits.status_code == 200
@@ -103,6 +105,9 @@ def test_triage_api_workflow(client_and_db):
 
         # 3. POST confirm
         res_confirm = client.post("/api/v1/stages/triage/confirm", json={"case_id": case_id, "no_invasive_tumor": False})
+        assert res_confirm.status_code == 409 and res_confirm.json()["error"] == "hpf_sites_lt_10"  # one active site of ten
+        res_confirm = client.post("/api/v1/stages/triage/confirm",
+                                  json={"case_id": case_id, "no_invasive_tumor": False, "accept_fewer_hpfs": True})
         assert res_confirm.status_code == 200
         confirm_data = res_confirm.json()
         assert confirm_data["status"] == "confirmed"

@@ -62,3 +62,16 @@ def test_scoring_with_fewer_hpfs():
     assert summary["n_hpf"] == 5
     assert summary["area_mm2"] == 1.078
     assert summary["mitotic_score"] == 3
+
+
+def test_ten_circles_of_500_um_make_1963_mm2_and_the_counts_fall_either_side_of_the_boundaries():
+    """D22: the Elston-Ellis row for a 0.50 mm field (1 up to 7, 2 for 8-14, 3 from 15 per ten fields)."""
+    from app.core.pipeline_config import get_pipeline_config
+
+    config = get_pipeline_config()
+    scoring = config.mitosis.scoring
+    radius_um = config.specimen_profiles.profiles["resection"].hotspots.hpf_radius_um
+    hpfs = [{"seq": k, "center_um": [0.0, 0.0], "radius_um": radius_um} for k in range(1, 11)]
+    score = lambda n: compute_nottingham_mitotic_score(n, 10, None, scoring, hpfs)
+    assert score(7)["area_mm2"] == pytest.approx(1.963, abs=1e-3)
+    assert [score(n)["mitotic_score"] for n in (7, 8, 14, 15)] == [1, 2, 2, 3]

@@ -504,11 +504,11 @@ def test_confirm_triage_gating_and_mitosis_attempt_monotonicity(client, db_sessi
     se_triage.status = "awaiting_review"
     db_session.commit()
 
-    with patch("app.services.stages.download_blob_as_bytes", return_value=b'{"hotspots": [{"id": "hs_01", "polygon_um": [[10,10],[20,10],[20,20],[10,20]]}]}'), \
+    with patch("app.services.stages.download_blob_as_bytes", return_value=b'{"hotspots": [{"id": "hs_01", "center_um": [300, 300], "polygon_um": [[0,0],[600,0],[600,600],[0,600],[0,0]]}], "hpf_diameter_um": 500.0, "frame_um": 600.0, "hpf_target": 10}'), \
          patch("app.core.cloud_tasks.dispatch_stage_task"):
         res_ok = client.post(
             "/api/v1/stages/triage/confirm",
-            json={"case_id": case_id, "no_invasive_tumor": False, "reviewed_by": "dr_lee"}
+            json={"case_id": case_id, "no_invasive_tumor": False, "accept_fewer_hpfs": True, "reviewed_by": "dr_lee"}
         )
     assert res_ok.status_code == 200
     assert res_ok.json()["status"] == "confirmed"

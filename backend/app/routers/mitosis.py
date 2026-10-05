@@ -17,22 +17,21 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from google.api_core.exceptions import NotFound
 from pydantic import BaseModel
-from sqlalchemy import select, delete
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.gcs import blob_exists, delete_blob, download_blob_as_bytes, upload_blob_from_bytes
+from app.core.gcs import blob_exists, download_blob_as_bytes, upload_blob_from_bytes
 from app.core.db import get_db
 from app.auth.deps import CurrentUser, require
 from app.auth.idempotency import IdempotencyContext, IdempotentRoute, idempotent
 from app.core.pipeline_config import get_pipeline_config
 from app.core.slide_access import PRECONDITION_ERRORS, open_case_slide, slide_stain_transform
 from app.core.tasks import Task
-from app.core.tissue_mask_store import load_tissue_mask
 from app.inference.records import mitosis_count_record
 from pipeline.detect import candidate_review_crops, review_crop_blob
 from pipeline.errors import SlideReadError
-from pipeline.hpf import place_hpfs
+from pipeline.hpf import attach_sites, hpf_seq_of
 from pipeline.mitosis_gate import load_tumor_gate
 from pipeline.scoring import summarize_stage4
 from pipeline.slide_io import centered_origin_um, read_region_at_mpp
@@ -164,8 +163,16 @@ def _stage_view(db: Session, case_obj: Case, stage_exec: StageExecution) -> Tupl
          "tissue_coverage": h.tissue_coverage, "tumor_fraction": h.tumor_fraction}
         for h in _hpf_rows(db, case_obj)
     ]
-    cfg = get_pipeline_config().mitosis
-    hpfs, summary = summarize_stage4(candidates, hpfs, scoring=cfg.scoring, hpf_count=cfg.hpf.count)
+    config = get_pipeline_config()
+    hpf_target = config.hpf_target(case_obj.specimen_type)
+    sites = db.scalars(select(Hotspot).where(Hotspot.case_id == case_obj.id, Hotspot.excluded == False)).all()  # noqa: E712
+    try:
+        hpfs = attach_sites(hpfs, [{"id": h.id, "center_um": h.center_um, "polygon_um": h.polygon_um} for h in sites])
+    except LookupError as exc:
+        raise ContractError(409, "rerun_required", str(exc)) from exc
+    hpfs, summary = summarize_stage4(candidates, hpfs, scoring=config.mitosis.scoring, hpf_count=hpf_target)
+    for c in candidates:
+        c["hpf_seq"] = hpf_seq_of(c["centroid_um"], hpfs)
     view = {
         "case_id": case_id,
         "stage_execution_id": str(stage_exec.id),
@@ -180,7 +187,8 @@ def _stage_view(db: Session, case_obj: Case, stage_exec: StageExecution) -> Tupl
         ],
         "hpfs": [
             {"seq": h["seq"], "center_um": h["center_um"], "radius_um": h["radius_um"], "count": h["count"],
-             "tissue_coverage": h["tissue_coverage"], "tumor_fraction": h["tumor_fraction"]}
+             "tissue_coverage": h["tissue_coverage"], "tumor_fraction": h["tumor_fraction"],
+             "hotspot_id": h["hotspot_id"], "frame_um": h["frame_um"]}
             for h in hpfs
         ],
         "summary": summary,
@@ -305,9 +313,13 @@ def get_hpf_thumbnail(
         raise HTTPException(status_code=404, detail=f"HPF #{seq} not found for case {case_id}")
     cx_um, cy_um = hpf_site.center_um[0], hpf_site.center_um[1]
 
-    # Review image width calibrated to the frontend HPF reticle canvas (r=236 px -> radius_um=262.0)
-    hpf_cfg = get_pipeline_config().mitosis.hpf
-    field_size_um = hpf_cfg.review_field_um
+    # The review image covers the site's frame (circle plus padding), centred on the circle.
+    config = get_pipeline_config()
+    hpf_cfg = config.mitosis.hpf
+    case_obj = db.get(Case, case_uid)
+    if case_obj is None:
+        raise HTTPException(status_code=404, detail=f"Case {case_id} not found")
+    field_size_um = config.hotspot_settings(case_obj.specimen_type).frame_um
     target_dim = hpf_cfg.review_px // {"40x": 1, "20x": 2, "10x": 4}[mag]
 
     # Raw WSI extraction from the cached raw slide, through the slide's persisted stain profile for "norm"
@@ -402,58 +414,6 @@ def add_candidate(payload: AddPayload, db: Session = Depends(get_db), user: Curr
         ))
         db.add(AuditEvent(case_id=case_id, actor=user.id, event_type="mitosis_added", stage="mitosis",
                           payload={"detection_id": new_id, "centroid_um": [cx_um, cy_um]}))
-    view = _recompute(db, case_obj, stage_exec)
-    db.commit()
-    return view
-
-
-def invalidate_hpf_cached_thumbnails(case_id: str, seqs) -> None:
-    """Deletes the cached review images of HPFs that moved (#107)."""
-    for s in seqs:
-        for m in ("10x", "20x", "40x"):
-            for st in ("norm", "orig"):
-                delete_blob(settings.GCS_ARTIFACTS_BUCKET, f"cases/{case_id}/mitosis/hpfs/hpf_{s}_{m}_{st}.png")
-
-
-@router.post("/replace-hpfs")
-def replace_hpfs(payload: CasePayload, db: Session = Depends(get_db), user: CurrentUser = Depends(require("stage:review"))):
-    """Places the HPFs again from the currently counted candidates: one per hotspot window (``pipeline/hpf.py::place_hpfs``)."""
-    case_obj, stage_exec = _editable(payload.case_id, db)
-    slide = _slide(db, case_obj)
-    case_id = str(case_obj.id)
-    hotspots = db.scalars(
-        select(Hotspot).where(Hotspot.case_id == case_obj.id, Hotspot.excluded == False)  # noqa: E712
-    ).all()
-    if not hotspots:
-        raise ContractError(409, "no_hotspots", "HPFs are placed inside confirmed hotspots, and this case has none")
-    config = get_pipeline_config()
-    try:
-        tissue = load_tissue_mask(case_id)
-        tumor = load_tumor_gate(case_id, config.mitosis.tumor_gate.dilation_tiles)
-        hotspot_cfg = config.specimen_profiles.for_type(case_obj.specimen_type).hotspots
-    except PRECONDITION_ERRORS as exc:
-        raise ContractError(409, "tissue_mask_unavailable", str(exc)) from exc
-
-    old_seqs = [h.seq for h in _hpf_rows(db, case_obj)]
-    new_hpfs = place_hpfs(
-        _candidates(db, case_obj),
-        [(h.polygon_um, float(h.prob_mean or 0.0)) for h in sorted(hotspots, key=lambda h: h.prob_mean or 0.0, reverse=True)],
-        tissue=tissue,
-        tumor=tumor,
-        slide_dimensions_um=(slide.width_px * float(slide.mpp_x), slide.height_px * float(slide.mpp_y)),
-        cfg=config.mitosis.hpf,
-        min_tissue_fraction=hotspot_cfg.min_tissue_fraction,
-        min_tumor_fraction=hotspot_cfg.min_tumor_fraction,
-    )
-    db.execute(delete(HpfSite).where(HpfSite.case_id == case_obj.id))
-    for h in new_hpfs:
-        db.add(HpfSite(case_id=case_obj.id, seq=h["seq"], center_um=h["center_um"], radius_um=h["radius_um"],
-                       mitotic_count=0, tissue_coverage=h["tissue_coverage"], tumor_fraction=h["tumor_fraction"],
-                       source="model"))
-    _review_edit(stage_exec, "/hpfs", len(old_seqs), len(new_hpfs))
-    db.add(AuditEvent(case_id=case_id, actor=user.id, event_type="review_edit", stage="mitosis",
-                      payload={"action": "replace_hpfs", "n_hpf": len(new_hpfs)}))
-    invalidate_hpf_cached_thumbnails(case_id, set(old_seqs) | {h["seq"] for h in new_hpfs})
     view = _recompute(db, case_obj, stage_exec)
     db.commit()
     return view

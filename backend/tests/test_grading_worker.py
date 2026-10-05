@@ -170,7 +170,7 @@ def test_grading_estimates_come_from_the_gateway_and_aggregate_deterministically
     assert machine["histotype"]["type"] == "ILC" and machine["histotype"]["record_id"] == str(histotype["id"])
     assert machine["tubule"]["estimator"] == "T1:gemini_referee@tubule@v1"
     assert machine["mitotic"] == {"score": 3, "count_total": 2, "n_hpf": 1, "area_mm2": 0.216, "per_mm2": 9.27,
-                                  "flags": ["hpf_count_lt_10"]}
+                                  "flags": ["hpf_count_lt_10"], "hpf_target": 10}
     assert machine["result"]["flags"] == ["near_grade_boundary", "hpf_count_lt_10"] and machine["needs_human"] is False
     record_ids = {str(r["id"]) for r in tubule + pleo}
     for s in machine["tubule"]["samples"] + machine["pleomorphism"]["fields"]:

@@ -8,12 +8,13 @@ Rules, with limits from configs/safety.yaml ``geometry``:
 - No overlap between active hotspots (mitre-buffered intersection check).
 """
 import math
-from typing import Sequence
+from typing import Any, Sequence
 
 from fastapi import HTTPException, status
 from shapely.geometry import Polygon
 
 from app.core.pipeline_config import get_pipeline_config
+from pipeline.hotspots_v6 import circles_overlapping
 
 UM2_PER_MM2 = 1e6
 
@@ -26,6 +27,31 @@ class HotspotOverlapError(HTTPException):
         super().__init__(
             status_code=status_code,
             detail=f"Hotspots cannot overlap: {ids}",
+        )
+
+
+class ContractHTTPError(HTTPException):
+    """A refusal that answers with a contract body ``{"error": <code>, ..., "detail": <text>}`` (main.py handler)."""
+
+    def __init__(self, status_code: int, error: str, detail: str, **extra: Any):
+        super().__init__(status_code=status_code, detail=detail)
+        self.body = {"error": error, **extra, "detail": detail}
+
+
+class InvalidSiteError(ContractHTTPError):
+    """A pathologist's HPF site cannot be used (docs/contracts/triage_v6.md: ``invalid_site``)."""
+
+    def __init__(self, site_id: str | None, reason: str, detail: str):
+        super().__init__(status.HTTP_422_UNPROCESSABLE_CONTENT, "invalid_site", detail, id=site_id, reason=reason)
+
+
+class TooManySitesError(ContractHTTPError):
+    """More active HPF sites than the target (``too_many_sites``)."""
+
+    def __init__(self, hpf_target: int, n_active: int):
+        super().__init__(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "too_many_sites",
+            f"{n_active} active HPF sites exceed the target of {hpf_target}.", hpf_target=hpf_target,
         )
 
 
@@ -178,3 +204,40 @@ def validate_hotspots_non_overlapping(
 
     if collisions:
         raise HotspotOverlapError(ids=collisions, status_code=status_code)
+
+
+def validate_hpf_sites(
+    hotspots: Sequence[dict],
+    *,
+    diameter_um: float,
+    gap_um: float,
+    hpf_target: int,
+    slide_bounds_um: tuple[float, float] | None,
+    status_code: int = status.HTTP_422_UNPROCESSABLE_CONTENT,
+) -> None:
+    """Server-side checks on the effective HPF sites (SPEC-05 §5.5, D22). Excluded sites are not checked.
+
+    - Every circle lies inside the slide (when its size is known): ``InvalidSiteError`` ``out_of_bounds``.
+    - Active circles do not overlap (``HotspotOverlapError``); their frames may.
+    - No more than ``hpf_target`` sites are active (``TooManySitesError``).
+    """
+    active = [h for h in hotspots if not h.get("excluded", False)]
+    radius = diameter_um / 2.0
+    for h in active:
+        centre = h.get("center_um")
+        if centre is None or len(centre) != 2:
+            raise InvalidSiteError(h.get("id"), "no_center", f"Site '{h.get('id')}' has no center_um.")
+        x, y = float(centre[0]), float(centre[1])
+        inside = math.isfinite(x) and math.isfinite(y) and x - radius >= 0.0 and y - radius >= 0.0
+        if inside and slide_bounds_um is not None:
+            inside = x + radius <= slide_bounds_um[0] and y + radius <= slide_bounds_um[1]
+        if not inside:
+            raise InvalidSiteError(
+                h.get("id"), "out_of_bounds",
+                f"The circle at ({x}, {y}) µm is not inside the slide.",
+            )
+    collisions = circles_overlapping(active, diameter_um, gap_um)
+    if collisions:
+        raise HotspotOverlapError(ids=collisions, status_code=status_code)
+    if len(active) > hpf_target:
+        raise TooManySitesError(hpf_target, len(active))

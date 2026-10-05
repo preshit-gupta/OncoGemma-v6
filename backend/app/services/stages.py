@@ -30,6 +30,7 @@ from app.models.hpf_site import HpfSite
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
 from pipeline.errors import SpecimenTypeRequired
+from pipeline.hpf import attach_sites
 
 # Minimum length of the justification for approving a slide that failed QC.
 MIN_JUSTIFICATION_CHARS = 10
@@ -39,10 +40,13 @@ class StageServiceError(Exception):
     """A stage action was refused. ``status_code`` is the HTTP status the routers answer with."""
 
     status_code = 409
+    # A contract error code and body fields, when the endpoint answers ``{"error": ..., **extra}`` (docs/contracts).
+    error: str | None = None
 
-    def __init__(self, detail: str):
+    def __init__(self, detail: str, **extra):
         super().__init__(detail)
         self.detail = detail
+        self.extra = extra
 
 
 class StageNotFound(StageServiceError):
@@ -78,6 +82,26 @@ class EquivocalUnreviewed(ReviewGateError):
             status_code=409,
         )
         self.ids = ids
+
+
+class TriageRerunRequired(StageConflict):
+    """Triage output or edits from before HPF sites (no ``center_um``); the owner re-runs Stage 3 (WP-6.5)."""
+
+    error = "triage_rerun_required"
+
+
+class HpfSitesLtTarget(ReviewGateError):
+    """Fewer active HPF sites than the target, and the pathologist has not accepted that (D22)."""
+
+    error = "hpf_sites_lt_10"
+
+    def __init__(self, n_active: int, hpf_target: int):
+        super().__init__(
+            f"{n_active} active HPF sites are fewer than the target of {hpf_target}: the tissue is inadequate. "
+            "Confirm with accept_fewer_hpfs to proceed.",
+            status_code=409,
+        )
+        self.extra = {"n_active": n_active, "hpf_target": hpf_target}
 
 
 class StageOutputUnavailable(StageServiceError):
@@ -200,18 +224,20 @@ def confirm_stage(
     *,
     override_justification: str | None = None,
     no_invasive_tumor: bool = False,
+    accept_fewer_hpfs: bool = False,
 ) -> ConfirmResult:
     """Confirm the latest attempt of ``stage`` and queue the stage that follows it.
 
     Commits, then dispatches the queued stage. ``override_justification`` approves a slide that
-    failed QC; ``no_invasive_tumor`` confirms a triage with no active hotspot. Grading is
+    failed QC; ``no_invasive_tumor`` confirms a triage with no active hotspot; ``accept_fewer_hpfs``
+    acknowledges inadequate tissue (fewer active HPF sites than the target). Grading is
     confirmed with its scores (``routers/grading.py``) and is refused here.
     """
     case_id = _case_key(case_id)
     if stage in ("preprocess", "qc"):
         result = _confirm_slide(session, case_id, stage, actor, override_justification)
     elif stage == "triage":
-        result = _confirm_triage(session, case_id, actor, no_invasive_tumor)
+        result = _confirm_triage(session, case_id, actor, no_invasive_tumor, accept_fewer_hpfs)
     elif stage == "mitosis":
         result = _confirm_mitosis(session, case_id, actor)
     elif stage == "grading":
@@ -298,16 +324,30 @@ def machine_triage_hotspots(execution: StageExecution) -> list[dict]:
     return machine_triage_output(execution).get("hotspots", [])
 
 
-def effective_triage_hotspots(execution: StageExecution) -> list[dict]:
-    """The machine hotspots of a triage execution with the reviewer's edits applied."""
+def site_geometry(machine_output: dict) -> tuple[float, float, int]:
+    """(``hpf_diameter_um``, ``frame_um``, ``hpf_target``) a triage output was produced with; TriageRerunRequired when it has none."""
+    try:
+        return float(machine_output["hpf_diameter_um"]), float(machine_output["frame_um"]), int(machine_output["hpf_target"])
+    except KeyError as exc:
+        raise TriageRerunRequired(f"the triage output has no {exc.args[0]}; it predates HPF sites") from exc
+
+
+def effective_triage_hotspots(execution: StageExecution, machine_output: dict | None = None) -> list[dict]:
+    """The machine sites of a triage execution with the reviewer's edits applied."""
     from app.routers.triage import apply_edit_ops  # the edit grammar lives with the edit endpoint
 
-    return apply_edit_ops(machine_triage_hotspots(execution), execution.review_edits or [])
+    machine_output = machine_output if machine_output is not None else machine_triage_output(execution)
+    diameter_um, frame_um, _ = site_geometry(machine_output)
+    return apply_edit_ops(
+        machine_output.get("hotspots", []), execution.review_edits or [], diameter_um=diameter_um, frame_um=frame_um
+    )
 
 
-def _confirm_triage(session: Session, case_id: uuid.UUID, actor: str, no_invasive_tumor: bool) -> ConfirmResult:
-    from app.core.geometry import validate_hotspots_non_overlapping
-    from app.routers.triage import slide_bounds_um, validate_edit_geometry
+def _confirm_triage(
+    session: Session, case_id: uuid.UUID, actor: str, no_invasive_tumor: bool, accept_fewer_hpfs: bool
+) -> ConfirmResult:
+    from app.core.geometry import validate_hpf_sites
+    from app.routers.triage import slide_bounds_um
 
     execution = latest_execution(session, case_id, "triage", for_update=True)
     if execution is None:
@@ -320,14 +360,18 @@ def _confirm_triage(session: Session, case_id: uuid.UUID, actor: str, no_invasiv
     if case is None:
         raise StageNotFound("Case not found")
 
-    # Server-side geometry checks on the reviewer's polygons and the effective set (SPEC-03 §5.3.2).
-    validate_edit_geometry(execution.review_edits or [], slide_bounds_um(session, case_id))
-    hotspots = effective_triage_hotspots(execution)
+    # Server-side checks on the effective sites: inside the slide, circles disjoint, no more than the target (SPEC-03 §5.3.2).
+    machine_output = machine_triage_output(execution)
+    diameter_um, _, hpf_target = site_geometry(machine_output)
+    hotspots = effective_triage_hotspots(execution, machine_output)
     try:
         gap_um = get_pipeline_config().hotspot_gap_um(case.specimen_type)
     except SpecimenTypeRequired as exc:
         raise StageConflict(str(exc)) from exc
-    validate_hotspots_non_overlapping(hotspots, gap_um=gap_um, status_code=409)
+    validate_hpf_sites(
+        hotspots, diameter_um=diameter_um, gap_um=gap_um, hpf_target=hpf_target,
+        slide_bounds_um=slide_bounds_um(session, case_id), status_code=409,
+    )
     active = [h for h in hotspots if not h.get("excluded", False)]
     if no_invasive_tumor and active:
         raise ReviewGateError(
@@ -341,6 +385,10 @@ def _confirm_triage(session: Session, case_id: uuid.UUID, actor: str, no_invasiv
             "to confirm zero tumor on this slide.",
             status_code=422,
         )
+
+    if active and len(active) < hpf_target and not accept_fewer_hpfs:
+        raise HpfSitesLtTarget(len(active), hpf_target)
+    accepted_fewer = bool(active) and len(active) < hpf_target
 
     session.query(Hotspot).filter(Hotspot.case_id == case_id).delete(synchronize_session=False)
     for hs in hotspots:
@@ -361,6 +409,9 @@ def _confirm_triage(session: Session, case_id: uuid.UUID, actor: str, no_invasiv
             tumor_fraction=hs.get("tumor_fraction"),
             prescan_expected=hs.get("prescan_expected"),
             window_um=hs.get("window_um"),
+            center_um=hs.get("center_um"),
+            hpf_diameter_um=hs.get("hpf_diameter_um"),
+            tissue_fraction=hs.get("tissue_fraction"),
         ))
     _mark_confirmed(execution, actor, datetime.now(timezone.utc))
 
@@ -370,14 +421,17 @@ def _confirm_triage(session: Session, case_id: uuid.UUID, actor: str, no_invasiv
     else:
         next_stage = "mitosis"
         next_execution = queue_stage(
-            session, case_id, next_stage, input_ref={"confirmed_hotspots_count": len(hotspots)}, parent=execution
+            session, case_id, next_stage, parent=execution,
+            input_ref={"confirmed_hotspots_count": len(hotspots), "hpf_target": hpf_target, "accept_fewer_hpfs": accepted_fewer},
         )
         case.status = "open"
     _audit(session, case_id, actor, "stage_confirmed", "triage", {
         "confirmed_hotspots": len(hotspots), "no_invasive_tumor": no_invasive_tumor, "next_stage": next_stage,
+        "n_active": len(active), "hpf_target": hpf_target, "accept_fewer_hpfs": accepted_fewer,
     })
     return ConfirmResult(str(case_id), "triage", next_stage, next_execution, {
         "confirmed_hotspots_count": len(hotspots), "no_invasive_tumor": no_invasive_tumor,
+        "accept_fewer_hpfs": accepted_fewer,
     })
 
 
@@ -429,10 +483,14 @@ def _confirm_mitosis(session: Session, case_id: uuid.UUID, actor: str) -> Confir
     blocking = equivocal_unreviewed_in_hpfs(candidates, hpfs)
     if blocking:
         raise EquivocalUnreviewed(blocking)
+    sites = session.scalars(select(Hotspot).where(Hotspot.case_id == case_id, Hotspot.excluded == False)).all()  # noqa: E712
+    hpfs = attach_sites(hpfs, [{"id": h.id, "center_um": h.center_um, "polygon_um": h.polygon_um} for h in sites])
 
     _mark_confirmed(execution, actor, datetime.now(timezone.utc))
-    mitosis_cfg = get_pipeline_config().mitosis
-    hpfs, summary = summarize_stage4(candidates, hpfs, scoring=mitosis_cfg.scoring, hpf_count=mitosis_cfg.hpf.count)
+    config = get_pipeline_config()
+    hpfs, summary = summarize_stage4(
+        candidates, hpfs, scoring=config.mitosis.scoring, hpf_count=config.hpf_target(case.specimen_type)
+    )
 
     # The confirmed snapshot replaces the machine lists in output.json; other keys are kept.
     blob = f"cases/{case_id}/mitosis/output.json"

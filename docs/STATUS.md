@@ -62,7 +62,7 @@ Lanes are in `docs/tasks/README.md`. The specimen-type UI is merged (#21). Lane 
 4. **WP-8, baseline first (D21, owner 2026-10-04; plan §2.3).** WP-8.6 (#49) and the IDC source WP-5.6 (#54) are merged. Next: the WP-8.7 val run (live run approved; steps in the card: from `backend/`, `eval.cli run ... --no-wait`, then execute `oncogemma-eval-worker`). WP-8.1 is absorbed into 8.6; WP-8.2–8.4 and the SPEC-07 attribution study are deferred. Pleomorphism ties take the highest score. **Remind the owner at the end of WP-8 to supply the Thennavan histotype labels (S5-HT).**
 5. **Owner review of Stages 3–5 (2026-10-05, D22; plan §2.4).** Six cards address it:
    - WP-9.4 now: Stage 5 scrolling and the Stage 4 HPF chips.
-   - WP-6.5: HPFs become 0.5 mm circles in 0.6 mm frames (10 HPFs = 1.96 mm²), the Pin ROI fixes, and the tissue-inadequacy gate.
+   - WP-6.5 (`wp/6.5-hpf-sites`, backend done, PR pending): HPFs become 0.5 mm circles in 0.6 mm frames (10 HPFs = 1.96 mm²), the Pin ROI fixes, and the tissue-inadequacy gate (`accept_fewer_hpfs`). Migration `0017`. **After deploy the owner re-runs Stage 3, Stage 4 and grading for every open case** (old triage outputs and edits answer `409 triage_rerun_required`), and **deploys together with WP-7.10** (`POST /replace-hpfs` is deleted; the Stage 4 button goes in 7.10).
    - Then WP-6.6 (periphery first, 1 mm band) and WP-7.9 (Gemini morphology descriptions, never a decision).
    - Then the viewers, WP-6.7 and WP-7.10.
 

@@ -168,9 +168,10 @@ def test_confirm_triage_mutual_exclusion_invariant():
     db_mock.scalars.return_value.first.return_value = stage_exec
 
     # Machine output has 2 active tumor hotspots
-    active_hotspots_json = b'{"hotspots": [{"id": "hs_01", "polygon_um": [[0,0],[1,1],[0,1]]}, {"id": "hs_02", "polygon_um": [[2,2],[3,3],[2,3]]}]}'
+    active_hotspots_json = b'{"hotspots": [{"id": "hs_01", "center_um": [300, 300]}, {"id": "hs_02", "center_um": [1300, 300]}], "hpf_diameter_um": 500.0, "frame_um": 600.0, "hpf_target": 10}'
     
-    with patch("app.services.stages.download_blob_as_bytes", return_value=active_hotspots_json):
+    with patch("app.services.stages.download_blob_as_bytes", return_value=active_hotspots_json), \
+         patch("app.routers.triage.slide_bounds_um", return_value=None):
         # Attempt to confirm no_invasive_tumor=True with 2 active hotspots -> Must raise HTTP 409 Conflict (#569)
         payload = TriageConfirmPayload(
             case_id="case-123",

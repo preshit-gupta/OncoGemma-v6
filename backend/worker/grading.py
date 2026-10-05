@@ -112,7 +112,9 @@ def stage4_mitotic(db: Session, case: Case, config) -> Dict[str, Any]:
         for d in detections
     ]
     hpfs = [{"seq": h.seq, "center_um": h.center_um, "radius_um": h.radius_um} for h in hpf_rows]
-    _, summary = summarize_stage4(candidates, hpfs, scoring=config.mitosis.scoring, hpf_count=config.mitosis.hpf.count)
+    _, summary = summarize_stage4(
+        candidates, hpfs, scoring=config.mitosis.scoring, hpf_count=config.hpf_target(case.specimen_type)
+    )
     return {
         "score": summary["mitotic_score"],
         "count_total": summary["count_total"],
@@ -120,6 +122,7 @@ def stage4_mitotic(db: Session, case: Case, config) -> Dict[str, Any]:
         "area_mm2": summary["area_mm2"],
         "per_mm2": summary["per_mm2"],
         "flags": summary["flags"],
+        "hpf_target": summary["hpf_target"],
     }
 
 

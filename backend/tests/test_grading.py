@@ -191,6 +191,6 @@ def test_mitotic_score_no_double_counting_in_overlapping_hpfs():
     detections = [{"id": "m_overlap_01", "centroid_um": [1100.0, 1000.0], "counted": True,
                    "final_decision": "mitosis", "review_label": None}]
     cfg_m = get_pipeline_config().mitosis
-    _, summary = summarize_stage4(detections, hpfs, scoring=cfg_m.scoring, hpf_count=cfg_m.hpf.count)
+    _, summary = summarize_stage4(detections, hpfs, scoring=cfg_m.scoring, hpf_count=10)
     assert summary["count_total"] == 1  # Not 2! Counted once despite being in both HPF 1 and HPF 2
     assert summary["mitotic_score"] == 1

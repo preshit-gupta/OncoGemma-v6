@@ -47,15 +47,10 @@ review_crops:
   context_um: 256.0 # context: 256 um ...
   context_mpp: 1.0 # ... at 1.0 um/px (256 px)
 
-# One HPF per hotspot window, its disk inside the window (owner, 2026-10-04), at most `count`. Tissue and
-# tumour minimums come from the specimen profile (specimen_profiles.<type>.hotspots, SPEC-06 §5.8).
+# The HPFs are the confirmed Stage 3 sites: circles of specimen_profiles.<type>.hotspots.hpf_diameter_um at
+# their centres (D22). Only the review image is set here; it covers the site's frame.
 hpf:
-  radius_um: 262.0 # 250-270 um field radius (area ≈ 0.2157 mm²)
-  count: 10 # 10 non-overlapping fields (cumulative area ≈ 2.157 mm²)
-  centre_step_um: 16.0 # lattice step of candidate HPF centres inside a hotspot window
-  min_separation_um: 524.0 # 2 * radius_um: fields never overlap; fewer fit -> n_hpf < count (SPEC-06 §5.8)
-  review_field_um: 577.29 # review image width: the viewer's 520 px canvas shows a 236 px reticle for radius_um (520 * 262 / 236)
-  review_px: 2048 # ... rendered 2048 px square (~0.28 um/px)
+  review_px: 2048 # the frame rendered 2048 px square (~0.29 um/px)
 
 scoring:
   basis: "per_mm2"

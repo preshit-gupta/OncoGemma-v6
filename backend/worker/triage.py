@@ -114,7 +114,7 @@ def _centered_region(reader: SlideReader, cx_um: float, cy_um: float, field_um: 
 
 
 def _window_max(p_raster: np.ndarray, tile_um: float, window: HotspotWindow) -> float:
-    """The highest ``p_tumor_cal`` of the tissue tiles a window overlaps."""
+    """The highest ``p_tumor_cal`` of the tissue tiles a site's frame overlaps."""
     half = window.window_um / 2.0
     c0, c1 = int(np.floor((window.cx - half) / tile_um)), int(np.ceil((window.cx + half) / tile_um))
     r0, r1 = int(np.floor((window.cy - half) / tile_um)), int(np.ceil((window.cy + half) / tile_um))
@@ -229,7 +229,7 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
         # (SPEC-05 §5.1, §5.2 arm H1).
         hs_cfg = profile.hotspots
         windows = score_lattice_windows(p_raster, is_tumor_raster, grid.tile_um, tissue, (width_um, height_um), hs_cfg)
-        print(f"[Triage Worker] {len(windows)} valid {hs_cfg.window_um:g} µm hotspot windows")
+        print(f"[Triage Worker] {len(windows)} valid {hs_cfg.hpf_diameter_um:g} µm HPF sites")
 
         # VLM check down the ranked list (SPEC-05 §5.4 arm), at most tumor_referee.candidates
         # windows. A failure fails the stage unless configs/fallbacks.yaml allows it in a clinical
@@ -271,11 +271,11 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
                 }
             return referee_by_window[window.id]["tumor_present"]
 
-        # Greedy selection with hard Chebyshev non-overlap; rejected windows are removed and never
-        # padded back, so fewer than k_max hotspots (or none) is a result (SPEC-05 §5.3).
+        # Greedy selection with hard non-overlap of the circles; rejected sites are removed and never
+        # padded back, so fewer than k_max sites (or none) is a result (SPEC-05 §5.3).
         k_max = hs_cfg.k_max
         selected, checked = select_verified_hotspots(
-            windows, k_max=k_max, w=hs_cfg.window_um, gap=hs_cfg.gap_um, verify=verify, max_checks=referee_cfg.candidates,
+            windows, k_max=k_max, d=hs_cfg.hpf_diameter_um, gap=hs_cfg.gap_um, verify=verify, max_checks=referee_cfg.candidates,
         )
         flags = []
         if not selected:
@@ -300,7 +300,8 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
             "checked": [{"id": c.id, "cx": c.cx, "cy": c.cy, "rank_score": c.rank_score,
                          "tumor_fraction": c.tumor_fraction, "tumor_present": verdict} for c, verdict in checked],
             "k_max": k_max,
-            "window_um": hs_cfg.window_um,
+            "hpf_diameter_um": hs_cfg.hpf_diameter_um,
+            "frame_um": hs_cfg.frame_um,
             "gap_um": hs_cfg.gap_um,
         }
         session.add(DecisionRecord(**{
@@ -323,6 +324,7 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
             "input_sha256": hashlib.sha256(canonical_json(selection_input).encode("utf-8")).hexdigest(),
             "input_spec": selection_input,
             "params": {"ranking_arm": hs_cfg.ranking_arm, "lattice_step_um": hs_cfg.lattice_step_um,
+                       "frame_padding_um": hs_cfg.frame_padding_um,
                        "min_tissue_fraction": hs_cfg.min_tissue_fraction, "min_tumor_fraction": hs_cfg.min_tumor_fraction},
             "output": {"hotspot_ids": [h["id"] for h in hotspots], "flags": flags},
             "raw_output_uri": None,
@@ -359,9 +361,7 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
         # normalised variant (and the output says so); it is never replaced by the raw image.
         for hs in hotspots:
             hs_id = hs["id"]
-            poly = np.array(hs["polygon_um"])
-            cx_um = float(poly[:, 0].mean())
-            cy_um = float(poly[:, 1].mean())
+            cx_um, cy_um = hs["center_um"]
 
             mag_configs = [
                 ("10x", 512.0),
@@ -432,6 +432,10 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
                 "tiles_embedded": grid_embeddings.tiles_embedded
             },
             "hotspots": hotspots,
+            "hpf_diameter_um": hs_cfg.hpf_diameter_um,
+            "frame_um": hs_cfg.frame_um,
+            "hpf_target": k_max,
+            "n_sites_available": len(windows),
             "flags": flags,
             "stain_normalization": "unavailable" if stain is None else "available",
             "model_versions": model_versions,

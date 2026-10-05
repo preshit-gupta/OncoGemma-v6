@@ -16,14 +16,14 @@ import pytest
 from alembic import command
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.core.db import Base, get_db
 from app.core.migrations import alembic_config
 from app.main import app
-from app.models import Case, Detection, HpfSite, Slide, StageExecution
+from app.models import Case, Detection, Hotspot, HpfSite, Slide, StageExecution
 from pipeline.scoring import is_counted
 
 REPO = Path(__file__).resolve().parents[2]
@@ -67,6 +67,8 @@ class Candidate(Strict):
     counted: bool
     crop_url: str
     context_url: str
+    # WP-6.5: the fixture gains these in WP-7.10; the API must always send them (asserted below).
+    hpf_seq: Optional[int] = None
 
 
 class Hpf(Strict):
@@ -76,6 +78,8 @@ class Hpf(Strict):
     count: int
     tissue_coverage: Number
     tumor_fraction: Number
+    hotspot_id: Optional[str] = None
+    frame_um: Optional[list[tuple[Number, Number]]] = None
 
 
 class MitosisSummary(Strict):
@@ -86,6 +90,7 @@ class MitosisSummary(Strict):
     mitotic_score: Optional[Literal[1, 2, 3]]
     n_equivocal: int
     flags: list[Literal["hpf_count_lt_10"]]
+    hpf_target: Optional[int] = None
 
 
 class SlideGeom(Strict):
@@ -144,9 +149,16 @@ def seed_case(db, *, n_hpf: int):
                  width_px=40000, height_px=40000))
     db.add(StageExecution(id=uuid.uuid4(), case_id=case_id, stage="mitosis", attempt=1, status="awaiting_review",
                           model_versions={"kongnet_det_midog_1": "v2"}, config_hash="c" * 64))
+    db.flush()
+    exec_id = db.scalars(select(StageExecution.id).where(StageExecution.case_id == case_id)).one()
     for seq in range(1, n_hpf + 1):
-        db.add(HpfSite(case_id=case_id, seq=seq, center_um=[1000.0 * seq, 1000.0], radius_um=262.0,
+        centre = [1000.0 * seq, 1000.0]
+        db.add(HpfSite(case_id=case_id, seq=seq, center_um=centre, radius_um=250.0,
                        mitotic_count=0, tissue_coverage=0.95, tumor_fraction=0.8))
+        db.add(Hotspot(id=f"hs_{seq:02d}", case_id=case_id, stage_execution_id=exec_id, center_um=centre, hpf_diameter_um=500.0,
+                       window_um=600.0, rank=seq, source="model", excluded=False,
+                       polygon_um=[[centre[0] - 300, 700.0], [centre[0] + 300, 700.0], [centre[0] + 300, 1300.0],
+                                   [centre[0] - 300, 1300.0], [centre[0] - 300, 700.0]]))
     vlm = {"verdict": "EQUIVOCAL", "criteria": {"membrane_absent": True, "condensed_chromosome_projections": False,
                                                "phase": "none", "neoplastic_cell": True},
            "mimic": "pyknotic_nucleus", "rationale": "dense round body", "rule_override": False}
@@ -170,6 +182,9 @@ def test_get_validates_against_the_contract(session_factory, n_hpf):
     res = TestClient(app).get(f"/api/v1/stages/mitosis/{case_id}", headers={"X-Test-Role": "pathologist"})
     assert res.status_code == 200, res.text
     stage = MitosisStageV6.model_validate_json(res.text)
+    assert stage.summary.hpf_target == 10 and all(c.hpf_seq is None or c.hpf_seq >= 1 for c in stage.candidates)
+    assert [h.hotspot_id for h in stage.hpfs] == [f"hs_{seq:02d}" for seq in range(1, n_hpf + 1)]
+    assert all(h.frame_um is not None and len(h.frame_um) == 5 for h in stage.hpfs)
     if n_hpf == 0:
         assert stage.summary.mitotic_score is None and stage.summary.n_hpf == 0 and stage.summary.flags == ["hpf_count_lt_10"]
     elif n_hpf == 10:
