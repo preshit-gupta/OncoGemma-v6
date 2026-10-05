@@ -15,6 +15,10 @@ export interface ViewerHotspot {
   source?: string;
   excluded?: boolean;
   conflicting?: boolean;
+  center_um?: [number, number];
+  radius_um?: number;
+  label?: string;
+  at_periphery?: boolean;
 }
 
 export interface ViewerDetectionMarker {
@@ -100,7 +104,16 @@ export function OpenSeadragonViewer({
   const [showDropdown, setShowDropdown] = useState<boolean>(false);
   const [activeLayer, setActiveLayer] = useState<"orig" | "norm">(layer || "orig");
   const [svgPolygons, setSvgPolygons] = useState<
-    Array<{ id: string; points: string; center: { x: number; y: number }; excluded?: boolean; conflicting?: boolean }>
+    Array<{
+      id: string;
+      points: string;
+      center: { x: number; y: number };
+      excluded?: boolean;
+      conflicting?: boolean;
+      circle?: { cx: number; cy: number; r: number };
+      label: string;
+      atPeriphery?: boolean;
+    }>
   >([]);
   const [svgMarkers, setSvgMarkers] = useState<
     Array<{ id: string; x: number; y: number; label: string; conf?: number | null; in_hpf?: boolean }>
@@ -263,15 +276,34 @@ export function OpenSeadragonViewer({
         sumY += pixelPoint.y;
       }
 
-      const center = pts.length > 0 ? { x: sumX / pts.length, y: sumY / pts.length } : { x: 0, y: 0 };
+      let center = pts.length > 0 ? { x: sumX / pts.length, y: sumY / pts.length } : { x: 0, y: 0 };
       const points = pts.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
+
+      // An HPF circle: centre and radius (µm) become screen pixels at the current zoom.
+      let circle: { cx: number; cy: number; r: number } | undefined;
+      if (hs.center_um && hs.radius_um) {
+        const toPixel = (xUm: number, yUm: number) =>
+          viewer.viewport.pixelFromPoint(
+            viewer.viewport.imageToViewportCoordinates(
+              new (OpenSeadragon as any).Point(xUm / effectiveMppX, yUm / effectiveMppY)
+            ),
+            true
+          );
+        const c = toPixel(hs.center_um[0], hs.center_um[1]);
+        const edge = toPixel(hs.center_um[0] + hs.radius_um, hs.center_um[1]);
+        circle = { cx: c.x, cy: c.y, r: Math.abs(edge.x - c.x) };
+        center = { x: c.x, y: c.y };
+      }
 
       return {
         id: hs.id,
         points,
         center,
         excluded: hs.excluded,
-        conflicting: hs.conflicting
+        conflicting: hs.conflicting,
+        circle,
+        label: hs.label ?? hs.id,
+        atPeriphery: hs.at_periphery,
       };
     });
 
@@ -827,30 +859,53 @@ export function OpenSeadragonViewer({
           style={{ overflow: "visible" }}
         >
           {svgPolygons.map((poly) => {
-            if (poly.excluded) return null;
             const isFocused = focusedHotspotId === poly.id;
             const isSelected = selectedHotspotId === poly.id;
 
             // Only render if mask is turned on OR this specific hotspot was located/focused
             if (!showHotspotMask && !isFocused && !isSelected) return null;
 
+            const accent = poly.conflicting ? "#ef4444" : isFocused || isSelected ? "#38bdf8" : "#f59e0b";
+            const fill = poly.conflicting
+              ? "rgba(239, 68, 68, 0.35)"
+              : isFocused
+              ? "rgba(14, 165, 233, 0.35)"
+              : isSelected
+              ? "rgba(14, 165, 233, 0.25)"
+              : "rgba(245, 158, 11, 0.16)";
+
             return (
-              <g 
-                key={poly.id} 
+              <g
+                key={poly.id}
+                opacity={poly.excluded ? 0.35 : 1}
                 className={`transition-opacity ${isAddingRoiMode ? "pointer-events-none" : ""}`}
               >
-                {/* Hotspot Boundary Box - pointer-events-none so slide pan/zoom is never blocked */}
+                {/* Padded frame: dashed and faint. pointer-events-none so slide pan/zoom is never blocked */}
                 <polygon
                   points={poly.points}
-                  fill={poly.conflicting ? "rgba(239, 68, 68, 0.45)" : isFocused ? "rgba(14, 165, 233, 0.45)" : isSelected ? "rgba(14, 165, 233, 0.35)" : "rgba(245, 158, 11, 0.22)"}
-                  stroke={poly.conflicting ? "#ef4444" : isFocused ? "#38bdf8" : isSelected ? "#38bdf8" : "#f59e0b"}
-                  strokeWidth={poly.conflicting ? "4" : isFocused ? "4" : isSelected ? "3.5" : "2"}
-                  strokeDasharray={poly.id.startsWith("user") ? "6,3" : undefined}
-                  className={`transition-all pointer-events-none ${poly.conflicting ? "filter drop-shadow-[0_0_8px_rgba(239,68,68,0.8)]" : isFocused ? "filter drop-shadow-[0_0_8px_rgba(56,189,248,0.8)]" : "hover:fill-amber-500/40"}`}
+                  fill="none"
+                  stroke={accent}
+                  strokeOpacity={0.55}
+                  strokeWidth="1.5"
+                  strokeDasharray="8,5"
+                  className="pointer-events-none"
                 />
 
+                {/* HPF circle */}
+                {poly.circle && (
+                  <circle
+                    cx={poly.circle.cx}
+                    cy={poly.circle.cy}
+                    r={poly.circle.r}
+                    fill={fill}
+                    stroke={accent}
+                    strokeWidth={poly.conflicting || isFocused ? "4" : isSelected ? "3.5" : "2"}
+                    className={`transition-all pointer-events-none ${poly.conflicting ? "filter drop-shadow-[0_0_8px_rgba(239,68,68,0.8)]" : isFocused ? "filter drop-shadow-[0_0_8px_rgba(56,189,248,0.8)]" : ""}`}
+                  />
+                )}
+
                 {/* Floating Numbered Pin / Badge - handles hotspot selection without intercepting clicks during pin mode */}
-                <g 
+                <g
                   transform={`translate(${poly.center.x}, ${poly.center.y})`}
                   className={isAddingRoiMode ? "pointer-events-none" : "cursor-pointer pointer-events-auto"}
                   onClick={(e) => {
@@ -879,9 +934,22 @@ export function OpenSeadragonViewer({
                     textAnchor="middle"
                     className="select-none pointer-events-none font-mono"
                   >
-                    {isFocused ? `🎯 ${poly.id}` : poly.id}
+                    {poly.label}
                   </text>
                 </g>
+
+                {/* Tumour-edge marker: a small tag on the circle's rim */}
+                {poly.circle && poly.atPeriphery && (
+                  <g
+                    transform={`translate(${poly.circle.cx}, ${poly.circle.cy - poly.circle.r - 11})`}
+                    className="pointer-events-none"
+                  >
+                    <rect x="-34" y="-9" width="68" height="18" rx="9" fill="rgba(15, 23, 42, 0.9)" stroke="#a78bfa" strokeWidth="1.2" />
+                    <text x="0" y="4" fill="#ddd6fe" fontSize="10" fontWeight="600" textAnchor="middle" className="select-none">
+                      {L.field.tumorEdge}
+                    </text>
+                  </g>
+                )}
               </g>
             );
           })}
