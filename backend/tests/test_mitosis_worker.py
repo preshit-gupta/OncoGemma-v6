@@ -4,6 +4,7 @@ KongNet is a fake endpoint behind the real VertexEndpointAdapter (kongnet_midog_
 raw predict, pinned weights); the referee is a fake Gemini returning strict MitosisVerdict JSON.
 """
 import json
+import math
 import threading
 import uuid
 from types import SimpleNamespace
@@ -117,8 +118,9 @@ def seed(db_session, mpp=MPP, tumor=None):
         Slide(id=slide_id, case_id=case_id, gcs_uri_original=raw_uri, mpp_x=mpp, mpp_y=mpp,
               width_px=SIDE_PX, height_px=SIDE_PX),
         stage,
-        Hotspot(id="hs_01", case_id=case_id, stage_execution_id=exec_id, polygon_um=HOTSPOT, area_mm2=0.36,
-                prob_mean=0.9, prob_max=0.95, source="model", excluded=False),
+        Hotspot(id="hs_01", case_id=case_id, stage_execution_id=exec_id, polygon_um=HOTSPOT, area_mm2=0.196,
+                center_um=[1000.0, 1000.0], hpf_diameter_um=500.0, window_um=600.0, rank=1,
+                source="model", excluded=False),
     ])
     db_session.commit()
     seed_stage2(db_session, case_id, slide_id, SIDE_PX * MPP, SIDE_PX * MPP)  # the mask spans the section, whatever the scan's mpp
@@ -365,22 +367,24 @@ def test_the_count_is_a_decision_record_linked_to_the_detections(db_session, mon
     assert record.producer_kind == "heuristic" and record.stage_execution_id == stage.id
 
 
-def test_hpfs_come_from_counted_candidates_never_overlap_and_report_coverage(db_session, monkeypatch):
+def test_hpfs_are_the_confirmed_circles_and_report_coverage(db_session, monkeypatch):
     from app.models import HpfSite
 
     stage, _ = baseline_run(db_session, monkeypatch)
     hpfs = db_session.scalars(select(HpfSite).where(HpfSite.case_id == stage.case_id)).all()
-    cfg = get_pipeline_config().mitosis.hpf
-    assert hpfs
-    for a in hpfs:
-        assert a.tissue_coverage >= 0.7 and a.tumor_fraction == 1.0
-        for b in hpfs:
-            if a.seq < b.seq:
-                assert ((a.center_um[0] - b.center_um[0]) ** 2 + (a.center_um[1] - b.center_um[1]) ** 2) ** 0.5 >= 2 * cfg.radius_um - 1e-6
-    summary = mitosis_output(stage)["summary"]
-    # One field per hotspot window, its disk inside the 600 µm window: the single hotspot holds one field.
-    assert summary["n_hpf"] == len(hpfs) == 1 and summary["flags"] == ["hpf_count_lt_10"]
-    assert abs(hpfs[0].center_um[0] - 1000.0) <= 38.0 + 1e-6 and abs(hpfs[0].center_um[1] - 1000.0) <= 38.0 + 1e-6
+    hs = get_pipeline_config().specimen_profiles.profiles["resection"].hotspots
+    assert len(hpfs) == 1
+    (hpf,) = hpfs
+    # The HPF is the confirmed site's circle exactly, whatever the figures do (D22).
+    assert hpf.center_um == [1000.0, 1000.0] and hpf.radius_um == hs.hpf_radius_um
+    assert hpf.tissue_coverage >= 0.7 and hpf.tumor_fraction == 1.0
+    output = mitosis_output(stage)
+    summary = output["summary"]
+    assert summary["n_hpf"] == 1 and summary["flags"] == ["hpf_count_lt_10"] and summary["hpf_target"] == hs.k_max
+    assert output["hpfs"][0]["hotspot_id"] == "hs_01" and output["hpfs"][0]["frame_um"] == HOTSPOT
+    assert all("hpf_seq" in c for c in output["candidates"])
+    assert all((c["hpf_seq"] == 1) == (math.dist(c["centroid_um"], (1000.0, 1000.0)) <= hs.hpf_radius_um)
+               for c in output["candidates"])
 
 
 def test_pathologist_decisions_survive_a_rerun(db_session, monkeypatch):
@@ -419,8 +423,9 @@ def test_candidates_outside_the_dilated_tumour_mask_are_not_counted(db_session, 
     assert found and all(d.in_tumor is False and d.final_decision == "mitosis" and not d.counted for d in found)
     output = mitosis_output(stage)
     assert output["tumor_gate"]["applied"] is True and output["tumor_gate"]["in_situ_exclusion"] is False
-    # No window holds enough tumour for a field either (tumour fraction >= 0.5).
-    assert output["hpfs"] == [] and output["summary"]["mitotic_score"] is None
+    # The circle is still the HPF (nothing is filtered at Stage 4); it holds no counted figure.
+    assert len(output["hpfs"]) == 1 and output["hpfs"][0]["tumor_fraction"] == 0.0
+    assert output["summary"]["count_total"] == 0 and output["summary"]["mitotic_score"] == 1
 
 
 def test_a_clinical_run_refuses_a_disabled_gate(db_session, monkeypatch):
@@ -442,4 +447,31 @@ def test_a_case_triaged_without_a_tumour_mask_fails(db_session, monkeypatch):
     for name in tumor_mask_blob_names(stage.case_id):
         delete_blob(settings.GCS_ARTIFACTS_BUCKET, name)
     with pytest.raises(TumorMaskMissingError):
+        run_mitosis(stage, db_session, runtime_for(stage, config=configured(referee=False)))
+
+
+def test_a_pinned_site_always_becomes_an_hpf_after_the_model_sites(db_session, monkeypatch):
+    """D22: HPF seq follows the model sites by rank, then the pinned sites in id order; the centres are the sites' own."""
+    stage, raw_uri = seed(db_session)
+    frame = [[1200.0, 1200.0], [1800.0, 1200.0], [1800.0, 1800.0], [1200.0, 1800.0], [1200.0, 1200.0]]
+    db_session.add(Hotspot(id="hs_u_1", case_id=stage.case_id, stage_execution_id=stage.id, polygon_um=frame, area_mm2=0.196,
+                           center_um=[1500.0, 1500.0], hpf_diameter_um=500.0, window_um=600.0, rank=None,
+                           source="pathologist_added", excluded=False))
+    db_session.commit()
+    install_fake_slide(monkeypatch, FakeOpenSlide(SIDE_PX, SIDE_PX), raw_uri)
+    run_mitosis(stage, db_session, runtime_for(stage, config=configured(referee=False)))
+    hpfs = mitosis_output(stage)["hpfs"]
+    assert [(h["seq"], h["hotspot_id"], h["center_um"]) for h in hpfs] == [
+        (1, "hs_01", [1000.0, 1000.0]), (2, "hs_u_1", [1500.0, 1500.0])]
+    assert hpfs[1]["source"] == "pathologist" and hpfs[1]["frame_um"] == frame
+
+
+def test_a_site_confirmed_before_hpf_sites_is_refused_not_guessed(db_session, monkeypatch):
+    from pipeline.hpf import SiteWithoutCentreError
+
+    stage, raw_uri = seed(db_session)
+    db_session.get(Hotspot, ("hs_01", stage.case_id)).center_um = None
+    db_session.commit()
+    install_fake_slide(monkeypatch, FakeOpenSlide(SIDE_PX, SIDE_PX), raw_uri)
+    with pytest.raises(SiteWithoutCentreError, match="run triage again"):
         run_mitosis(stage, db_session, runtime_for(stage, config=configured(referee=False)))

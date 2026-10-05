@@ -6,6 +6,7 @@ local artifacts (models/tumor_head/1.0.0) through LocalSklearnAdapter.
 import functools
 import hashlib
 import json
+import math
 import uuid
 from pathlib import Path
 
@@ -376,22 +377,29 @@ def test_hotspots_are_ranked_lattice_windows_of_confirmed_candidates(db_session,
     output = output_json(stage)
     hotspots = output["hotspots"]
     profile = get_pipeline_config().specimen_profiles.for_type(db_session.get(Case, stage.case_id).specimen_type)
-    w = profile.hotspots.window_um
+    cfg = profile.hotspots
+    d, frame = cfg.hpf_diameter_um, cfg.frame_um
     assert hotspots and all(h["referee"]["tumor_present"] is True for h in hotspots)
     assert [h["id"] for h in hotspots] == [f"hs_{n:02d}" for n in range(1, len(hotspots) + 1)]
     assert [h["rank"] for h in hotspots] == list(range(1, len(hotspots) + 1))
     scores = [h["rank_score"] for h in hotspots]
     assert scores == sorted(scores, reverse=True)
     for h in hotspots:
+        cx, cy = h["center_um"]
         xs, ys = [p[0] for p in h["polygon_um"]], [p[1] for p in h["polygon_um"]]
         assert h["polygon_um"][0] == h["polygon_um"][-1]
-        assert max(xs) - min(xs) == pytest.approx(w) and max(ys) - min(ys) == pytest.approx(w)
-        assert min(xs) >= 0.0 and min(ys) >= 0.0 and max(xs) <= WIDTH_PX * MPP and max(ys) <= HEIGHT_PX * MPP
-        assert h["window_um"] == w and h["score_kind"] == "mean_p_tumor" and h["rank_score"] == h["prob_mean"]
-        assert h["tumor_fraction"] >= profile.hotspots.min_tumor_fraction
-    centres = [((h["polygon_um"][0][0] + w / 2), (h["polygon_um"][0][1] + w / 2)) for h in hotspots]
-    assert all(max(abs(a[0] - b[0]), abs(a[1] - b[1])) >= w + profile.hotspots.gap_um
-               for n, a in enumerate(centres) for b in centres[n + 1:])
+        assert max(xs) - min(xs) == pytest.approx(frame) and max(ys) - min(ys) == pytest.approx(frame)  # the padded frame
+        assert (min(xs) + max(xs)) / 2 == pytest.approx(cx) and (min(ys) + max(ys)) / 2 == pytest.approx(cy)
+        # the circle (not the frame) lies inside the slide
+        assert cx - d / 2 >= 0.0 and cy - d / 2 >= 0.0 and cx + d / 2 <= WIDTH_PX * MPP and cy + d / 2 <= HEIGHT_PX * MPP
+        assert h["window_um"] == frame and h["hpf_diameter_um"] == d
+        assert h["area_mm2"] == pytest.approx(math.pi * (d / 2000.0) ** 2)
+        assert h["score_kind"] == "mean_p_tumor" and h["rank_score"] == h["prob_mean"]
+        assert h["tumor_fraction"] >= cfg.min_tumor_fraction and h["tissue_fraction"] >= cfg.min_tissue_fraction
+    centres = [tuple(h["center_um"]) for h in hotspots]
+    assert all(math.dist(a, b) >= d + cfg.gap_um - 1e-6 for n, a in enumerate(centres) for b in centres[n + 1:])
+    assert (output["hpf_diameter_um"], output["frame_um"], output["hpf_target"]) == (d, frame, cfg.k_max)
+    assert output["n_sites_available"] >= len(hotspots)
     assert output["flags"] == ([] if len(hotspots) == profile.hotspots.k_max else ["hotspots_limited_by_tissue"])
 
     record = db_session.query(DecisionRecord).filter_by(task="hotspot_select").one()

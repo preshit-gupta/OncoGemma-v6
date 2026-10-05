@@ -1,6 +1,6 @@
 """
-HPF placement (SPEC-06 §5.8; AC10: HPFs never overlap): one field per hotspot window, the disk inside it
-(owner decision 2026-10-04). The tumour constraints and the per-window property test are in test_mitosis_gate.py.
+Stage 4 HPFs (SPEC-06 §5.8, D22): the circles of the confirmed Stage 3 sites, where they are.
+The tumour gate and the audit fractions are in test_mitosis_gate.py.
 """
 import math
 
@@ -9,94 +9,103 @@ import pytest
 from hypothesis import given, settings, strategies as st
 
 from app.core.pipeline_config import get_pipeline_config
-from pipeline.hpf import place_hpfs, window_centres
-from pipeline.scoring import compute_nottingham_mitotic_score, summarize_stage4
+from pipeline.hpf import SiteWithoutCentreError, attach_sites, hpf_seq_of, hpfs_from_sites
+from pipeline.scoring import summarize_stage4
 from pipeline.tissue_mask import TissueMask
-from tests.test_mitosis_gate import gate_of, square
+from tests.test_mitosis_gate import gate_of, hpf_settings, site, square
 
 ALL_TUMOR = np.ones((20, 20), dtype=bool)  # 4.48 mm of 224 µm tiles
 
 
-def cfgs():
-    config = get_pipeline_config()
-    return config.mitosis.hpf, config.specimen_profiles.profiles["resection"].hotspots
-
-
-def place(cands, windows, tissue=None, slide=(4000.0, 4000.0)):
-    cfg, hs = cfgs()
+def place(cands, sites, tissue=None):
+    hs = hpf_settings()
     tissue = tissue or TissueMask(np.ones((100, 100), dtype=bool), 40.0)  # 4 x 4 mm of tissue (coarse: fast)
-    return place_hpfs(cands, windows, tissue=tissue, tumor=gate_of(ALL_TUMOR), slide_dimensions_um=slide, cfg=cfg,
-                      min_tissue_fraction=hs.min_tissue_fraction, min_tumor_fraction=hs.min_tumor_fraction)
+    return hpfs_from_sites(sites, cands, tissue=tissue, tumor=gate_of(ALL_TUMOR), diameter_um=hs.hpf_diameter_um)
+
+
+def test_an_hpf_is_the_circle_of_its_site_whatever_the_figures_do():
+    """The disk neither searches nor shifts towards figures: a cluster just outside the circle stays outside."""
+    hs = hpf_settings()
+    r = hs.hpf_radius_um
+    cands = [{"centroid_um": [1000.0 + r + 5.0, 1000.0 + dy], "counted": True} for dy in (-10.0, 0.0, 10.0)]
+    (hpf,) = place(cands, [site("hs_01", 1000.0, 1000.0)])
+    assert hpf["center_um"] == [1000.0, 1000.0] and hpf["radius_um"] == r and hpf["count"] == 0
 
 
 def test_only_counted_candidates_count_with_no_probability_weighting():
     """SPEC-06 §5.8: an equivocal or rejected candidate adds nothing, whatever its probability."""
-    _, hs = cfgs()
     cands = [{"centroid_um": [1000.0, 1000.0], "counted": True, "p_a": 0.2},
              {"centroid_um": [1010.0, 1000.0], "counted": False, "p_a": 0.99}]
-    hpfs = place(cands, [(square(1000.0, 1000.0, hs.window_um), 1.0)])
-    assert len(hpfs) == 1 and hpfs[0]["count"] == 1
+    (hpf,) = place(cands, [site("hs_01", 1000.0, 1000.0)])
+    assert hpf["count"] == 1
 
 
-def test_windows_are_taken_by_priority_and_fields_stop_at_count():
-    cfg, hs = cfgs()
-    w = hs.window_um
-    windows = [(square(w / 2 + i * w, w / 2 + j * w, w), float(i + 6 * j)) for i in range(6) for j in range(6)]
-    hpfs = place([], windows)
-    assert len(hpfs) == cfg.count
-    expected = sorted(windows, key=lambda x: x[1], reverse=True)[:cfg.count]
-    assert [h["center_um"] for h in hpfs] == [[float(np.mean([p[0] for p in poly])), float(np.mean([p[1] for p in poly]))]
-                                              for poly, _ in expected]
+def test_seq_follows_the_order_of_the_sites_and_each_names_its_site_and_frame():
+    hs = hpf_settings()
+    sites = [site("hs_01", 600.0, 600.0), site("hs_02", 1800.0, 600.0), site("hs_u_1", 3000.0, 600.0, "pathologist_added")]
+    hpfs = place([], sites)
+    assert [h["seq"] for h in hpfs] == [1, 2, 3]
+    assert [h["hotspot_id"] for h in hpfs] == ["hs_01", "hs_02", "hs_u_1"]
+    assert hpfs[2]["frame_um"] == square(3000.0, 600.0, hs.frame_um) and hpfs[2]["source"] == "pathologist"
 
 
-def test_fewer_fields_than_count_are_flagged_instead_of_relaxing_the_rules():
-    cfg, hs = cfgs()
-    hpfs = place([], [(square(1000.0, 1000.0, hs.window_um), 1.0)])
-    assert len(hpfs) == 1
-    _, summary = summarize_stage4([], hpfs, scoring=get_pipeline_config().mitosis.scoring, hpf_count=cfg.count)
-    assert summary["n_hpf"] == 1 and summary["flags"] == ["hpf_count_lt_10"]
+def test_a_site_without_a_centre_is_an_error_not_a_guess():
+    with pytest.raises(SiteWithoutCentreError, match="run triage again"):
+        place([], [{"id": "hs_01", "center_um": None, "polygon_um": square(1000.0, 1000.0, 600.0), "source": "model"}])
 
 
-def test_a_window_on_glass_or_over_the_slide_edge_gets_no_field():
-    _, hs = cfgs()
-    cells = np.ones((400, 400), dtype=bool)
-    cells[:, 200:] = False  # glass right of 2 mm
-    tissue = TissueMask(cells, 10.0)
-    windows = [(square(3000.0, 1000.0, hs.window_um), 1.0),   # glass
-               (square(200.0, 1000.0, hs.window_um), 0.9),    # disk would cross x = 0
-               (square(1000.0, 1000.0, hs.window_um), 0.5)]
-    hpfs = place([], windows, tissue=tissue)
-    assert [h["center_um"] for h in hpfs] == [[1000.0, 1000.0]] and math.isclose(hpfs[0]["tissue_coverage"], 1.0, abs_tol=1e-3)
-
-
-def test_place_hpfs_needs_hotspots():
-    with pytest.raises(ValueError, match="hotspots"):
+def test_hpfs_need_sites():
+    with pytest.raises(ValueError, match="sites"):
         place([], [])
 
 
-def test_window_centres_need_a_polygon():
-    with pytest.raises(ValueError, match="3 vertices"):
-        window_centres([[0.0, 0.0], [1.0, 1.0]], 262.0, 16.0)
+def test_fewer_fields_than_the_target_are_flagged_instead_of_relaxing_the_rules():
+    hs = hpf_settings()
+    hpfs = place([], [site("hs_01", 1000.0, 1000.0)])
+    _, summary = summarize_stage4([], hpfs, scoring=get_pipeline_config().mitosis.scoring, hpf_count=hs.k_max)
+    assert summary["n_hpf"] == 1 and summary["flags"] == ["hpf_count_lt_10"] and summary["hpf_target"] == hs.k_max
+
+
+def test_a_candidate_in_a_frames_padding_has_no_hpf_and_is_not_counted():
+    """A figure in the padding is imaged (it is in the frame) but belongs to no circle."""
+    hs = hpf_settings()
+    r = hs.hpf_radius_um
+    inside = {"id": "a", "centroid_um": [1000.0 + r - 5.0, 1000.0], "counted": True, "final_decision": "mitosis", "review_label": None}
+    padding = {"id": "b", "centroid_um": [1000.0 + r + 20.0, 1000.0], "counted": True, "final_decision": "mitosis", "review_label": None}
+    hpfs = place([inside, padding], [site("hs_01", 1000.0, 1000.0)])
+    assert hpf_seq_of(inside["centroid_um"], hpfs) == 1 and hpf_seq_of(padding["centroid_um"], hpfs) is None
+    _, summary = summarize_stage4([inside, padding], hpfs, scoring=get_pipeline_config().mitosis.scoring, hpf_count=hs.k_max)
+    assert summary["count_total"] == 1
+
+
+def test_a_candidate_is_in_one_circle_only():
+    hs = hpf_settings()
+    d = hs.hpf_diameter_um
+    hpfs = place([], [site("hs_01", 1000.0, 1000.0), site("hs_02", 1000.0 + d, 1000.0)])  # touching, frames overlap
+    point_in_both_frames = [1000.0 + d / 2, 1000.0]  # on the circles' touching point
+    assert hpf_seq_of(point_in_both_frames, hpfs) == 1  # the first circle holds it; the second only touches
+    assert hpf_seq_of([1000.0 + d / 2 + 1.0, 1000.0], hpfs) == 2
+
+
+def test_attach_sites_matches_hpfs_to_the_site_at_their_centre():
+    hs = hpf_settings()
+    hpfs = place([], [site("hs_01", 600.0, 600.0)])
+    (attached,) = attach_sites(hpfs, [site("hs_01", 600.0, 600.0)])
+    assert attached["hotspot_id"] == "hs_01" and attached["frame_um"] == square(600.0, 600.0, hs.frame_um)
+    with pytest.raises(LookupError, match="no confirmed hotspot"):
+        attach_sites(hpfs, [site("hs_02", 2000.0, 2000.0)])
 
 
 @settings(max_examples=25, deadline=None)
-@given(windows=st.lists(st.tuples(st.floats(300, 3700), st.floats(300, 3700), st.floats(530, 800), st.floats(0, 1)),
-                        min_size=1, max_size=12),
-       points=st.lists(st.tuples(st.floats(0, 4000), st.floats(0, 4000), st.booleans()), max_size=30))
-def test_placed_hpfs_never_overlap(windows, points):
-    """AC10 (property): whatever the windows (overlapping or not) and candidates, fields are >= 2r apart and inside the slide."""
-    cfg, _ = cfgs()
-    hpfs = place([{"centroid_um": [x, y], "counted": c} for x, y, c in points],
-                 [(square(x, y, side), prio) for x, y, side, prio in windows])
-    assert len(hpfs) <= cfg.count
-    for i, a in enumerate(hpfs):
-        cx, cy = a["center_um"]
-        assert cfg.radius_um - 1e-6 <= cx <= 4000.0 - cfg.radius_um + 1e-6 and cfg.radius_um - 1e-6 <= cy <= 4000.0 - cfg.radius_um + 1e-6
-        for b in hpfs[i + 1:]:
-            assert math.dist(a["center_um"], b["center_um"]) >= 2 * cfg.radius_um - 1e-3
-
-
-def test_area_normalised_score_uses_the_placed_fields():
-    scoring = get_pipeline_config().mitosis.scoring
-    res = compute_nottingham_mitotic_score(count_total=5, n_hpf=3, radius_um=262.0, scoring=scoring)
-    assert res["n_hpf"] == 3 and res["area_mm2"] == round(3 * math.pi * 0.262 ** 2, 3)
+@given(points=st.lists(st.tuples(st.floats(0, 4000), st.floats(0, 4000), st.booleans()), max_size=40))
+def test_count_total_is_the_counted_candidates_inside_a_circle(points):
+    """AC10 (property): the total over HPFs is exactly the counted candidates inside some circle."""
+    hs = hpf_settings()
+    d = hs.hpf_diameter_um
+    sites = [site(f"hs_{i:02d}", 600.0 + (i % 4) * (d + 300.0), 600.0 + (i // 4) * (d + 300.0)) for i in range(10)]
+    cands = [{"id": f"c{k}", "centroid_um": [x, y], "counted": c, "final_decision": "mitosis", "review_label": None}
+             for k, (x, y, c) in enumerate(points)]
+    hpfs = place(cands, sites)
+    _, summary = summarize_stage4(cands, hpfs, scoring=get_pipeline_config().mitosis.scoring, hpf_count=hs.k_max)
+    expected = sum(1 for c in cands if c["counted"] and any(math.dist(c["centroid_um"], h["center_um"]) <= h["radius_um"] for h in hpfs))
+    assert summary["count_total"] == expected == sum(h["count"] for h in hpfs)

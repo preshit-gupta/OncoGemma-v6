@@ -83,11 +83,12 @@ def add_execution(db, case, stage, status, *, run=None, attempt=1) -> StageExecu
 def write_triage_output(case, hotspots) -> None:
     upload_blob_from_bytes(
         settings.GCS_ARTIFACTS_BUCKET, f"cases/{case.id}/triage/output.json",
-        json.dumps({"hotspots": hotspots}).encode("utf-8"), "application/json",
+        json.dumps({"hotspots": hotspots, "hpf_diameter_um": 500.0, "frame_um": 600.0, "hpf_target": 10}).encode("utf-8"), "application/json",
     )
 
 
-HOTSPOT = {"id": "hs_1", "polygon_um": [[0, 0], [100, 0], [100, 100], [0, 100]], "excluded": False}
+HOTSPOT = {"id": "hs_1", "center_um": [300.0, 300.0], "polygon_um": [[0, 0], [600, 0], [600, 600], [0, 600], [0, 0]],
+           "hpf_diameter_um": 500.0, "window_um": 600.0, "source": "model", "excluded": False}
 
 
 # --- queueing --------------------------------------------------------------------
@@ -132,7 +133,7 @@ def test_harness_confirm_of_triage_queues_mitosis_in_the_same_run(db):
     triage = add_execution(db, case, "triage", "awaiting_review", run=run)
     write_triage_output(case, [HOTSPOT])
 
-    result = stage_service.confirm_stage(db, case.id, "triage", f"harness:{run.id}")
+    result = stage_service.confirm_stage(db, case.id, "triage", f"harness:{run.id}", accept_fewer_hpfs=True)
 
     db.refresh(triage)
     assert triage.status == "confirmed" and triage.reviewed_by == f"harness:{run.id}"
@@ -155,12 +156,12 @@ def test_a_stale_copy_cannot_confirm_a_stage_twice(db):
 
     other = Session()
     try:
-        stage_service.confirm_stage(other, case.id, "triage", "worker")
+        stage_service.confirm_stage(other, case.id, "triage", "worker", accept_fewer_hpfs=True)
     finally:
         other.close()
 
     with pytest.raises(stage_service.StageConflict):
-        stage_service.confirm_stage(db, case.id, "triage", "laptop")
+        stage_service.confirm_stage(db, case.id, "triage", "laptop", accept_fewer_hpfs=True)
     db.rollback()
     attempts = db.scalars(select(StageExecution.attempt).where(
         StageExecution.case_id == case.id, StageExecution.stage == "mitosis")).all()

@@ -256,7 +256,7 @@ def evidence_unreadable(db_session, monkeypatch, tmp_path):
         StageExecution(case_id=case_id, stage="triage", attempt=1, status="awaiting_review"),
     ])
     db_session.commit()
-    machine = json.dumps({"hotspots": [{"id": "hs_01", "polygon_um": [[0, 0], [100, 0], [100, 100], [0, 100]]}]})
+    machine = json.dumps({"hotspots": [{"id": "hs_01", "center_um": [300.0, 300.0], "polygon_um": [[0, 0], [100, 0], [100, 100], [0, 100]]}]})
 
     def download(bucket, blob):
         if blob.endswith("triage/output.json"):

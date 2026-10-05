@@ -68,10 +68,12 @@ def triage(execution, session, runtime):
     kind = _kind(session, execution)
     if kind == "boom" and BOOM["on"]:
         raise RuntimeError("tumour head unavailable")
-    hotspot = {"id": f"hs_{execution.attempt}", "polygon_um": [[0, 0], [500, 0], [500, 500], [0, 500]],
-               "excluded": kind == "notumour"}
+    hotspot = {"id": f"hs_{execution.attempt}", "center_um": [300.0, 300.0], "hpf_diameter_um": 500.0,
+               "polygon_um": [[0, 0], [600, 0], [600, 600], [0, 600], [0, 0]], "window_um": 600.0,
+               "source": "model", "excluded": kind == "notumour"}
     blob = f"cases/{execution.case_id}/triage/output.json"
-    upload_blob_from_bytes(settings.GCS_ARTIFACTS_BUCKET, blob, json.dumps({"hotspots": [hotspot]}).encode(), "application/json")
+    output = {"hotspots": [hotspot], "hpf_diameter_um": 500.0, "frame_um": 600.0, "hpf_target": 10}
+    upload_blob_from_bytes(settings.GCS_ARTIFACTS_BUCKET, blob, json.dumps(output).encode(), "application/json")
     execution.status = "awaiting_review"
     return f"gs://{settings.GCS_ARTIFACTS_BUCKET}/{blob}", {}
 

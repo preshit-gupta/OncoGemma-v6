@@ -1,7 +1,7 @@
 """Tumour-cell gate and HPF tumour constraints (SPEC-06 §5.5, §5.8; WP-7.6b).
 
-The gate reads the tumour mask triage persists (one pixel per 224 µm tile); HPFs are one per
-hotspot window with the disk inside it (owner decision 2026-10-04), tumour fraction >= 0.5.
+The gate reads the tumour mask triage persists (one pixel per 224 µm tile); an HPF is the circle of a
+confirmed site (D22) and reports its tumour fraction for audit.
 """
 import io
 import json
@@ -10,13 +10,12 @@ import uuid
 
 import numpy as np
 import pytest
-from hypothesis import given, settings as hsettings, strategies as st
 from PIL import Image
 
 from app.core.config import settings
 from app.core.gcs import upload_blob_from_bytes
 from app.core.pipeline_config import get_pipeline_config
-from pipeline.hpf import place_hpfs, window_centres
+from pipeline.hpf import hpfs_from_sites
 from pipeline.mitosis_gate import TumorGate, TumorMaskMissingError, load_tumor_gate, tumor_mask_blob_names
 from pipeline.scoring import is_counted
 from pipeline.tissue_mask import TissueMask
@@ -100,7 +99,7 @@ def test_a_mask_whose_size_disagrees_with_its_metadata_is_refused():
         TumorGate.from_artifacts(png, {**meta, "nx": 4}, 1)
 
 
-# -- HPFs ----------------------------------------------------------------------------------------------------------------------------
+# -- HPFs ---------------------------------------------------------------------------------------------------------------------------
 
 def square(cx, cy, side):
     h = side / 2
@@ -108,76 +107,24 @@ def square(cx, cy, side):
 
 
 def hpf_settings():
-    config = get_pipeline_config()
-    return config.mitosis.hpf, config.specimen_profiles.profiles["resection"].hotspots
+    return get_pipeline_config().specimen_profiles.profiles["resection"].hotspots
 
 
-def test_a_window_leaves_the_centre_a_76_um_square():
-    cfg, hs = hpf_settings()
-    centres = window_centres(square(1000.0, 1000.0, hs.window_um), cfg.radius_um, cfg.centre_step_um)
-    half = hs.window_um / 2 - cfg.radius_um  # 38 µm
-    assert (1000.0, 1000.0) in centres
-    assert all(abs(x - 1000.0) <= half + 1e-6 and abs(y - 1000.0) <= half + 1e-6 for x, y in centres)
-    assert window_centres(square(1000.0, 1000.0, 500.0), cfg.radius_um, cfg.centre_step_um) == []  # too small for a disk
+def site(hid, cx, cy, source="model"):
+    hs = hpf_settings()
+    return {"id": hid, "center_um": [cx, cy], "polygon_um": square(cx, cy, hs.frame_um), "source": source}
 
 
-def test_an_hpf_is_never_placed_with_tumour_fraction_below_one_half():
-    cfg, hs = hpf_settings()
+def test_an_hpf_reports_its_audit_fractions_over_the_circle():
+    hs = hpf_settings()
     tissue = TissueMask(np.ones((400, 400), dtype=bool), 10.0)  # 4 x 4 mm of tissue
     is_tumor = np.zeros((18, 18), dtype=bool)
     is_tumor[:, :5] = True  # tumour only left of x = 1120 µm
     gate = gate_of(is_tumor)
-    windows = [(square(800.0, 800.0, hs.window_um), 0.9),    # mostly tumour
-               (square(2400.0, 800.0, hs.window_um), 0.95)]  # stroma, ranked first
-    hpfs = place_hpfs([], windows, tissue=tissue, tumor=gate, slide_dimensions_um=(4000.0, 4000.0), cfg=cfg,
-                      min_tissue_fraction=hs.min_tissue_fraction, min_tumor_fraction=hs.min_tumor_fraction)
-    assert len(hpfs) == 1 and hpfs[0]["center_um"][0] < 1200.0
-    assert hpfs[0]["tumor_fraction"] >= hs.min_tumor_fraction
-    assert math.isclose(hpfs[0]["tumor_fraction"], gate.tumor_fraction_in_disk(*hpfs[0]["center_um"], cfg.radius_um))
-
-
-def test_the_centre_with_most_counted_candidates_wins_inside_a_window():
-    cfg, hs = hpf_settings()
-    tissue = TissueMask(np.ones((300, 300), dtype=bool), 10.0)
-    gate = gate_of(np.ones((14, 14), dtype=bool))
-    # Figures just inside the disk only if the centre moves right by 32 µm.
-    cands = [{"centroid_um": [1000.0 + 32.0 + 262.0 - 5.0, 1000.0 + dy], "counted": True} for dy in (-10.0, 0.0, 10.0)]
-    cands += [{"centroid_um": [1000.0 - 262.0 - 30.0, 1000.0], "counted": False}]
-    hpfs = place_hpfs(cands, [(square(1000.0, 1000.0, hs.window_um), 1.0)], tissue=tissue, tumor=gate,
-                      slide_dimensions_um=(3000.0, 3000.0), cfg=cfg,
-                      min_tissue_fraction=hs.min_tissue_fraction, min_tumor_fraction=hs.min_tumor_fraction)
-    assert len(hpfs) == 1 and hpfs[0]["count"] == 3 and hpfs[0]["center_um"][0] > 1000.0
-
-
-@hsettings(max_examples=25, deadline=None)
-@given(
-    windows=st.lists(st.tuples(st.integers(0, 5), st.integers(0, 5), st.floats(0, 1)), min_size=1, max_size=12,
-                     unique_by=lambda w: (w[0], w[1])),
-    points=st.lists(st.tuples(st.floats(0, 3600), st.floats(0, 3600), st.booleans()), max_size=30),
-    tumor_seed=st.integers(0, 2 ** 16),
-)
-def test_one_hpf_per_window_with_the_disk_inside_it(windows, points, tumor_seed):
-    """Property: every field lies inside one window (disk ⊂ window), no window holds two, fields never overlap,
-    and each meets the tissue and tumour minimums."""
-    cfg, hs = hpf_settings()
-    w = hs.window_um
-    tissue = TissueMask(np.ones((360, 360), dtype=bool), 10.0)
-    gate = gate_of(np.random.default_rng(tumor_seed).random((17, 17)) < 0.7)
-    polys = [(square(w / 2 + i * w, w / 2 + j * w, w), prio) for i, j, prio in windows]  # a non-overlapping tiling
-    cands = [{"centroid_um": [x, y], "counted": c} for x, y, c in points]
-    hpfs = place_hpfs(cands, polys, tissue=tissue, tumor=gate, slide_dimensions_um=(3600.0, 3600.0), cfg=cfg,
-                      min_tissue_fraction=hs.min_tissue_fraction, min_tumor_fraction=hs.min_tumor_fraction)
-    assert len(hpfs) <= min(cfg.count, len(polys))
-    holders = []
-    for h in hpfs:
-        cx, cy = h["center_um"]
-        inside = [k for k, (poly, _) in enumerate(polys)
-                  if poly[0][0] + cfg.radius_um - 1e-6 <= cx <= poly[1][0] - cfg.radius_um + 1e-6
-                  and poly[0][1] + cfg.radius_um - 1e-6 <= cy <= poly[2][1] - cfg.radius_um + 1e-6]
-        assert len(inside) == 1
-        holders.append(inside[0])
-        assert h["tumor_fraction"] >= hs.min_tumor_fraction and h["tissue_coverage"] >= hs.min_tissue_fraction
-    assert len(holders) == len(set(holders))
-    for i, a in enumerate(hpfs):
-        for b in hpfs[i + 1:]:
-            assert math.dist(a["center_um"], b["center_um"]) >= 2 * cfg.radius_um - 1e-6
+    (hpf,) = hpfs_from_sites([site("hs_01", 800.0, 800.0)], [], tissue=tissue, tumor=gate, diameter_um=hs.hpf_diameter_um)
+    assert hpf["tumor_fraction"] == gate.tumor_fraction_in_disk(800.0, 800.0, hs.hpf_radius_um)
+    assert math.isclose(hpf["tissue_coverage"], tissue.fraction_in_disk_um(800.0, 800.0, hs.hpf_radius_um))
+    # A site over stroma still becomes an HPF: the circle is the pathologist's, nothing is filtered here.
+    (stroma,) = hpfs_from_sites([site("hs_u_1", 3000.0, 800.0, "pathologist_added")], [], tissue=tissue, tumor=gate,
+                                diameter_um=hs.hpf_diameter_um)
+    assert stroma["tumor_fraction"] == 0.0 and stroma["source"] == "pathologist"

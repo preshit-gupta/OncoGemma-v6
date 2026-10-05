@@ -193,7 +193,7 @@ def test_triage_edits_fail_loudly_when_machine_output_is_unreadable(safety_test_
     with patch("app.services.stages.download_blob_as_bytes", side_effect=FileNotFoundError("gone")):
         resp = client.post("/api/v1/stages/triage/edits", json={
             "case_id": str(case_id),
-            "edits": [{"op": "add", "polygon_um": SQUARE_200UM}],
+            "edits": [{"op": "add", "center_um": [1000.0, 1000.0]}],
         })
     assert resp.status_code == 502
 
@@ -204,12 +204,14 @@ def test_triage_edits_reject_overlap_with_machine_hotspot(safety_test_env):
     db.add(StageExecution(id=uuid.uuid4(), case_id=case_id, stage="triage", attempt=1,
                           status="awaiting_review", output_ref=""))
     db.commit()
-    machine = json.dumps({"hotspots": [{"id": "hs_01", "polygon_um": SQUARE_200UM}]}).encode()
-    shifted = [[x + 100.0, y + 100.0] for x, y in SQUARE_200UM]
+    machine = json.dumps({
+        "hotspots": [{"id": "hs_01", "center_um": [1000.0, 1000.0], "source": "model", "excluded": False}],
+        "hpf_diameter_um": 500.0, "frame_um": 600.0, "hpf_target": 10,
+    }).encode()
     with patch("app.services.stages.download_blob_as_bytes", return_value=machine):
         resp = client.post("/api/v1/stages/triage/edits", json={
             "case_id": str(case_id),
-            "edits": [{"op": "add", "polygon_um": shifted}],
+            "edits": [{"op": "add", "center_um": [1200.0, 1200.0]}],  # 283 µm from hs_01: the circles overlap
         })
     assert resp.status_code == 422 and "cannot overlap" in resp.text
 

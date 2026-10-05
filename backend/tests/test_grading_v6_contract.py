@@ -109,6 +109,9 @@ class Mitotic(Strict):
     n_hpf: int
     area_mm2: float
     per_mm2: float
+    # WP-6.5: the fixture gains these in WP-7.10; the API must always send them (asserted below).
+    flags: List[Literal["hpf_count_lt_10"]] = []
+    hpf_target: Optional[int] = None
 
 
 class Histotype(Strict):
@@ -152,7 +155,9 @@ class GradingStageV6(Strict):
 def test_get_matches_the_contract():
     client = TestClient(app)
     case_id = seed()
-    GradingStageV6.model_validate(client.get(f"/api/v1/stages/grading/{case_id}").json())
+    body = client.get(f"/api/v1/stages/grading/{case_id}").json()
+    GradingStageV6.model_validate(body)
+    assert body["mitotic"]["hpf_target"] == 10 and body["mitotic"]["flags"] == []
     # After every kind of edit too.
     client.post("/api/v1/stages/grading/review-sample", json={"case_id": case_id, "kind": "pleo", "sample_id": "p_01",
                                                               "value": {"pleomorphism_score": 1}})

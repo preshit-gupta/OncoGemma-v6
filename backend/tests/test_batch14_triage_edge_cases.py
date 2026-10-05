@@ -14,8 +14,6 @@ from pipeline.hotspots import extract_hotspots
 from app.auth.deps import CurrentUser
 from app.routers.triage import (
     apply_edit_ops,
-    compute_polygon_area_mm2,
-    coordinates_differ,
     TriageEditOp,
     TriageEditsPayload,
     TriageConfirmPayload,
@@ -74,86 +72,57 @@ def test_hotspot_center_alignment_and_clipping():
     assert hs0["prob_max"] is not None and hs0["prob_max"] >= 0.85
 
 
-def test_triage_edits_schema_and_conservative_source():
+SITE = {"diameter_um": 500.0, "frame_um": 600.0}
+
+
+def machine_site(hid="hs_01", cx=1000.0, cy=1000.0):
+    return {
+        "id": hid, "center_um": [cx, cy], "hpf_diameter_um": 500.0,
+        "polygon_um": [[cx - 300, cy - 300], [cx + 300, cy - 300], [cx + 300, cy + 300], [cx - 300, cy + 300], [cx - 300, cy - 300]],
+        "window_um": 600.0, "rank": 1, "rank_score": 0.9, "score_kind": "mean_p_tumor",
+        "tissue_fraction": 0.9, "tumor_fraction": 0.95, "prescan_expected": None,
+        "source": "model", "excluded": False, "exclude_reason": None,
+    }
+
+
+def test_triage_edits_schema_and_moved_source():
     """
     Issue #343, #75:
-    Pydantic schema validation and conservative source flipping on modify.
+    Pydantic schema validation; a moved model site becomes pathologist_modified and loses the fractions of its old position.
     """
-    machine_hotspots = [
-        {
-            "id": "hs_01",
-            "polygon_um": [[100.0, 100.0], [200.0, 100.0], [200.0, 200.0], [100.0, 200.0]],
-            "area_mm2": 0.01,
-            "prob_mean": 0.9,
-            "prob_max": 0.95,
-            "source": "model",
-            "excluded": False,
-            "exclude_reason": None
-        }
-    ]
+    machine_hotspots = [machine_site()]
 
-    # 1. Edit with identical coordinates should preserve source="model" (#75)
-    identical_edit = [
-        TriageEditOp(
-            op="modify",
-            id="hs_01",
-            polygon_um=[[100.0, 100.0], [200.0, 100.0], [200.0, 200.0], [100.0, 200.0]]
-        )
-    ]
-    res1 = apply_edit_ops(machine_hotspots, identical_edit)
-    assert res1[0]["source"] == "model"
+    moved = apply_edit_ops(machine_hotspots, [TriageEditOp(op="move", id="hs_01", center_um=(2000.0, 1500.0))], **SITE)
+    assert moved[0]["source"] == "pathologist_modified" and moved[0]["center_um"] == [2000.0, 1500.0]
+    assert moved[0]["polygon_um"][0] == [1700.0, 1200.0]  # the server builds the frame from the centre
+    assert moved[0]["tumor_fraction"] is None and moved[0]["rank_score"] is None
 
-    # 2. Edit with shifted coordinates should flip source to "pathologist_modified" (#75)
-    moved_edit = [
-        TriageEditOp(
-            op="modify",
-            id="hs_01",
-            polygon_um=[[150.0, 150.0], [250.0, 150.0], [250.0, 250.0], [150.0, 250.0]]
-        )
-    ]
-    res2 = apply_edit_ops(machine_hotspots, moved_edit)
-    assert res2[0]["source"] == "pathologist_modified"
+    with pytest.raises(ValueError):
+        TriageEditOp(op="modify", id="hs_01", polygon_um=[[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])  # polygon edits are gone
+    with pytest.raises(ValueError):
+        TriageEditOp(op="add")  # a pin needs its centre
+    with pytest.raises(ValueError):
+        TriageEditOp(op="exclude", id="hs_01")  # and an exclusion its reason
 
 
-def test_collision_proof_roi_ids_and_zero_tumor_add():
+def test_pinned_ids_follow_the_edit_history_and_carry_no_fabricated_values():
     """
     Issue #741, #714, #95:
-    Collision-proof ID allocation, degenerate polygon rejection, and None probabilities on additions.
+    ``hs_u_<n>`` ids over the whole history; a pinned site has no fractions, rank or v5 probabilities.
     """
-    machine_hotspots = [
-        {
-            "id": "hs_01",
-            "polygon_um": [[100.0, 100.0], [200.0, 100.0], [200.0, 200.0]],
-            "area_mm2": 0.005,
-            "prob_mean": 0.8,
-            "prob_max": 0.9,
-            "source": "model",
-            "excluded": False,
-            "exclude_reason": None
-        }
-    ]
-
-    # User attempts to add an ROI with ID colliding with "hs_01"
+    machine_hotspots = [machine_site()]
     add_ops = [
-        # Degenerate polygon (< 3 vertices) should be ignored (#95)
-        {"op": "add", "id": "bad_roi", "polygon_um": [[10.0, 10.0]]},
-        # Colliding ID should be reallocated to unique user_roi_* (#741, #714)
-        {
-            "op": "add",
-            "id": "hs_01",
-            "polygon_um": [[300.0, 300.0], [400.0, 300.0], [400.0, 400.0], [300.0, 400.0]]
-        }
+        {"op": "add", "center_um": [3000.0, 3000.0]},
+        {"op": "delete", "id": "hs_u_1"},
+        {"op": "add", "center_um": [4000.0, 3000.0]},
     ]
 
-    effective = apply_edit_ops(machine_hotspots, add_ops)
-    assert len(effective) == 2
-    hs_ids = [h["id"] for h in effective]
-    assert "hs_01" in hs_ids
-    assert "user_roi_01" in hs_ids
-    added_hs = next(h for h in effective if h["id"] == "user_roi_01")
-    assert added_hs["source"] == "pathologist_added"
-    assert added_hs["prob_mean"] is None, "Probabilities should not be fabricated (#95)"
-    assert added_hs["prob_max"] is None
+    effective = apply_edit_ops(machine_hotspots, add_ops, **SITE)
+    assert [h["id"] for h in effective] == ["hs_01", "hs_u_2"]  # ids are never reused
+    added = effective[1]
+    assert added["source"] == "pathologist_added" and added["rank"] is None
+    assert added["tissue_fraction"] is None and added["tumor_fraction"] is None
+    assert "prob_mean" not in added and "prob_max" not in added
 
 
 REVIEWER = CurrentUser(id="test_pathologist", email="test_pathologist@example.org", role="pathologist")
@@ -179,7 +148,7 @@ def test_confirm_triage_zero_tumor_guardrail(db_session):
 
     with patch("app.services.stages.download_blob_as_bytes") as mock_dl:
         # Return empty machine hotspots
-        mock_dl.return_value = b'{"hotspots": []}'
+        mock_dl.return_value = b'{"hotspots": [], "hpf_diameter_um": 500.0, "frame_um": 600.0, "hpf_target": 10}'
 
         # 1. Confirming 0 hotspots without flag should raise 422
         with pytest.raises(HTTPException) as exc_info:
@@ -312,7 +281,7 @@ def test_unreadable_hotspot_patch_is_404_never_synthesised(db_session):
                          mpp_x=0.25, mpp_y=0.25, width_px=1000, height_px=1000))
     db_session.add(StageExecution(case_id=case_id, stage="triage", attempt=1, status="awaiting_review"))
     db_session.commit()
-    machine = json.dumps({"hotspots": [{"id": "hs_01", "polygon_um": [[0, 0], [100, 0], [100, 100], [0, 100]]}]})
+    machine = json.dumps({"hotspots": [machine_site()]})
 
     def download(bucket, blob):
         if blob.endswith("triage/output.json"):

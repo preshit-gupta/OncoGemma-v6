@@ -132,7 +132,8 @@ def summarize_stage4(
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """The HPFs with their counts and the contract's ``MitosisSummary`` (docs/contracts/mitosis_v6.md).
 
-    ``candidates`` carry ``id``, ``centroid_um``, ``counted``, ``final_decision`` and ``review_label``.
+    ``candidates`` carry ``id``, ``centroid_um``, ``counted``, ``final_decision`` and ``review_label``;
+    ``hpf_count`` is the number of HPFs the score is meant to examine (``specimen_profiles.<type>.hotspots.k_max``).
     """
     counted_hpfs, total = calculate_hpf_mitosis_counts(candidates, hpfs)
     score = compute_nottingham_mitotic_score(count_total=total, n_hpf=len(hpfs), radius_um=None, scoring=scoring, hpfs=hpfs)
@@ -143,6 +144,7 @@ def summarize_stage4(
         "per_mm2": score["per_mm2"],
         "mitotic_score": score["mitotic_score"],
         "n_equivocal": len(equivocal_unreviewed_in_hpfs(candidates, hpfs)),
+        "hpf_target": hpf_count,
         "flags": [HPF_COUNT_LT_10] if len(hpfs) < hpf_count else [],
     }
     return counted_hpfs, summary

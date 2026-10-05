@@ -49,7 +49,7 @@ from pipeline.detect import apply_global_nms, candidate_review_crops, hotspot_ge
 from pipeline.mitosis_detect import detect_region, make_detect_batch
 from pipeline.errors import DegenerateStainProfileError, SlideReadError
 from pipeline.verify import mitosis_referee_images
-from pipeline.hpf import place_hpfs
+from pipeline.hpf import SiteWithoutCentreError, hpf_seq_of, hpfs_from_sites
 from pipeline.mitosis_gate import load_tumor_gate
 from pipeline.scoring import is_counted, summarize_stage4
 from pipeline.slide_io import SlideReader, centered_origin_um, normalize_region, read_region_at_mpp, require_mpp
@@ -112,7 +112,6 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
     height_px = int(slide_obj.height_px)
 
     tile_um = det_cfg.tile_size_um
-    hpf_count = hpf_cfg.count
 
     # Hotspots come from the pathologist-confirmed triage in the database only (SPEC-06 §9).
     hotspot_rows = db.scalars(
@@ -121,25 +120,30 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
             Hotspot.excluded == False
         )
     ).all()
+    # The HPFs are these sites' circles: the model sites by rank, then the pinned ones in id order.
     hotspots = [
         {
             "id": r.id,
             "polygon_um": r.polygon_um,
+            "center_um": r.center_um,
             "area_mm2": r.area_mm2,
-            "prob_mean": r.prob_mean,
-            "prob_max": r.prob_max,
-            "source": r.source
+            "source": r.source,
+            "rank": r.rank,
         }
-        for r in hotspot_rows
+        for r in sorted(hotspot_rows, key=lambda r: (r.rank is None, r.rank or 0, r.id))
     ]
+    for h in hotspots:
+        if h["center_um"] is None:  # confirmed before HPF sites: refuse before any model call
+            raise SiteWithoutCentreError(f"confirmed hotspot {h['id']!r} has no center_um; run triage again for this case")
     if not hotspots:
         raise ValueError(
             f"No confirmed tumor hotspots found for case {case_id}. "
             "Stage 3 Triage must be confirmed by a pathologist before running Stage 4 Mitosis detection."
         )
 
-    slide_dimensions_um = (float(width_px * mpp_x), float(height_px * mpp_y))
     profile = config.specimen_profiles.for_type(case_obj.specimen_type)
+    site_cfg = profile.hotspots
+    hpf_target = site_cfg.k_max
     od_beta = profile.stain_fit.od_beta
     tissue = load_tissue_mask(case_id)  # TissueMaskMissingError: run preprocess again
     print(f"[Worker:Mitosis] Loaded registered tissue mask ({tissue.width_px}x{tissue.height_px} px at {tissue.mpp} um/px, {tissue.area_mm2:.1f} mm2)")
@@ -154,9 +158,7 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
 
     try:
 
-        # Prioritize confirmed hotspots by tumor cellularity & tissue density (prob_mean descending)
-        hotspots.sort(key=lambda h: (h.get("prob_mean") or 0.0), reverse=True)
-        print(f"[Worker:Mitosis] Prioritized {len(hotspots)} confirmed hotspots by cellular density: {[h['id'] for h in hotspots]}")
+        print(f"[Worker:Mitosis] {len(hotspots)} confirmed HPF sites: {[h['id'] for h in hotspots]}")
 
         # Download raw slide from GCS to transient scratch file for tile & crop sampling
         gcs_uri_original = resolve_slide_raw_uri(case_id, slide_obj) or slide_obj.gcs_uri_original or f"gs://{settings.GCS_RAW_BUCKET}/cases/{case_id}/{slide_id}.svs"
@@ -335,32 +337,25 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
         for cand in all_candidates:
             cand["counted"] = is_counted(cand["review_label"], cand["final_decision"], cand["in_tumor"])
 
-        # HPFs: one per hotspot window, the disk inside it, enough tissue and tumour (SPEC-06 §5.8).
-        hpfs = place_hpfs(
-            all_candidates,
-            [(h["polygon_um"], float(h.get("prob_mean") or 0.0)) for h in hotspots],
-            tissue=tissue,
-            tumor=tumor,
-            slide_dimensions_um=slide_dimensions_um,
-            cfg=hpf_cfg,
-            min_tissue_fraction=profile.hotspots.min_tissue_fraction,
-            min_tumor_fraction=profile.hotspots.min_tumor_fraction,
-        )
+        # HPFs: the circles of the confirmed sites, where they are (SPEC-06 §5.8, D22). A candidate
+        # carries the circle that contains it; one in a frame's padding only has none.
+        hpfs = hpfs_from_sites(hotspots, all_candidates, tissue=tissue, tumor=tumor, diameter_um=site_cfg.hpf_diameter_um)
         hpfs, scoring_summary = summarize_stage4(
-            all_candidates, hpfs, scoring=mitosis_cfg.scoring, hpf_count=hpf_count
+            all_candidates, hpfs, scoring=mitosis_cfg.scoring, hpf_count=hpf_target
         )
+        for cand in all_candidates:
+            cand["hpf_seq"] = hpf_seq_of(cand["centroid_um"], hpfs)
 
         # Pre-render and upload all HPF review images (10x, 20x, 40x, as scanned and normalised) to GCS.
         # A degenerate stain fit leaves no normalised variant; it is never replaced by the raw image.
         hpf_uploads = []
         review_px = hpf_cfg.review_px
 
-        # Reticle optical patch calibration: the viewer canvas shows the HPF radius as a reticle, so the
-        # review image spans hpf.review_field_um (canvas width * radius / reticle radius).
+        # The review image covers the site's frame (circle plus padding), centred on the circle.
         for hpf in hpfs:
             hpf_seq = hpf["seq"]
             h_cx_um, h_cy_um = hpf["center_um"]
-            field_um = hpf_cfg.review_field_um
+            field_um = site_cfg.frame_um
             x_um, y_um = centered_origin_um(reader, h_cx_um, h_cy_um, field_um, field_um)
             review = read_region_at_mpp(reader, x_um, y_um, field_um, field_um, field_um / review_px)
 
@@ -451,6 +446,8 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
             "candidates": all_candidates,
             "hpfs": hpfs,
             "summary": scoring_summary,
+            "hpf_sites": {"hpf_target": hpf_target, "n_sites": len(hotspots),
+                          "accepted_fewer": bool((stage_exec.input_ref or {}).get("accept_fewer_hpfs", False))},
             "stain_normalization": "unavailable" if stain is None else "available",
             "tumor_gate": tumor.summary() if gate_cfg.enabled else {"applied": False, "reason": "eval ablation"},
             # The 20x/40x slice (SPEC-00 R6): a slide coarser than the detector's resolution is upsampled.

@@ -180,7 +180,7 @@ def test_manual_mode_waits_for_a_person_to_confirm(db, tmp_path, lock):
     assert item.status == "running"
     assert stage_service.latest_execution(db, item.case_id, "triage").status == "awaiting_review"
 
-    stage_service.confirm_stage(db, item.case_id, "triage", "pathologist-1")
+    stage_service.confirm_stage(db, item.case_id, "triage", "pathologist-1", accept_fewer_hpfs=True)  # one site: inadequate tissue
     fake_pipeline.drain(db)
     stage_service.confirm_stage(db, item.case_id, "mitosis", "pathologist-1")
     drive(db, run.id)

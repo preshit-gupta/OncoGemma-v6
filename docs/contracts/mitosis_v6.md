@@ -25,19 +25,25 @@ interface Candidate {
   decision_path: "A" | "AB" | "ABC" | "human";
   review_label: "mitosis" | "not_mitosis" | null;
   counted: boolean;             // server-computed; UI never derives it
+  hpf_seq: number | null;       // the HPF circle that contains it (server-computed); null outside every circle: shown, never counted
   crop_url: string;             // 64 µm @ 0.25 µm/px
   context_url: string;          // 256 µm @ 1.0 µm/px
 }
 
+// An HPF is the circle of a confirmed Stage 3 site: same centre, radius hpf_diameter_um / 2 (250). Nothing is searched for
+// inside the frame and nothing moves to follow the figures. seq follows the model sites by rank, then the pinned sites in id order.
 interface Hpf {
   seq: number; center_um: [number, number]; radius_um: number;
-  count: number; tissue_coverage: number; tumor_fraction: number;
+  count: number; tissue_coverage: number; tumor_fraction: number;   // coverage and tumour share of the circle, for audit
+  hotspot_id: string;                   // the site it came from
+  frame_um: [number, number][];         // that site's padded frame (closed ring): the review image covers it (600 µm)
 }
 
 interface MitosisSummary {
   count_total: number; n_hpf: number; area_mm2: number; per_mm2: number;
   mitotic_score: 1 | 2 | 3 | null; n_equivocal: number;  // null when n_hpf = 0
-  flags: ("hpf_count_lt_10")[];
+  hpf_target: number;                    // HPFs wanted (10); the UI never hardcodes it
+  flags: ("hpf_count_lt_10")[];          // fewer HPFs than hpf_target: inadequate tissue, acknowledged in Stage 3
 }
 
 interface MitosisStageV6 {
@@ -58,7 +64,6 @@ interface MitosisStageV6 {
 | GET | `/api/v1/stages/mitosis/{case_id}` | — | `200 MitosisStageV6` | `404 not_found` |
 | POST | `/api/v1/stages/mitosis/review` | `{ case_id, candidate_id, review_label: "mitosis" \| "not_mitosis" \| null }` | `200 MitosisStageV6` (counts and score recomputed server-side) | `404 candidate_not_found` · `409 stage_locked` |
 | POST | `/api/v1/stages/mitosis/add` | `{ case_id, centroid_um: [x, y] }` | `200 MitosisStageV6` (new candidate with `decision_path:"human"`, `review_label:"mitosis"`) | `422 out_of_bounds` · `409 stage_locked` |
-| POST | `/api/v1/stages/mitosis/replace-hpfs` | `{ case_id }` | `200 MitosisStageV6` | `409 stage_locked` |
 | POST | `/api/v1/stages/mitosis/confirm` | `{ case_id }` | `200 { status: "confirmed", next_stage: "grading" }` | `409 {error:"equivocal_unreviewed", ids:[...]}` (every `equivocal` candidate inside an HPF needs a `review_label`) · `409 not_awaiting_review` |
 
 ## UI rules tied to the contract
@@ -79,21 +84,22 @@ interface MitosisStageV6 {
   "slide": {"width_px": 80000, "height_px": 60000, "mpp_x": 0.25, "mpp_y": 0.25},
   "candidates": [
     {"id": "m_0001", "hotspot_id": "hs_01", "centroid_um": [4210.5, 5120.0], "p_a": 0.91, "p_b": 0.88, "vlm": null,
-     "in_tumor": true, "final_decision": "mitosis", "decision_path": "AB", "review_label": null, "counted": true,
+     "in_tumor": true, "final_decision": "mitosis", "decision_path": "AB", "review_label": null, "counted": true, "hpf_seq": 1,
      "crop_url": "/mock/crop_m1.png", "context_url": "/mock/ctx_m1.png"},
     {"id": "m_0002", "hotspot_id": "hs_01", "centroid_um": [4400.0, 5300.2], "p_a": 0.52, "p_b": 0.49,
      "vlm": {"verdict": "EQUIVOCAL", "criteria": {"membrane_absent": true, "condensed_chromosome_projections": false,
              "phase": "none", "neoplastic_cell": true}, "mimic": "pyknotic_nucleus", "rationale": "Dense round body, no projections.",
              "rule_override": false},
-     "in_tumor": true, "final_decision": "equivocal", "decision_path": "ABC", "review_label": null, "counted": false,
+     "in_tumor": true, "final_decision": "equivocal", "decision_path": "ABC", "review_label": null, "counted": false, "hpf_seq": 1,
      "crop_url": "/mock/crop_m2.png", "context_url": "/mock/ctx_m2.png"},
     {"id": "m_0003", "hotspot_id": "hs_02", "centroid_um": [5010.0, 5200.0], "p_a": 0.40, "p_b": 0.08, "vlm": null,
-     "in_tumor": true, "final_decision": "not_mitosis", "decision_path": "AB", "review_label": null, "counted": false,
+     "in_tumor": true, "final_decision": "not_mitosis", "decision_path": "AB", "review_label": null, "counted": false, "hpf_seq": null,
      "crop_url": "/mock/crop_m3.png", "context_url": "/mock/ctx_m3.png"}
   ],
-  "hpfs": [{"seq": 1, "center_um": [4300, 5300], "radius_um": 262, "count": 1, "tissue_coverage": 0.96, "tumor_fraction": 0.9}],
-  "summary": {"count_total": 1, "n_hpf": 1, "area_mm2": 0.216, "per_mm2": 4.63, "mitotic_score": 2,
-              "n_equivocal": 1, "flags": ["hpf_count_lt_10"]},
+  "hpfs": [{"seq": 1, "center_um": [4300, 5300], "radius_um": 250, "count": 1, "tissue_coverage": 0.96, "tumor_fraction": 0.9,
+            "hotspot_id": "hs_01", "frame_um": [[4000,5000],[4600,5000],[4600,5600],[4000,5600],[4000,5000]]}],
+  "summary": {"count_total": 1, "n_hpf": 1, "area_mm2": 0.196, "per_mm2": 5.09, "mitotic_score": 2,
+              "n_equivocal": 1, "hpf_target": 10, "flags": ["hpf_count_lt_10"]},
   "provenance": {"stage": "mitosis", "model_versions": {"kongnet_det_midog_1": "sha256:…", "mitosis_classifier": "1.0.0"},
                  "config_hash": "3f2a…", "run_mode": "clinical"}
 }

@@ -28,5 +28,8 @@ class Hotspot(Base):
     score_kind = Column(Text, nullable=True)
     tumor_fraction = Column(Float, nullable=True)
     prescan_expected = Column(Float, nullable=True)
-    window_um = Column(Float, nullable=True)
+    window_um = Column(Float, nullable=True) # side of the padded frame (polygon_um)
+    center_um = Column(JSON, nullable=True) # [x, y] of the HPF circle; null on rows from before 0017
+    hpf_diameter_um = Column(Float, nullable=True)
+    tissue_fraction = Column(Float, nullable=True) # over the circle
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
