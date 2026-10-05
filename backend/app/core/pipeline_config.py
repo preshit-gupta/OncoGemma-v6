@@ -516,7 +516,9 @@ class HotspotsConfig(StrictModel):
     gap_um: NonNegativeFloat
     # The number of HPFs to examine: the target for the mitotic score.
     k_max: PositiveInt
-    ranking_arm: Literal["H1", "H2", "H3"] = "H1"
+    ranking_arm: Literal["H1", "H1P", "H2", "H3"] = "H1"
+    # Arm H1P (required there): sites whose centre is within this distance of the invasive front rank first (owner, D22).
+    periphery_band_um: PositiveFloat | None = None
 
     @property
     def frame_um(self) -> float:

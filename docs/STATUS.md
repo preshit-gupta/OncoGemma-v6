@@ -63,7 +63,8 @@ Lanes are in `docs/tasks/README.md`. The specimen-type UI is merged (#21). Lane 
 5. **Owner review of Stages 3–5 (2026-10-05, D22; plan §2.4).** Six cards address it:
    - WP-9.4 now: Stage 5 scrolling and the Stage 4 HPF chips.
    - WP-6.5 (`wp/6.5-hpf-sites`, backend done, PR pending): HPFs become 0.5 mm circles in 0.6 mm frames (10 HPFs = 1.96 mm²), the Pin ROI fixes, and the tissue-inadequacy gate (`accept_fewer_hpfs`). Migration `0017`. **After deploy the owner re-runs Stage 3, Stage 4 and grading for every open case** (old triage outputs and edits answer `409 triage_rerun_required`), and **deploys together with WP-7.10** (`POST /replace-hpfs` is deleted; the Stage 4 button goes in 7.10).
-   - Then WP-6.6 (periphery first, 1 mm band) and WP-7.9 (Gemini morphology descriptions, never a decision).
+   - WP-6.6 (`wp/6.6-periphery`, backend done, PR pending): arm H1P ranks sites within 1 mm of the invasive front first (`pipeline/tumor_front.py`: section = tissue with holes filled, front = tumour next to non-tumour tissue, glass edges excluded); `at_periphery`, `front_distance_um` and `n_sites_at_periphery` served. Owner-chosen, not an F1 arm; `H1` stays for ablations. Open: a moved model site keeps the old `at_periphery` in the served view (needs `routers/triage.py`, not on the card).
+   - Then WP-7.9 (Gemini morphology descriptions, never a decision).
    - Then the viewers, WP-6.7 and WP-7.10.
 
    The backend and both viewers deploy together. Open cases then re-run Stages 3 and 4 and grading. If the WP-8.7 run has not been made yet, run it after WP-6.5 and 6.6.
