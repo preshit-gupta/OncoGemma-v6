@@ -34,8 +34,12 @@ def error(error_type):
     return error_type("mitosis_referee", "gemini_referee", "boom", entity=("candidate", "m_0001"))
 
 
-def test_repo_policy_is_empty():
-    assert get_pipeline_config().fallbacks.fallbacks == []
+def test_repo_policy_allows_only_a_missing_description():
+    """Everything else fails loud; a morphology description is optional context (WP-7.9, D22)."""
+    entries = get_pipeline_config().fallbacks.fallbacks
+    assert [(e.task, e.on, e.to) for e in entries] == [
+        (Task.MITOSIS_DESCRIBE, ["ModelUnavailableError", "ModelTimeoutError", "SchemaInvalidError"], None)
+    ]
 
 
 @pytest.mark.parametrize("run_mode", list(RunMode))

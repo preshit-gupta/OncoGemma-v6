@@ -12,6 +12,7 @@ class Task(str, Enum):
     MITOSIS_DETECT = "mitosis_detect"
     MITOSIS_CLASSIFY = "mitosis_classify"
     MITOSIS_REFEREE = "mitosis_referee"
+    MITOSIS_DESCRIBE = "mitosis_describe"  # descriptive only; never part of a decision (SPEC-06 §5.6, D22)
     MITOSIS_COUNT = "mitosis_count"
     TUBULE_PATCH = "tubule_patch"
     TUBULE_SLIDE = "tubule_slide"

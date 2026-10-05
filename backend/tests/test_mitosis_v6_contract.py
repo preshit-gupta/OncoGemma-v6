@@ -53,6 +53,17 @@ class VlmVerdict(Strict):
 Number = float | int
 
 
+class MitosisDescription(Strict):
+    chromatin: Literal["condensed_clumps", "band_or_plate", "two_separated_masses", "fine_granular", "smooth_dense",
+                       "beaded_fragments", "not_assessable"]
+    nuclear_membrane: Literal["not_visible", "partly_visible", "intact", "not_assessable"]
+    outline: Literal["hairy_projections", "smooth", "not_assessable"]
+    cytoplasm: Literal["clear_halo", "eosinophilic", "none_visible", "not_assessable"]
+    relative_size: Literal["larger", "similar", "smaller", "not_assessable"]
+    setting: Literal["tumour_cells", "stroma", "inflammatory", "necrosis", "lumen", "not_assessable"]
+    summary: str
+
+
 class Candidate(Strict):
     id: str
     hotspot_id: Optional[str]
@@ -69,6 +80,9 @@ class Candidate(Strict):
     context_url: str
     # WP-6.5: the fixture gains these in WP-7.10; the API must always send them (asserted below).
     hpf_seq: Optional[int] = None
+    # WP-7.9: morphology description, never a decision.
+    description: Optional[MitosisDescription]
+    description_status: Literal["ok", "unavailable", "not_requested"]
 
 
 class Hpf(Strict):

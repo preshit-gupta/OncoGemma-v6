@@ -10,4 +10,8 @@
 #   - task: mitosis_referee
 #     on: [ModelUnavailableError, ModelTimeoutError]   # also allowed: SchemaInvalidError
 #     to: null                                         # no automated verdict
-fallbacks: []
+fallbacks:
+  # A description is optional context: without one the figure is shown and counted as before (D22).
+  - task: mitosis_describe
+    "on": [ModelUnavailableError, ModelTimeoutError, SchemaInvalidError] # quoted: a bare on is a boolean in YAML 1.1
+    to: null

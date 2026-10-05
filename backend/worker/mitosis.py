@@ -36,9 +36,9 @@ from app.core.stain_profiles import usable_stain_transform
 from app.core.run_context import RunMode
 from app.core.tasks import EntityType, Task
 from app.core.tissue_mask_store import load_tissue_mask
-from app.inference.gateway import EntityRef, FallbackResult, ModelInputs
+from app.inference.gateway import EntityRef, FallbackResult, ImageInput, InputSpec, ModelInputs
 from app.inference.records import mitosis_count_record
-from app.inference.schemas import MitosisVerdict
+from app.inference.schemas import MitosisVerdict, describe_schema
 from app.models.case import Case
 from app.models.slide import Slide
 from app.models.hotspot import Hotspot
@@ -84,6 +84,7 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
     config = runtime.config
     mitosis_cfg = config.mitosis
     det_cfg, referee_cfg, hpf_cfg = mitosis_cfg.detector, mitosis_cfg.referee, mitosis_cfg.hpf
+    describe_cfg = mitosis_cfg.describe
     registry = config.models
     gateway, ctx = runtime.gateway, runtime.ctx
     detector_entry = registry.models[det_cfg.producer]
@@ -260,6 +261,8 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
                 "decision_path": "A",
                 "review_label": None,
                 "record_ids": [str(point.record_id)],
+                "description": None,
+                "description_status": "not_requested",
             })
 
         if referee_cfg.enabled:
@@ -314,8 +317,10 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
 
         # Review images of every persisted candidate, raw colour (contract mitosis_v6).
         crop_uploads = []
+        review_images = {}  # read once; the describer is shown the same images as the pathologist
         for cand in candidates:
             crops = candidate_review_crops(reader, *cand["centroid_um"], mitosis_cfg.review_crops)
+            review_images[cand["id"]] = crops
             crop_uploads += [(review_crop_blob(case_id, cand["id"], "crop"), crops.crop_png),
                              (review_crop_blob(case_id, cand["id"], "context"), crops.context_png)]
 
@@ -331,6 +336,7 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
                 "vlm": d.vlm, "rule_override": d.rule_override, "in_tumor": d.in_tumor,
                 "final_decision": d.final_decision, "decision_path": d.decision_path,
                 "review_label": d.review_label, "record_ids": d.record_ids,
+                "description": d.description, "description_status": d.description_status,
             }
             for d in preserved
         ]
@@ -345,6 +351,57 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
         )
         for cand in all_candidates:
             cand["hpf_seq"] = hpf_seq_of(cand["centroid_um"], hpfs)
+
+        # The count is a decision, linked to the detections it counted (SPEC-06 AC8). It is built before any
+        # description is requested, so nothing a description does can reach it.
+        count_record = mitosis_count_record(
+            case_id=ctx.case_id,
+            stage_execution_id=ctx.stage_execution_id,
+            run_id=ctx.run_id,
+            run_mode=ctx.run_mode.value,
+            config_hash=ctx.config_hash,
+            slide_id=slide_id,
+            candidates=all_candidates,
+            hpfs=hpfs,
+            summary=scoring_summary,
+            thresholds=mitosis_cfg.scoring.thresholds.model_dump(),
+        )
+
+        # Morphology descriptions (SPEC-06 §5.6, D22): for the figures the count rests on, inside an HPF circle.
+        # They are shown to the pathologist and decide nothing: the fields above are final.
+        crop_cfg = mitosis_cfg.review_crops
+        describe_in_run = describe_cfg.enabled and (not ctx.run_mode.fails_loud or describe_cfg.run_in_eval)
+        to_describe = [
+            c for c in candidates
+            if describe_in_run and c["final_decision"] in ("mitosis", "equivocal") and c["hpf_seq"] is not None
+        ]
+        description_schema = describe_schema(describe_cfg.forbidden_phrases)
+
+        def _describe(cand):
+            crops = review_images[cand["id"]]
+            crop_px, context_px = round(crop_cfg.crop_um / crop_cfg.crop_mpp), round(crop_cfg.context_um / crop_cfg.context_mpp)
+            images = (
+                ImageInput(crops.crop_png, InputSpec(crop_cfg.crop_mpp, (crop_px, crop_px), "raw", "png")),
+                ImageInput(crops.context_png, InputSpec(crop_cfg.context_mpp, (context_px, context_px), "raw", "png")),
+            )
+            result = gateway.invoke_or_fallback(
+                Task.MITOSIS_DESCRIBE,
+                describe_cfg.producer,
+                ModelInputs(images=images, prompt_id=describe_cfg.prompt),
+                ctx,
+                EntityRef(EntityType.CANDIDATE, cand["id"]),
+                description_schema,
+            )
+            cand["record_ids"].append(str(result.record_id))
+            if isinstance(result, FallbackResult):
+                cand["description"], cand["description_status"] = None, "unavailable"
+            else:
+                cand["description"], cand["description_status"] = result.output.model_dump(mode="json"), "ok"
+
+        if to_describe:
+            print(f"[Worker:Mitosis] Describing {len(to_describe)} figures via {describe_cfg.producer} with {MODEL_CALL_THREADS} worker threads...")
+            with ThreadPoolExecutor(max_workers=MODEL_CALL_THREADS) as pool:
+                list(pool.map(_describe, to_describe))
 
         # Pre-render and upload all HPF review images (10x, 20x, 40x, as scanned and normalised) to GCS.
         # A degenerate stain fit leaves no normalised variant; it is never replaced by the raw image.
@@ -408,6 +465,8 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
                 decision_path=cand["decision_path"],
                 review_label=cand["review_label"],
                 record_ids=cand["record_ids"],
+                description=cand["description"],
+                description_status=cand["description_status"],
             ))
 
         for hpf in hpfs:
@@ -423,19 +482,7 @@ def run_mitosis(stage_exec: Any, db: Session, runtime: StageRuntime) -> Tuple[st
                 image_patch_uri=None
             ))
 
-        # The count itself is a decision, linked to the detections it counted (SPEC-06 AC8).
-        db.add(mitosis_count_record(
-            case_id=ctx.case_id,
-            stage_execution_id=ctx.stage_execution_id,
-            run_id=ctx.run_id,
-            run_mode=ctx.run_mode.value,
-            config_hash=ctx.config_hash,
-            slide_id=slide_id,
-            candidates=all_candidates,
-            hpfs=hpfs,
-            summary=scoring_summary,
-            thresholds=mitosis_cfg.scoring.thresholds.model_dump(),
-        ))
+        db.add(count_record)
 
         producers = (det_cfg.producer, referee_cfg.producer) if referee_cfg.enabled else (det_cfg.producer,)
         model_versions = {key: registry.version_of(key) for key in producers}

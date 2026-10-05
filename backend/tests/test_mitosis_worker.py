@@ -85,15 +85,19 @@ def cycling_referee():
     return answer
 
 
-def configured(referee=True):
+def configured(referee=True, describe=False):
     """The repo config with the detector endpoint set (tests have no VERTEX_MITOSIS_ENDPOINT_ID).
 
-    The referee is on by default here so its path stays covered; production has it off.
+    The referee is on by default here so its path stays covered; production has it off. The describer is off by
+    default here (production has it on): the fake Gemini answers referee verdicts, tests/test_mitosis_describe.py covers it.
     """
     config = get_pipeline_config()
     registry = config.models
     kongnet = registry.models["kongnet_det_midog_1"].model_copy(update={"endpoint_id": "456"})
-    mitosis = config.mitosis.model_copy(update={"referee": config.mitosis.referee.model_copy(update={"enabled": referee})})
+    mitosis = config.mitosis.model_copy(update={
+        "referee": config.mitosis.referee.model_copy(update={"enabled": referee}),
+        "describe": config.mitosis.describe.model_copy(update={"enabled": describe}),
+    })
     return config.model_copy(update={
         "models": registry.model_copy(update={"models": {**registry.models, "kongnet_det_midog_1": kongnet}}),
         "mitosis": mitosis,
