@@ -20,6 +20,7 @@ import numpy as np
 from app.core.pipeline_config import HotspotsConfig
 from pipeline.mitosis_gate import DISK_SAMPLES_PER_RADIUS
 from pipeline.tissue_mask import TissueMask, disk_strips
+from pipeline.tumor_front import front_distance
 
 UM2_PER_MM2 = 1e6
 # Slack for floating point when two circles exactly touch or a lattice ends exactly on the bounding box.
@@ -45,6 +46,8 @@ class HotspotWindow:
     candidate_id: str | None = None  # the candidate this site was selected from
     tissue_fraction: float | None = None  # over the circle
     frame_padding_um: float = 0.0
+    at_periphery: bool | None = None  # arm H1P: the centre is within periphery_band_um of the invasive front
+    front_distance_um: float | None = None  # distance of the centre to the front; None when the slide has none
 
     @property
     def window_um(self) -> float:
@@ -79,6 +82,8 @@ class HotspotWindow:
             "excluded": self.excluded,
             "exclude_reason": self.exclude_reason,
             "area_mm2": self.area_mm2,
+            "at_periphery": self.at_periphery,
+            "front_distance_um": self.front_distance_um,
         }
 
 
@@ -235,14 +240,17 @@ def score_lattice_windows(
     extent_um: tuple[float, float],
     cfg: HotspotsConfig,
 ) -> list[HotspotWindow]:
-    """The valid candidate sites of SPEC-05 §5.1, scored under arm H1 (§5.2).
+    """The valid candidate sites of SPEC-05 §5.1, scored under arm H1 or H1P (§5.2).
 
     Circles of diameter ``cfg.hpf_diameter_um`` are centred on a lattice of step ``cfg.lattice_step_um``
     over the bounding box of the tumour mask (tile rasters from the slide origin). A site is valid when
     its circle lies inside the slide, its tissue fraction is at least ``cfg.min_tissue_fraction`` and its
     tumour fraction at least ``cfg.min_tumor_fraction``. No tumour tile: no sites.
+
+    Under H1P each site also carries its centre's distance to the invasive front and whether that is within
+    ``cfg.periphery_band_um`` (``_by_rank`` puts those first).
     """
-    if cfg.ranking_arm != "H1":
+    if cfg.ranking_arm not in ("H1", "H1P"):
         raise NotImplementedError(f"hotspot ranking arm {cfg.ranking_arm} needs the mitotic prescan (SPEC-05 §5.2)")
     rows, cols = np.nonzero(is_tumor_raster)
     if rows.size == 0:
@@ -264,6 +272,11 @@ def score_lattice_windows(
     plausible = (tumor_fraction >= cfg.min_tumor_fraction) & ~np.isnan(mean_p)
     tissue_fraction[plausible] = tissue.fractions_in_disks_um(centers[plausible, 0], centers[plausible, 1], r)
     valid = plausible & (tissue_fraction >= cfg.min_tissue_fraction)
+    periphery = cfg.ranking_arm == "H1P"
+    if periphery:
+        if cfg.periphery_band_um is None:
+            raise ValueError("ranking_arm H1P needs periphery_band_um")
+        front_um = front_distance(p_raster, is_tumor_raster, tile_um).at_um(centers[:, 0], centers[:, 1])
     return [
         HotspotWindow(
             id=f"win_{n:05d}",
@@ -272,10 +285,12 @@ def score_lattice_windows(
             hpf_diameter_um=cfg.hpf_diameter_um,
             rank=None,
             rank_score=float(mean_p[n]),
-            score_kind="mean_p_tumor",
+            score_kind="periphery_then_tumor" if periphery else "mean_p_tumor",
             tumor_fraction=float(tumor_fraction[n]),
             tissue_fraction=float(tissue_fraction[n]),
             frame_padding_um=cfg.frame_padding_um,
+            at_periphery=bool(front_um[n] <= cfg.periphery_band_um) if periphery else None,
+            front_distance_um=(float(front_um[n]) if np.isfinite(front_um[n]) else None) if periphery else None,
         )
         for n in np.flatnonzero(valid)
     ]
@@ -287,10 +302,10 @@ def _clear_of(c: HotspotWindow, selected: Sequence[HotspotWindow], d: float, gap
 
 
 def _by_rank(cands: Sequence[HotspotWindow]) -> list[HotspotWindow]:
-    """Rank descending by score, breaking ties by tumour fraction; a site without one ranks after those with one."""
+    """Rank descending: periphery sites first (H1P; null counts as not), then by score, ties by tumour fraction; a site without one ranks after those with one."""
     return sorted(
         cands,
-        key=lambda c: (c.rank_score, c.tumor_fraction is not None, c.tumor_fraction or 0.0),
+        key=lambda c: (c.at_periphery is True, c.rank_score, c.tumor_fraction is not None, c.tumor_fraction or 0.0),
         reverse=True,
     )
 

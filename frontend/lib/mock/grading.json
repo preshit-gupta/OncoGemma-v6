@@ -12,18 +12,27 @@
     "samples": [
       {
         "id": "t_01",
-        "center_um": [4300, 5300],
+        "center_um": [
+          4300,
+          5300
+        ],
         "size_um": 512,
         "mpp": 1.0,
         "image_url": "/mock/t01.png",
         "stratum": 0,
         "tumor_area_um2": 201000,
-        "estimate": { "tumor_present": true, "tubule_percent": 35 },
+        "estimate": {
+          "tumor_present": true,
+          "tubule_percent": 35
+        },
         "review": null
       },
       {
         "id": "t_02",
-        "center_um": [9000, 7000],
+        "center_um": [
+          9000,
+          7000
+        ],
         "size_um": 512,
         "mpp": 1.0,
         "image_url": "/mock/t02.png",
@@ -34,24 +43,36 @@
       },
       {
         "id": "t_03",
-        "center_um": [12000, 8500],
+        "center_um": [
+          12000,
+          8500
+        ],
         "size_um": 512,
         "mpp": 1.0,
         "image_url": "/mock/t03.png",
         "stratum": 2,
         "tumor_area_um2": 180000,
-        "estimate": { "tumor_present": true, "tubule_percent": 40 },
+        "estimate": {
+          "tumor_present": true,
+          "tubule_percent": 40
+        },
         "review": null
       },
       {
         "id": "t_04",
-        "center_um": [15000, 11000],
+        "center_um": [
+          15000,
+          11000
+        ],
         "size_um": 512,
         "mpp": 1.0,
         "image_url": "/mock/t04.png",
         "stratum": 3,
         "tumor_area_um2": 95000,
-        "estimate": { "tumor_present": false, "tubule_percent": 0 },
+        "estimate": {
+          "tumor_present": false,
+          "tubule_percent": 0
+        },
         "review": null
       }
     ],
@@ -64,40 +85,70 @@
     "fields": [
       {
         "id": "p_01",
-        "center_um": [4310, 5290],
+        "center_um": [
+          4310,
+          5290
+        ],
         "size_um": 128,
         "mpp": 0.25,
         "image_url": "/mock/p01.png",
         "stratum": 0,
-        "estimate": { "pleomorphism_score": 2 },
-        "nuclei": { "n": 143, "area_p50_um2": 48.2, "area_cv": 0.41 },
+        "estimate": {
+          "pleomorphism_score": 2
+        },
+        "nuclei": {
+          "n": 143,
+          "area_p50_um2": 48.2,
+          "area_cv": 0.41
+        },
         "review": null
       },
       {
         "id": "p_02",
-        "center_um": [4450, 5320],
+        "center_um": [
+          4450,
+          5320
+        ],
         "size_um": 128,
         "mpp": 0.25,
         "image_url": "/mock/p02.png",
         "stratum": 1,
-        "estimate": { "pleomorphism_score": 2 },
-        "nuclei": { "n": 165, "area_p50_um2": 52.1, "area_cv": 0.38 },
+        "estimate": {
+          "pleomorphism_score": 2
+        },
+        "nuclei": {
+          "n": 165,
+          "area_p50_um2": 52.1,
+          "area_cv": 0.38
+        },
         "review": null
       },
       {
         "id": "p_03",
-        "center_um": [12100, 8480],
+        "center_um": [
+          12100,
+          8480
+        ],
         "size_um": 128,
         "mpp": 0.25,
         "image_url": "/mock/p03.png",
         "stratum": 2,
-        "estimate": { "pleomorphism_score": 3 },
-        "nuclei": { "n": 98, "area_p50_um2": 61.4, "area_cv": 0.52 },
+        "estimate": {
+          "pleomorphism_score": 3
+        },
+        "nuclei": {
+          "n": 98,
+          "area_p50_um2": 61.4,
+          "area_cv": 0.52
+        },
         "review": null
       },
       {
         "id": "p_04",
-        "center_um": [15050, 10980],
+        "center_um": [
+          15050,
+          10980
+        ],
         "size_um": 128,
         "mpp": 0.25,
         "image_url": "/mock/p04.png",
@@ -113,10 +164,14 @@
   },
   "mitotic": {
     "score": 2,
-    "count_total": 12,
-    "n_hpf": 10,
-    "area_mm2": 2.157,
-    "per_mm2": 5.56
+    "count_total": 7,
+    "n_hpf": 7,
+    "area_mm2": 1.374,
+    "per_mm2": 5.09,
+    "flags": [
+      "hpf_count_lt_10"
+    ],
+    "hpf_target": 10
   },
   "histotype": {
     "type": "IDC-NST",
@@ -127,7 +182,11 @@
   },
   "total": 6,
   "grade": 2,
-  "flags": ["needs_human", "near_grade_boundary"],
+  "flags": [
+    "needs_human",
+    "near_grade_boundary",
+    "hpf_count_lt_10"
+  ],
   "overrides": {
     "reasons": {}
   },

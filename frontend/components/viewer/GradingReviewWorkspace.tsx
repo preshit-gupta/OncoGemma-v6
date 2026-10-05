@@ -954,6 +954,12 @@ export function GradingReviewWorkspace({
               </div>
             </div>
 
+            {data.mitotic.flags.includes("hpf_count_lt_10") && (
+              <p className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                {L.fmt.tissueInadequateMitosis(data.mitotic.n_hpf, data.mitotic.hpf_target, data.mitotic.area_mm2)}
+              </p>
+            )}
+
             <div className="pt-2 border-t border-slate-100">
               <button
                 onClick={onReopenMitosis}

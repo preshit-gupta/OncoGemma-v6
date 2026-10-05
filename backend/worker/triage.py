@@ -294,11 +294,11 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
         # The selection itself is a decision (SPEC-01 §3.3), committed with the stage's outputs.
         selection_input = {
             "candidates_sha256": hashlib.sha256(canonical_json(
-                [[c.cx, c.cy, c.rank_score, c.tumor_fraction] for c in windows]
+                [[c.cx, c.cy, c.rank_score, c.tumor_fraction, c.at_periphery] for c in windows]
             ).encode("utf-8")).hexdigest(),
             "n_candidates": len(windows),
             "checked": [{"id": c.id, "cx": c.cx, "cy": c.cy, "rank_score": c.rank_score,
-                         "tumor_fraction": c.tumor_fraction, "tumor_present": verdict} for c, verdict in checked],
+                         "tumor_fraction": c.tumor_fraction, "at_periphery": c.at_periphery, "tumor_present": verdict} for c, verdict in checked],
             "k_max": k_max,
             "hpf_diameter_um": hs_cfg.hpf_diameter_um,
             "frame_um": hs_cfg.frame_um,
@@ -323,7 +323,8 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
             "prompt_sha256": None,
             "input_sha256": hashlib.sha256(canonical_json(selection_input).encode("utf-8")).hexdigest(),
             "input_spec": selection_input,
-            "params": {"ranking_arm": hs_cfg.ranking_arm, "lattice_step_um": hs_cfg.lattice_step_um,
+            "params": {"ranking_arm": hs_cfg.ranking_arm, "periphery_band_um": hs_cfg.periphery_band_um,
+                       "lattice_step_um": hs_cfg.lattice_step_um,
                        "frame_padding_um": hs_cfg.frame_padding_um,
                        "min_tissue_fraction": hs_cfg.min_tissue_fraction, "min_tumor_fraction": hs_cfg.min_tumor_fraction},
             "output": {"hotspot_ids": [h["id"] for h in hotspots], "flags": flags},
@@ -436,6 +437,7 @@ def run_triage(stage_execution: StageExecution, session: Session, runtime: Stage
             "frame_um": hs_cfg.frame_um,
             "hpf_target": k_max,
             "n_sites_available": len(windows),
+            "n_sites_at_periphery": sum(1 for h in hotspots if h["at_periphery"]),
             "flags": flags,
             "stain_normalization": "unavailable" if stain is None else "available",
             "model_versions": model_versions,

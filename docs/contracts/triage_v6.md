@@ -14,7 +14,7 @@ interface Heatmap {
   head_version: string;
 }
 
-type ScoreKind = "mean_p_tumor" | "prescan_expected_count" | "prescan_then_tumor";
+type ScoreKind = "mean_p_tumor" | "periphery_then_tumor" | "prescan_expected_count" | "prescan_then_tumor";
 
 // An HPF site: a circle 0.5 mm across (0.196 mm²) in a padded 0.6 mm frame (owner decision D22).
 // Circles never overlap; frames may. A figure in a frame's padding is shown, and it is counted only
@@ -31,6 +31,8 @@ interface Hotspot {
   tissue_fraction: number | null;           // 0..1 over the circle; null when pinned
   tumor_fraction: number | null;            // 0..1 over the circle; null when pinned
   prescan_expected: number | null;          // expected mitoses in the circle (when score_kind uses prescan)
+  at_periphery: boolean | null;             // arm H1P: centre within the periphery band (1 mm) of the invasive front; null when pinned
+  front_distance_um: number | null;         // distance of the centre to the invasive front; null when pinned or the slide has no front
   source: "model" | "pathologist_added" | "pathologist_modified";   // modified = moved
   excluded: boolean;
   exclude_reason: string | null;
@@ -48,6 +50,7 @@ interface TriageStageV6 {
   flags: ("hotspots_limited_by_tissue" | "no_invasive_tumor_detected")[];
   hpf_target: number;                       // sites wanted (10); fewer active sites is inadequate tissue
   n_sites_available: number;                // valid candidate sites on the lattice before the disjoint selection
+  n_sites_at_periphery: number;             // selected sites with at_periphery true (WP-6.6)
   provenance: Provenance;
 }
 

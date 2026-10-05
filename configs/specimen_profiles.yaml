@@ -44,7 +44,8 @@ profiles:
       min_tumor_fraction: 0.50 # area-weighted tumour tile share of the circle
       gap_um: 0.0 # least distance between circle edges
       k_max: 10 # HPFs to examine; fewer is inadequate tissue
-      ranking_arm: H1 # mean p_tumor_cal over the circle
+      ranking_arm: H1P # periphery first, then mean p_tumor_cal over the circle (owner, 2026-10-05, D22); H1 = score only, for ablations
+      periphery_band_um: 1000.0 # invasive-front band, inward from the front (owner, 2026-10-05, D22)
     grading:
       tubule_patches: 48 # SPEC-07 §5.1; drawn inside the confirmed hotspots (owner decision 2026-10-02), may overlap
       pleo_fields: 48 # SPEC-07 §6.1; non-overlapping, inside a hotspot
@@ -90,7 +91,8 @@ profiles:
       min_tumor_fraction: 0.50 # area-weighted tumour tile share of the circle
       gap_um: 0.0 # least distance between circle edges
       k_max: 10 # HPFs to examine; fewer is inadequate tissue
-      ranking_arm: H1 # mean p_tumor_cal over the circle
+      ranking_arm: H1P # periphery first, then mean p_tumor_cal over the circle (owner, 2026-10-05, D22); H1 = score only, for ablations
+      periphery_band_um: 1000.0 # invasive-front band, inward from the front (owner, 2026-10-05, D22)
     grading:
       tubule_patches: 24 # SPEC-07 §5.1
       pleo_fields: 32 # SPEC-07 §6.1

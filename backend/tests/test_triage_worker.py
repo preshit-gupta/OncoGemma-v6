@@ -382,8 +382,8 @@ def test_hotspots_are_ranked_lattice_windows_of_confirmed_candidates(db_session,
     assert hotspots and all(h["referee"]["tumor_present"] is True for h in hotspots)
     assert [h["id"] for h in hotspots] == [f"hs_{n:02d}" for n in range(1, len(hotspots) + 1)]
     assert [h["rank"] for h in hotspots] == list(range(1, len(hotspots) + 1))
-    scores = [h["rank_score"] for h in hotspots]
-    assert scores == sorted(scores, reverse=True)
+    keys = [(bool(h["at_periphery"]), h["rank_score"]) for h in hotspots]  # H1P: periphery first, then the score (WP-6.6)
+    assert keys == sorted(keys, reverse=True)
     for h in hotspots:
         cx, cy = h["center_um"]
         xs, ys = [p[0] for p in h["polygon_um"]], [p[1] for p in h["polygon_um"]]
@@ -394,12 +394,14 @@ def test_hotspots_are_ranked_lattice_windows_of_confirmed_candidates(db_session,
         assert cx - d / 2 >= 0.0 and cy - d / 2 >= 0.0 and cx + d / 2 <= WIDTH_PX * MPP and cy + d / 2 <= HEIGHT_PX * MPP
         assert h["window_um"] == frame and h["hpf_diameter_um"] == d
         assert h["area_mm2"] == pytest.approx(math.pi * (d / 2000.0) ** 2)
-        assert h["score_kind"] == "mean_p_tumor" and h["rank_score"] == h["prob_mean"]
+        assert h["score_kind"] == "periphery_then_tumor" and h["rank_score"] == h["prob_mean"]
+        assert isinstance(h["at_periphery"], bool) and (h["front_distance_um"] is None or h["front_distance_um"] >= 0.0)
         assert h["tumor_fraction"] >= cfg.min_tumor_fraction and h["tissue_fraction"] >= cfg.min_tissue_fraction
     centres = [tuple(h["center_um"]) for h in hotspots]
     assert all(math.dist(a, b) >= d + cfg.gap_um - 1e-6 for n, a in enumerate(centres) for b in centres[n + 1:])
     assert (output["hpf_diameter_um"], output["frame_um"], output["hpf_target"]) == (d, frame, cfg.k_max)
     assert output["n_sites_available"] >= len(hotspots)
+    assert output["n_sites_at_periphery"] == sum(h["at_periphery"] for h in hotspots)
     assert output["flags"] == ([] if len(hotspots) == profile.hotspots.k_max else ["hotspots_limited_by_tissue"])
 
     record = db_session.query(DecisionRecord).filter_by(task="hotspot_select").one()

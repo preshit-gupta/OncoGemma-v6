@@ -14,12 +14,9 @@ import {
   Crosshair,
   ZoomIn,
   X,
-  Activity,
   RotateCcw,
   MapPin,
-  PenTool,
-  Edit3,
-  Check
+  Move
 } from "lucide-react";
 import { retryStage } from "@/lib/api";
 import { 
@@ -70,9 +67,9 @@ export function TriageViewer({
   const [isAddingRoiMode, setIsAddingRoiMode] = useState<boolean>(false);
   const [noInvasiveTumor, setNoInvasiveTumor] = useState<boolean>(false);
   const [excludeReasonInput, setExcludeReasonInput] = useState<{ [id: string]: string }>({});
-  const [roiDrawType, setRoiDrawType] = useState<"box" | "polygon">("box");
-  const [activePolygonPoints, setActivePolygonPoints] = useState<[number, number][]>([]);
-  const [editingVertexHotspotId, setEditingVertexHotspotId] = useState<string | null>(null);
+  const [movingHotspotId, setMovingHotspotId] = useState<string | null>(null);
+  const [acceptFewerHpfs, setAcceptFewerHpfs] = useState<boolean>(false);
+  const [tooFewSitesPrompt, setTooFewSitesPrompt] = useState<boolean>(false);
 
   // The loader must not depend on `data`: each fetch would re-create it and the effect below
   // would fetch again, forever. Whether data is already shown is read from a ref instead.
@@ -108,16 +105,9 @@ export function TriageViewer({
     }
   }, [data, fetchTriageData]);
 
-  const computePolygonAreaMm2 = (pts: number[][]): number => {
-    if (!pts || pts.length < 3) return 0.36;
-    let area = 0;
-    const n = pts.length;
-    for (let i = 0; i < n; i++) {
-      const j = (i + 1) % n;
-      area += pts[i][0] * pts[j][1];
-      area -= pts[j][0] * pts[i][1];
-    }
-    return Number((Math.abs(area) / 2.0 / 1e6).toFixed(3));
+  const circleAreaMm2 = (hs: Hotspot): number => {
+    const r = hs.hpf_diameter_um / 2;
+    return (Math.PI * r * r) / 1e6;
   };
 
   const executeEdits = async (edits: EditOp[]) => {
@@ -130,11 +120,15 @@ export function TriageViewer({
       setConflictingHotspotIds([]);
     } catch (err: any) {
       if (err.data?.error === "hotspot_overlap") {
-        const ids = (err.data.ids || []).flat();
+        const ids: string[] = Array.from(new Set<string>((err.data.ids || []).flat()));
         setConflictingHotspotIds(ids);
-        setError(L.error.hotspotOverlap);
-      } else if (err.data?.error === "invalid_polygon") {
-        setError(err.data.reason || L.error.invalidPolygon);
+        setError(L.fmt.hotspotOverlap(ids));
+      } else if (err.data?.error === "invalid_site") {
+        setError(L.error.invalidSite);
+      } else if (err.data?.error === "too_many_sites") {
+        setError(L.fmt.tooManySites(err.data.hpf_target));
+      } else if (err.data?.error === "triage_rerun_required") {
+        setError(L.error.triageRerunRequired);
       } else {
         setError(err.message || L.error.genericError);
       }
@@ -153,105 +147,34 @@ export function TriageViewer({
   };
 
   const handleRestoreHotspot = (id: string) => {
-    const target = hotspotsList.find((h) => h.id === id);
-    if (!target) return;
-    executeEdits([{ op: "modify", id, polygon_um: target.polygon_um }]);
+    executeEdits([{ op: "restore", id }]);
   };
 
   const handleDeleteHotspot = (id: string) => {
     executeEdits([{ op: "delete", id }]);
     if (selectedHotspotId === id) setSelectedHotspotId(null);
     if (previewHotspot?.id === id) setPreviewHotspot(null);
-    if (editingVertexHotspotId === id) setEditingVertexHotspotId(null);
+    if (movingHotspotId === id) setMovingHotspotId(null);
   };
 
-  const handleAddRoiFromClick = (x_um: number, y_um: number) => {
-    if (roiDrawType === "polygon") {
-      const pt: [number, number] = [Number(x_um.toFixed(2)), Number(y_um.toFixed(2))];
-      setActivePolygonPoints((prev) => [...prev, pt]);
+  // A click on the slide pins a new HPF, or sets the new centre of the site being moved.
+  const handleSlideClick = (x_um: number, y_um: number) => {
+    const center: [number, number] = [Number(x_um.toFixed(1)), Number(y_um.toFixed(1))];
+    if (movingHotspotId) {
+      const id = movingHotspotId;
+      setMovingHotspotId(null);
+      executeEdits([{ op: "move", id, center_um: center }]);
       return;
     }
-
-    const half_um = 300.0;
-    const polygon: [number, number][] = [
-      [Number((x_um - half_um).toFixed(2)), Number((y_um - half_um).toFixed(2))],
-      [Number((x_um + half_um).toFixed(2)), Number((y_um - half_um).toFixed(2))],
-      [Number((x_um + half_um).toFixed(2)), Number((y_um + half_um).toFixed(2))],
-      [Number((x_um - half_um).toFixed(2)), Number((y_um + half_um).toFixed(2))],
-      [Number((x_um - half_um).toFixed(2)), Number((y_um - half_um).toFixed(2))]
-    ];
-
     setIsAddingRoiMode(false);
-    executeEdits([{ op: "add", polygon_um: polygon }]);
-  };
-
-  const handleFinishCustomPolygon = () => {
-    if (activePolygonPoints.length < 3) {
-      alert("A polygon requires at least 3 points. Click points on the slide to outline the tumor focus.");
-      return;
-    }
-
-    const closed: [number, number][] = [...activePolygonPoints];
-    if (
-      closed[0][0] !== closed[closed.length - 1][0] ||
-      closed[0][1] !== closed[closed.length - 1][1]
-    ) {
-      closed.push([closed[0][0], closed[0][1]]);
-    }
-
-    setActivePolygonPoints([]);
-    setIsAddingRoiMode(false);
-    executeEdits([{ op: "add", polygon_um: closed }]);
-  };
-
-  const handleUpdateVertex = (hotspotId: string, vertexIndex: number, newX: number, newY: number) => {
-    const target = hotspotsList.find((h) => h.id === hotspotId);
-    if (!target) return;
-
-    const newCoords: [number, number][] = target.polygon_um.map((pt, idx) =>
-      idx === vertexIndex ? [Number(newX.toFixed(2)), Number(newY.toFixed(2))] : pt
-    );
-    if (vertexIndex === 0 && newCoords.length > 1) {
-      newCoords[newCoords.length - 1] = [newCoords[0][0], newCoords[0][1]];
-    }
-
-    executeEdits([{ op: "modify", id: hotspotId, polygon_um: newCoords }]);
-  };
-
-  const handleAddVertex = (hotspotId: string, afterIndex: number) => {
-    const target = hotspotsList.find((h) => h.id === hotspotId);
-    if (!target) return;
-
-    const pts: [number, number][] = [...target.polygon_um];
-    const nextIdx = (afterIndex + 1) % pts.length;
-    const midX = (pts[afterIndex][0] + pts[nextIdx][0]) / 2.0;
-    const midY = (pts[afterIndex][1] + pts[nextIdx][1]) / 2.0;
-    pts.splice(afterIndex + 1, 0, [Number(midX.toFixed(2)), Number(midY.toFixed(2))]);
-
-    executeEdits([{ op: "modify", id: hotspotId, polygon_um: pts }]);
-  };
-
-  const handleRemoveVertex = (hotspotId: string, vertexIndex: number) => {
-    const target = hotspotsList.find((h) => h.id === hotspotId);
-    if (!target) return;
-
-    if (target.polygon_um.length <= 4) {
-      alert("Polygon must have at least 3 vertices (plus closing point).");
-      return;
-    }
-    const pts: [number, number][] = target.polygon_um.filter((_, idx) => idx !== vertexIndex);
-    if (vertexIndex === 0 && pts.length > 1) {
-      pts[pts.length - 1] = [pts[0][0], pts[0][1]];
-    }
-
-    executeEdits([{ op: "modify", id: hotspotId, polygon_um: pts }]);
+    executeEdits([{ op: "add", center_um: center }]);
   };
 
   const handleConfirmStage = async (zeroTumor: boolean = false) => {
     try {
       setSubmitting(true);
       setError(null);
-      await confirmTriage(caseId, zeroTumor || noInvasiveTumor);
+      await confirmTriage(caseId, zeroTumor || noInvasiveTumor, acceptFewerHpfs);
       if (data) {
         setData({ ...data, status: "confirmed" });
       }
@@ -261,7 +184,19 @@ export function TriageViewer({
         onRefreshCase();
       }
     } catch (err: any) {
-      setError(err.message || L.error.stageExecutionFailed);
+      if (err.data?.error === "hpf_sites_lt_10") {
+        // Fewer active sites than the target: ask for the acknowledgement instead of failing.
+        setTooFewSitesPrompt(true);
+        setError(L.fmt.tissueInadequateAck(err.data.hpf_target));
+      } else if (err.data?.error === "hotspot_overlap") {
+        const ids: string[] = Array.from(new Set<string>((err.data.ids || []).flat()));
+        setConflictingHotspotIds(ids);
+        setError(L.fmt.hotspotOverlap(ids));
+      } else if (err.data?.error === "triage_rerun_required") {
+        setError(L.error.triageRerunRequired);
+      } else {
+        setError(err.message || L.error.stageExecutionFailed);
+      }
     } finally {
       setSubmitting(false);
     }
@@ -281,14 +216,23 @@ export function TriageViewer({
   };
 
   const activeHotspotsCount = hotspotsList.filter((h) => !h.excluded).length;
+  const hpfTarget = data?.hpf_target ?? 0;
+  const tooFewSites = Boolean(data) && activeHotspotsCount < hpfTarget;
   const totalAreaMm2 = hotspotsList
     .filter((h) => !h.excluded)
-    .reduce((sum, h) => sum + computePolygonAreaMm2(h.polygon_um), 0);
+    .reduce((sum, h) => sum + circleAreaMm2(h), 0);
+
+  const siteLabel = (hs: Hotspot) =>
+    hs.rank !== null ? `#${hs.rank}` : `U${hs.id.split("_").pop()}`;
 
   const viewerHotspots = hotspotsList.map((hs) => ({
     id: hs.id,
     polygon_um: hs.polygon_um,
-    area_mm2: computePolygonAreaMm2(hs.polygon_um),
+    center_um: hs.center_um,
+    radius_um: hs.hpf_diameter_um / 2,
+    label: siteLabel(hs),
+    at_periphery: hs.at_periphery,
+    area_mm2: circleAreaMm2(hs),
     source: hs.source,
     excluded: hs.excluded,
     conflicting: conflictingHotspotIds.includes(hs.id),
@@ -329,8 +273,8 @@ export function TriageViewer({
           hotspots={viewerHotspots}
           selectedHotspotId={selectedHotspotId}
           onSelectHotspot={setSelectedHotspotId}
-          isAddingRoiMode={isAddingRoiMode}
-          onAddRoiClick={handleAddRoiFromClick}
+          isAddingRoiMode={isAddingRoiMode || movingHotspotId !== null}
+          onAddRoiClick={handleSlideClick}
           tileUrlTemplate={tileUrlTemplate}
           grid={overlayGrid}
         />
@@ -340,7 +284,7 @@ export function TriageViewer({
           {data?.flags?.includes("hotspots_limited_by_tissue") && (
             <div className="pointer-events-auto bg-sky-950/90 border border-sky-800 text-sky-200 text-xs px-4 py-2.5 rounded-lg shadow-lg flex items-center space-x-2 backdrop-blur">
               <Info className="w-4 h-4 text-sky-400 shrink-0" />
-              <span>{L.help.hotspotsLimited}</span>
+              <span>{L.fmt.tissueInadequateBanner(data.n_sites_available, data.hpf_target)}</span>
             </div>
           )}
 
@@ -377,58 +321,23 @@ export function TriageViewer({
           )}
         </div>
 
-        {/* Interactive Click-to-Add ROI Floating Banner */}
-        {isAddingRoiMode && (
-          <div className="absolute top-16 left-1/2 -translate-x-1/2 z-30 bg-sky-950/95 border-2 border-sky-400 rounded-2xl px-5 py-2.5 shadow-2xl flex flex-col md:flex-row items-center space-y-2 md:space-y-0 md:space-x-3 backdrop-blur">
-            <div className="flex items-center space-x-2">
-              <Crosshair className="w-4 h-4 text-sky-400 animate-spin" />
-              <div className="flex items-center bg-slate-900 border border-slate-700 rounded-lg p-0.5 text-xs font-bold">
-                <button
-                  type="button"
-                  onClick={() => { setRoiDrawType("box"); setActivePolygonPoints([]); }}
-                  className={`px-2.5 py-1 rounded ${roiDrawType === "box" ? "bg-sky-600 text-white" : "text-slate-400 hover:text-white"}`}
-                >
-                  {L.action.boxRoi}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setRoiDrawType("polygon"); }}
-                  className={`px-2.5 py-1 rounded flex items-center space-x-1 ${roiDrawType === "polygon" ? "bg-sky-600 text-white" : "text-slate-400 hover:text-white"}`}
-                >
-                  <PenTool className="w-3 h-3" />
-                  <span>{L.action.customPolygon}</span>
-                </button>
-              </div>
-            </div>
-
+        {/* Pin / move HPF floating banner */}
+        {(isAddingRoiMode || movingHotspotId !== null) && (
+          <div className="absolute top-16 left-1/2 -translate-x-1/2 z-30 bg-sky-950/95 border-2 border-sky-400 rounded-2xl px-5 py-2.5 shadow-2xl flex items-center space-x-3 backdrop-blur">
+            <Crosshair className="w-4 h-4 text-sky-400 animate-spin" />
             <span className="text-xs font-medium text-sky-100">
-              {roiDrawType === "box"
-                ? L.help.clickToPlaceHotspot
-                : `${L.heading.polygonVertices} ${L.fmt.pointsCount(activePolygonPoints.length)}`}
+              {movingHotspotId !== null ? L.help.moveHpfHint : L.help.pinHpfHint}
             </span>
-
-            <div className="flex items-center space-x-2">
-              {roiDrawType === "polygon" && activePolygonPoints.length >= 3 && (
-                <button
-                  type="button"
-                  onClick={handleFinishCustomPolygon}
-                  className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition flex items-center space-x-1 shadow-md"
-                >
-                  <Check className="w-3 h-3" />
-                  <span>{L.action.finishPolygon}</span>
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => {
-                  setIsAddingRoiMode(false);
-                  setActivePolygonPoints([]);
-                }}
-                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-bold transition border border-slate-700"
-              >
-                {L.action.cancel}
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setIsAddingRoiMode(false);
+                setMovingHotspotId(null);
+              }}
+              className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-bold transition border border-slate-700"
+            >
+              {L.action.cancel}
+            </button>
           </div>
         )}
 
@@ -534,8 +443,8 @@ export function TriageViewer({
         {/* Stats Summary Panel */}
         <div className="p-4 bg-slate-950/60 border-b border-slate-800 grid grid-cols-2 gap-3">
           <div className="bg-slate-900 p-2.5 rounded-lg border border-slate-800">
-            <div className="text-[10px] font-semibold uppercase text-slate-400">{L.heading.activeHotspots}</div>
-            <div className="text-lg font-bold font-mono text-sky-400">{activeHotspotsCount}</div>
+            <div className="text-[10px] font-semibold uppercase text-slate-400">{L.fmt.hpfSitesActive(activeHotspotsCount, hpfTarget)}</div>
+            <div className={`text-lg font-bold font-mono ${tooFewSites ? "text-amber-400" : "text-sky-400"}`}>{activeHotspotsCount} / {hpfTarget}</div>
           </div>
           <div className="bg-slate-900 p-2.5 rounded-lg border border-slate-800">
             <div className="text-[10px] font-semibold uppercase text-slate-400">{L.field.tumorArea}</div>
@@ -549,16 +458,19 @@ export function TriageViewer({
             <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">{L.heading.proposedRois}</span>
             <button
               type="button"
-              onClick={() => setIsAddingRoiMode(!isAddingRoiMode)}
+              onClick={() => {
+                setMovingHotspotId(null);
+                setIsAddingRoiMode(!isAddingRoiMode);
+              }}
               className={`px-2.5 py-1 rounded text-xs font-semibold flex items-center space-x-1.5 transition ${
                 isAddingRoiMode
                   ? "bg-sky-600 text-white ring-2 ring-sky-400 shadow-md shadow-sky-600/30"
                   : "bg-sky-600/20 hover:bg-sky-600/40 text-sky-400 border border-sky-600/40"
               }`}
-              title={L.help.clickToPlaceHotspot}
+              title={L.help.pinHpfHint}
             >
               <Plus className="w-3.5 h-3.5" />
-              <span>{isAddingRoiMode ? L.action.cancel : `+ ${L.action.addHotspot}`}</span>
+              <span>{isAddingRoiMode ? L.action.cancel : L.action.pinHpf}</span>
             </button>
           </div>
 
@@ -595,7 +507,7 @@ export function TriageViewer({
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center space-x-2">
                       <span className="font-mono text-xs font-bold text-sky-400">
-                        {hs.rank !== null ? `#${hs.rank}` : hs.id}
+                        {siteLabel(hs)}
                       </span>
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 font-mono">
                         {hs.source}
@@ -624,21 +536,24 @@ export function TriageViewer({
 
                           <button
                             type="button"
-                            onClick={() => setEditingVertexHotspotId(editingVertexHotspotId === hs.id ? null : hs.id)}
+                            onClick={() => {
+                              setIsAddingRoiMode(false);
+                              setMovingHotspotId(movingHotspotId === hs.id ? null : hs.id);
+                            }}
                             className={`px-2 py-0.5 rounded text-[11px] font-semibold flex items-center space-x-1 transition ${
-                              editingVertexHotspotId === hs.id
+                              movingHotspotId === hs.id
                                 ? "bg-amber-600 text-white shadow-md shadow-amber-600/30"
                                 : "bg-slate-800 hover:bg-amber-600/30 text-amber-400 border border-slate-700"
                             }`}
-                            title={L.help.editVertices}
+                            title={L.help.moveHpfHint}
                           >
-                            <Edit3 className="w-3 h-3" />
-                            <span>{L.action.edit}</span>
+                            <Move className="w-3 h-3" />
+                            <span>{L.action.moveHpf}</span>
                           </button>
                         </>
                       )}
 
-                      {hs.excluded ? (
+                      {hs.excluded && (
                         <button
                           type="button"
                           onClick={() => handleRestoreHotspot(hs.id)}
@@ -646,65 +561,17 @@ export function TriageViewer({
                         >
                           {L.action.includeHotspot}
                         </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteHotspot(hs.id)}
-                          className="p-1 hover:bg-slate-800 text-slate-500 hover:text-rose-400 rounded"
-                          title={L.help.deleteHotspot}
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
                       )}
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteHotspot(hs.id)}
+                        className="p-1 hover:bg-slate-800 text-slate-500 hover:text-rose-400 rounded"
+                        title={L.help.deleteHotspot}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </div>
-
-                  {/* Vertex Editor Panel */}
-                  {editingVertexHotspotId === hs.id && !hs.excluded && (
-                    <div className="p-2.5 bg-slate-950 border border-amber-500/40 rounded-lg mb-2 space-y-2">
-                      <div className="flex items-center justify-between text-[11px] font-bold text-amber-300">
-                        <span>{L.heading.polygonVertices} {L.fmt.pointsCount(hs.polygon_um?.length || 0)}</span>
-                        <button
-                          type="button"
-                          onClick={() => handleAddVertex(hs.id, 0)}
-                          className="px-1.5 py-0.5 bg-amber-950 hover:bg-amber-900 border border-amber-700 text-[10px] text-amber-200 rounded font-semibold"
-                        >
-                          + {L.action.addPoint}
-                        </button>
-                      </div>
-                      <div className="max-h-36 overflow-y-auto space-y-1.5 pr-1 font-mono text-[10px]">
-                        {(hs.polygon_um || []).map((pt, vIdx) => (
-                          <div key={vIdx} className="flex items-center space-x-1 bg-slate-900/90 p-1 rounded border border-slate-800">
-                            <span className="text-slate-500 w-4 text-center">#{vIdx}</span>
-                            <div className="flex-1 flex items-center space-x-1">
-                              <span className="text-slate-400">{L.field.xCoord}:</span>
-                              <input
-                                type="number"
-                                value={pt[0]}
-                                onChange={(e) => handleUpdateVertex(hs.id, vIdx, parseFloat(e.target.value) || 0, pt[1])}
-                                className="w-16 bg-slate-950 border border-slate-700 rounded px-1 text-slate-200 text-[10px]"
-                              />
-                              <span className="text-slate-400">{L.field.yCoord}:</span>
-                              <input
-                                type="number"
-                                value={pt[1]}
-                                onChange={(e) => handleUpdateVertex(hs.id, vIdx, pt[0], parseFloat(e.target.value) || 0)}
-                                className="w-16 bg-slate-950 border border-slate-700 rounded px-1 text-slate-200 text-[10px]"
-                              />
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveVertex(hs.id, vIdx)}
-                              className="text-slate-600 hover:text-rose-400 p-0.5"
-                              title={L.help.deletePoint}
-                            >
-                              <X className="w-3 h-3" />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
 
                   {/* Hotspot metadata */}
                   <div className="grid grid-cols-2 gap-1.5 text-[11px] font-mono text-slate-400 mb-2">
@@ -724,7 +591,7 @@ export function TriageViewer({
                       </div>
                     )}
                     <div>
-                      {L.field.tumorArea}: <span className="text-slate-200">{L.fmt.areaMm2(computePolygonAreaMm2(hs.polygon_um))}</span>
+                      {L.field.tumorArea}: <span className="text-slate-200">{L.fmt.areaMm2(circleAreaMm2(hs))}</span>
                     </div>
                   </div>
 
@@ -772,6 +639,20 @@ export function TriageViewer({
             </span>
           </label>
 
+          {(tooFewSites || tooFewSitesPrompt) && !noInvasiveTumor && data?.status !== "confirmed" && (
+            <label className="flex items-start space-x-2 cursor-pointer bg-amber-950/40 p-2 rounded-lg border border-amber-800/70">
+              <input
+                type="checkbox"
+                checked={acceptFewerHpfs}
+                onChange={(e) => setAcceptFewerHpfs(e.target.checked)}
+                className="mt-0.5 accent-amber-500 rounded cursor-pointer"
+              />
+              <span className="text-xs text-amber-200">
+                {L.fmt.tissueInadequateAck(hpfTarget)}
+              </span>
+            </label>
+          )}
+
           <div className="flex items-center space-x-2">
             <button
               type="button"
@@ -787,11 +668,11 @@ export function TriageViewer({
             <button
               type="button"
               onClick={() => handleConfirmStage(false)}
-              disabled={submitting || data?.status === "confirmed" || (activeHotspotsCount === 0 && !noInvasiveTumor)}
+              disabled={submitting || data?.status === "confirmed" || (activeHotspotsCount === 0 && !noInvasiveTumor) || (tooFewSites && !acceptFewerHpfs && !noInvasiveTumor)}
               className={`flex-1 py-2.5 rounded-lg text-xs font-bold flex items-center justify-center space-x-2 shadow-lg transition ${
                 data?.status === "confirmed"
                   ? "bg-emerald-950/60 border border-emerald-800/80 text-emerald-300 cursor-not-allowed"
-                  : activeHotspotsCount > 0 || noInvasiveTumor
+                  : (activeHotspotsCount > 0 && (!tooFewSites || acceptFewerHpfs)) || noInvasiveTumor
                   ? "bg-sky-600 hover:bg-sky-500 text-white shadow-sky-600/20"
                   : "bg-slate-800 text-slate-500 cursor-not-allowed"
               }`}
