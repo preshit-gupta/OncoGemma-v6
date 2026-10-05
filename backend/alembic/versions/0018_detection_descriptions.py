@@ -12,6 +12,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = '0018_detection_descriptions'
@@ -19,10 +20,12 @@ down_revision: Union[str, None] = '0017_hpf_sites'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
+JSONType = sa.JSON().with_variant(postgresql.JSONB(astext_type=sa.Text()), 'postgresql')  # as the model
+
 
 def upgrade() -> None:
     # Plain ADD COLUMN, not batch_alter_table: SQLite's table rebuild cannot copy the generated ``counted`` column.
-    op.add_column('detections', sa.Column('description', sa.JSON(), nullable=True))
+    op.add_column('detections', sa.Column('description', JSONType, nullable=True))
     op.add_column('detections', sa.Column('description_status', sa.Text(), nullable=False, server_default='not_requested'))
 
 
