@@ -366,13 +366,12 @@ export function MitosisViewer({
           </div>
         )}
 
-        {/* Placed HPFs: count, tissue coverage and tumour fraction (server values) */}
+        {/* Placed HPFs: count only */}
         {hpfs.length > 0 && (
           <div className="px-6 py-1.5 bg-slate-900/80 border-b border-slate-800 text-[11px] text-slate-300 flex flex-wrap gap-1.5">
             {hpfs.map((h) => (
               <span key={h.seq} className="px-2 py-0.5 rounded bg-slate-950 border border-slate-800 font-mono">
-                {L.field.hpfLabel} {h.seq} · {h.count} · {L.field.hpfTissue} {L.fmt.percent(h.tissue_coverage)} ·{" "}
-                {L.field.tumorFraction} {h.tumor_fraction === null ? "—" : L.fmt.percent(h.tumor_fraction)}
+                {L.field.hpfLabel} {h.seq} · {h.count}
               </span>
             ))}
           </div>

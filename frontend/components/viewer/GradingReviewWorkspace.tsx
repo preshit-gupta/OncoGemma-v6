@@ -271,7 +271,7 @@ export function GradingReviewWorkspace({
   const isHistotypeOverridden = data.overrides.histotype !== undefined;
 
   return (
-    <div className="flex flex-col gap-6 p-6">
+    <div className="flex h-full flex-col gap-6 overflow-y-auto p-6">
       {/* Header Bar */}
       <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-wrap items-center gap-4">

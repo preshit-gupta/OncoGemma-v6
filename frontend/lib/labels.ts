@@ -336,7 +336,6 @@ export const L = {
     tumorGateNotApplied: "Not applied",
     inTumor: "In tumor",
     outsideTumor: "Outside tumor",
-    hpfTissue: "Tissue",
     hpfLabel: "HPF",
     noMitoticScore: "No score (no HPFs)",
     hotkey: "Hotkey",
