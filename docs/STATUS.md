@@ -60,6 +60,13 @@ Lanes are in `docs/tasks/README.md`. The specimen-type UI is merged (#21). Lane 
 2. Owner reviews and merges the WP-4.3 PR (owner deploy steps under Open items).
 3. **WP-7, baseline first (D19, 2026-10-02; plan §2.2).** The baseline is KongNet at 0.25 µm/px, τ 0.75, NMS 7.5 µm, referee off; no training needed to predict. WP-7.6a, 7.6b and 7.7b are merged. **WP-7.8 is code only (owner, 2026-10-04):** the locked MIDOG++ breast val/test split (`eval/splits/midogpp_breast.parquet`, by scanner, 094 pinned to val), the ground-truth convention in `registry.yaml` (one label per dividing cell, no harmonisation) and `eval.mitosis_baseline --split val` are ready; no images are downloaded and nothing has run, because KongNet trained on ~90% of MIDOG++ and the result would only be a pipeline regression check (`reports/mitosis/baseline_midogpp_breast.md`). A real validation waits for labelled TCGA data. Deferred to the next iteration: attribution study, classifier B and training code, referee v2, calibration.
 4. **WP-8, baseline first (D21, owner 2026-10-04; plan §2.3).** WP-8.6 (#49) and the IDC source WP-5.6 (#54) are merged. Next: the WP-8.7 val run (live run approved; steps in the card: from `backend/`, `eval.cli run ... --no-wait`, then execute `oncogemma-eval-worker`). WP-8.1 is absorbed into 8.6; WP-8.2–8.4 and the SPEC-07 attribution study are deferred. Pleomorphism ties take the highest score. **Remind the owner at the end of WP-8 to supply the Thennavan histotype labels (S5-HT).**
+5. **Owner review of Stages 3–5 (2026-10-05, D22; plan §2.4).** Six cards address it:
+   - WP-9.4 now: Stage 5 scrolling and the Stage 4 HPF chips.
+   - WP-6.5: HPFs become 0.5 mm circles in 0.6 mm frames (10 HPFs = 1.96 mm²), the Pin ROI fixes, and the tissue-inadequacy gate.
+   - Then WP-6.6 (periphery first, 1 mm band) and WP-7.9 (Gemini morphology descriptions, never a decision).
+   - Then the viewers, WP-6.7 and WP-7.10.
+
+   The backend and both viewers deploy together. Open cases then re-run Stages 3 and 4 and grading. If the WP-8.7 run has not been made yet, run it after WP-6.5 and 6.6.
 
 ## Open items (program owner)
 
