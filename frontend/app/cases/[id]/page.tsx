@@ -719,6 +719,8 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
                 imageHeightPx={slide?.height_px || 2048}
                 onRefreshCase={loadData}
                 tileUrlTemplate={caseDetail?.tile_url_template}
+                stageStatus={mitosisStage?.status}
+                stageRunId={mitosisStage?.id ?? mitosisStage?.attempt}
               />
             </ErrorBoundary>
           ) : activeStage === "triage" ? (
