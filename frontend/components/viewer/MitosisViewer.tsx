@@ -4,7 +4,6 @@ import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { 
   Microscope, 
   CheckCircle2, 
-  RotateCcw, 
   ArrowRight, 
   Activity, 
   Loader2, 
@@ -21,7 +20,6 @@ import {
   getMitosis, 
   reviewCandidate, 
   addCandidate, 
-  replaceHpfs, 
   confirmMitosis, 
   Candidate, 
   MitosisStageV6, 
@@ -69,6 +67,7 @@ export function MitosisViewer({
     per_mm2: 0,
     mitotic_score: null,
     n_equivocal: 0,
+    hpf_target: 0,
     flags: [],
   });
 
@@ -76,7 +75,7 @@ export function MitosisViewer({
   const [filterMode, setFilterMode] = useState<"all" | "equivocal" | "mitosis" | "not_mitosis">("all");
   const [imageViewMode, setImageViewMode] = useState<"crop" | "context">("crop");
   const [showDefinitionPanel, setShowDefinitionPanel] = useState<boolean>(false);
-  const [isReplacingHpfs, setIsReplacingHpfs] = useState<boolean>(false);
+  const [focusPointUm, setFocusPointUm] = useState<[number, number] | null>(null);
 
   // Load stage data once per case. It must not depend on `data` or the selection:
   // each fetch would then re-create it and the effect below would fetch again, forever.
@@ -147,22 +146,6 @@ export function MitosisViewer({
       if (updated.hpfs) setHpfs(updated.hpfs);
     } catch (err: any) {
       setError(err.message || L.error.stageExecutionFailed);
-    }
-  };
-
-  const handleReplaceHpfs = async () => {
-    try {
-      setIsReplacingHpfs(true);
-      setError(null);
-      const updated = await replaceHpfs(caseId);
-      setData(updated);
-      setHpfs(updated.hpfs || []);
-      setSummary(updated.summary);
-      if (updated.candidates) setCandidates(updated.candidates);
-    } catch (err: any) {
-      setError(err.message || L.error.stageExecutionFailed);
-    } finally {
-      setIsReplacingHpfs(false);
     }
   };
 
@@ -255,9 +238,22 @@ export function MitosisViewer({
       centroid_um: c.centroid_um,
       label: (c.review_label ?? c.final_decision) === "mitosis" ? "mitosis" : "not_mitosis",
       confidence: c.p_b ?? c.p_a ?? 0.5,
-      in_hpf: c.counted,
+      in_hpf: c.hpf_seq !== null,
     }));
   }, [candidates]);
+
+  // HPF circles with their padded frames, numbered by seq
+  const viewerHpfs = useMemo(
+    () =>
+      hpfs.map((h) => ({
+        id: `hpf_${h.seq}`,
+        polygon_um: h.frame_um,
+        center_um: h.center_um,
+        radius_um: h.radius_um,
+        label: `${L.field.hpfLabel} ${h.seq}`,
+      })),
+    [hpfs]
+  );
 
   if (loading) {
     return (
@@ -322,16 +318,6 @@ export function MitosisViewer({
 
           <button
             type="button"
-            onClick={handleReplaceHpfs}
-            disabled={isReplacingHpfs}
-            className="px-3 py-1.5 bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/40 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition shadow-sm"
-          >
-            <RotateCcw className={`w-3.5 h-3.5 ${isReplacingHpfs ? "animate-spin" : ""}`} />
-            <span>{L.action.replaceHpfs}</span>
-          </button>
-
-          <button
-            type="button"
             onClick={handleConfirmStage}
             disabled={submitting || data?.status === "confirmed"}
             className={`px-4 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1.5 transition shadow ${
@@ -362,17 +348,23 @@ export function MitosisViewer({
         {summary.flags?.includes("hpf_count_lt_10") && (
           <div className="px-6 py-2 bg-amber-950/80 border-b border-amber-800 text-amber-200 text-xs flex items-center space-x-2">
             <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
-            <span>{L.help.hpfCountWarning}</span>
+            <span>{L.fmt.tissueInadequateMitosis(summary.n_hpf, summary.hpf_target, summary.area_mm2)}</span>
           </div>
         )}
 
-        {/* Placed HPFs: count only */}
+        {/* HPFs: count only; a click pans to the circle */}
         {hpfs.length > 0 && (
           <div className="px-6 py-1.5 bg-slate-900/80 border-b border-slate-800 text-[11px] text-slate-300 flex flex-wrap gap-1.5">
             {hpfs.map((h) => (
-              <span key={h.seq} className="px-2 py-0.5 rounded bg-slate-950 border border-slate-800 font-mono">
+              <button
+                type="button"
+                key={h.seq}
+                onClick={() => setFocusPointUm([h.center_um[0], h.center_um[1]])}
+                className="px-2 py-0.5 rounded bg-slate-950 border border-slate-800 font-mono hover:border-sky-500 transition"
+                title={L.action.locate}
+              >
                 {L.field.hpfLabel} {h.seq} · {h.count}
-              </span>
+              </button>
             ))}
           </div>
         )}
@@ -404,6 +396,13 @@ export function MitosisViewer({
             mppY={mppY || mppX}
             imageWidthPx={imageWidthPx}
             imageHeightPx={imageHeightPx}
+            hotspots={viewerHpfs}
+            showHotspotMask={true}
+            onSelectHotspot={(id) => {
+              const hpf = hpfs.find((h) => `hpf_${h.seq}` === id);
+              if (hpf) setFocusPointUm([hpf.center_um[0], hpf.center_um[1]]);
+            }}
+            focusPointUm={focusPointUm}
             detectionMarkers={detectionMarkers}
             showCandidateMarkers={true}
             selectedCandidateId={selectedCandidateId}
@@ -509,6 +508,15 @@ export function MitosisViewer({
               </div>
 
               <div className="flex items-center justify-between text-xs text-slate-400">
+                <span>{L.field.hpfLabel}:</span>
+                <span className="font-mono text-slate-200 font-bold">
+                  {selectedCandidate.hpf_seq !== null
+                    ? `${L.field.hpfLabel} ${selectedCandidate.hpf_seq}`
+                    : L.field.outsideHpfs}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between text-xs text-slate-400">
                 <span>{L.field.tumorGate}:</span>
                 <span className="font-mono text-slate-200 font-bold">
                   {selectedCandidate.in_tumor === null
@@ -527,7 +535,43 @@ export function MitosisViewer({
               </div>
             </div>
 
-            {/* VLM Verdict & Criteria Checklist */}
+            {/* Morphology description: descriptive only, never part of the count */}
+            {selectedCandidate.description_status === "ok" && selectedCandidate.description && (
+              <div className="p-4 border-b border-slate-800 space-y-2.5">
+                <span className="text-xs font-bold text-sky-300 uppercase tracking-wider">
+                  {L.heading.morphologyDescription}
+                </span>
+                <dl className="bg-slate-950 p-2.5 rounded border border-slate-800 space-y-1.5 text-xs">
+                  {([
+                    [L.field.morphChromatin, L.morphology.chromatin[selectedCandidate.description.chromatin]],
+                    [L.field.morphNuclearMembrane, L.morphology.nuclear_membrane[selectedCandidate.description.nuclear_membrane]],
+                    [L.field.morphOutline, L.morphology.outline[selectedCandidate.description.outline]],
+                    [L.field.morphCytoplasm, L.morphology.cytoplasm[selectedCandidate.description.cytoplasm]],
+                    [L.field.morphRelativeSize, L.morphology.relative_size[selectedCandidate.description.relative_size]],
+                    [L.field.morphSetting, L.morphology.setting[selectedCandidate.description.setting]],
+                  ] as [string, string][]).map(([name, value]) => (
+                    <div key={name} className="flex items-center justify-between text-slate-300">
+                      <dt>{name}</dt>
+                      <dd className="font-mono text-sky-300">{value}</dd>
+                    </div>
+                  ))}
+                </dl>
+                <p className="text-[11px] text-slate-300 bg-slate-950/60 p-2 rounded border border-slate-800">
+                  {selectedCandidate.description.summary}
+                </p>
+                <p className="text-[10px] text-slate-500 italic">{L.help.descriptionNote}</p>
+              </div>
+            )}
+            {selectedCandidate.description_status === "unavailable" && (
+              <div className="p-4 border-b border-slate-800 space-y-1.5">
+                <span className="text-xs font-bold text-sky-300 uppercase tracking-wider">
+                  {L.heading.morphologyDescription}
+                </span>
+                <p className="text-[11px] text-slate-400">{L.help.descriptionUnavailable}</p>
+              </div>
+            )}
+
+            {/* VLM Verdict & Criteria Checklist (only when a verdict exists, e.g. eval ablations) */}
             {selectedCandidate.vlm && (
               <div className="p-4 border-b border-slate-800 space-y-2.5">
                 <div className="flex items-center justify-between">

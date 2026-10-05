@@ -212,7 +212,10 @@ export function MitosisGallery({
                         {cand.id}
                       </span>
                       <div className="flex items-center space-x-1">
-                        {cand.counted && (
+                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700/60 font-mono">
+                          {cand.hpf_seq !== null ? `${L.field.hpfLabel} ${cand.hpf_seq}` : L.field.outsideHpfs}
+                        </span>
+                        {cand.counted && cand.hpf_seq !== null && (
                           <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-700/50 font-bold uppercase font-mono">
                             {L.field.counted}
                           </span>
